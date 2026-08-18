@@ -5,9 +5,23 @@
 # These constraints declare the clock domain of each port so SpyGlass can
 # verify CDC at the integration boundary.
 #
-# The chiplet controller receives app_clk (= hclk) and user_hsclk
-# (= user_ref_clk). All port-facing interfaces operate in the app_clk
-# domain. Internal user_ref_clk <-> app_clk CDC is pre-verified by Wlink IP.
+# The chiplet controller receives apb_clk and app_clk (both = hclk) and
+# user_hsclk (= user_ref_clk). Internal user_ref_clk <-> app_clk CDC is
+# pre-verified by Wlink IP.
+#
+# CORRECTION 2026-08-17: this header used to read "All port-facing interfaces
+# operate in the app_clk domain." That is NOT true and is a dangerous thing to
+# leave written down here, because it is exactly the sentence that turns an
+# unconstrained port into a wrong app_clk declaration. Fifteen ports on this
+# boundary are in the link_rx_clk domain (the thirteen lane_*_o /
+# lane_*_i signals below, plus obs_epoch_anchored_o / obs_epoch_span_o), and
+# the PHY pads belong to the pad_clk_tx / pad_clk_rx domains. The bus and
+# register interfaces are app_clk; nothing wider than that is safe to assume.
+#
+# THE RULE FOR THIS FILE: a WRONG clock declaration MASKS a real crossing; a
+# MISSING one only over-reports. Establish a port's domain from the RTL before
+# declaring it, and if you cannot, leave it in the "NOT YET CONSTRAINED" block
+# at the end rather than pattern-matching a neighbour.
 #
 # Contributors
 #
@@ -20,6 +34,19 @@ current_design axi_chiplet_controller
 
 # Clock: app_clk is connected to hclk at the top level
 clock -name app_clk -domain hclk_domain -period 4.0
+
+# 2026-08-17 — apb_clk was never declared, though the module has BOTH an
+# app_clk and an apb_clk port and tidelink_top.sv ties them to the same net:
+#     .apb_clk (hclk),
+#     .app_clk (hclk),
+# apb_clk is the clock most of the controller's SoC-Labs-added logic actually
+# runs on — the observability CDC synchronisers (sync_obs_*), the autoneg
+# instance (u_autoneg .clk(apb_clk)), the Wlink APB register file
+# (gb2wl_clock = apb_clk), and the IRQ stickies all sit in it. Declaring it in
+# the same domain as app_clk is a statement of fact from the instantiation,
+# not an assumption, and it is what makes the app_clk declarations on the
+# ports below internally consistent.
+clock -name apb_clk -domain hclk_domain -period 4.0
 
 # Recovered RX clock — divided-down (÷16) version of pad_clk_rx, generated
 # inside the chiplet controller (deps/axi-chiplet-controller@3e0e711). It is
@@ -79,6 +106,35 @@ abstract_port -ports "apb_ctrl_reg_wdata[*]" -clock app_clk
 # carry, NOT a waiver — collapses those to same-domain (non-crossing).
 abstract_port -ports "apb_ctrl_reg_r10"    -clock app_clk
 abstract_port -ports "apb_ctrl_reg_rd"     -clock app_clk
+# 2026-08-17 — IT RECURRED. `apb_ctrl_reg_rf` is the THIRD region-select strobe
+# of the very interface whose first two (r10, rd) caused the incident described
+# in the paragraph above, and it was omitted in exactly the same way. Verified
+# present at src/rtl/local_overrides/axi_chiplet_controller.sv:254 ("AXI
+# data-node observability 2026-07-29 (I4) — Region F disambiguator"), driven at
+# top level by tidelink_top.sv:.apb_ctrl_reg_rf(ctrl_reg_rf) from
+# u_tidelink_fifo, an hclk-clocked instance — i.e. the same domain as its two
+# siblings, which is why the constraint is identical.
+#
+# WHY NO TOOL CAUGHT IT — and it is NOT the reason usually given. SpyGlass's
+# unmatched-abstract_port detectors are SGDC_abstract_port02 ("'<port>' not
+# found on/within module '<module>'") and SGDC_abstract_port21. Neither is
+# waived anywhere in this tree, and both were live. They cannot catch this
+# class of drift, because an OMITTED port produces no constraint for them to
+# check — they only fire on a declaration that points at a name which no
+# longer exists. The failure here is a declaration that was never written.
+#
+# (checkSGDC_05 is sometimes described as the unmatched-abstract_port
+# detector. It is not — per the installed rule documentation it "checks if
+# constraints are valid for non-top environments", i.e. it flags a constraint
+# under a non-top current_design being auto-migrated to the top, which is what
+# this very file does by design. Waiving it neither caused nor could have
+# caught this.)
+#
+# So there is no rule to un-waive; a rule does not exist for this. The
+# standing check is the static one — scripts/cdc/sgdc_port_drift.py, which
+# compares declarations against the real port list in BOTH directions and
+# needs no licence.
+abstract_port -ports "apb_ctrl_reg_rf"     -clock app_clk
 # Chiplet-controller hclk-domain inputs (§3.1 of prior sign-off)
 abstract_port -ports "puf_ready"           -clock app_clk
 abstract_port -ports "apb_debug_unlock_i"  -clock app_clk
@@ -129,3 +185,181 @@ abstract_port -ports "lane_canary_valid_o[*]"  -clock link_rx_clk_o
 # link_rx_clk_o is itself the generated clock — already declared above via
 # `clock -name link_rx_clk_o`. SpyGlass propagates the domain through the
 # top-level net into the tidelink_gpio_phy_apb_regs.link_rx_clk pin.
+
+# ── 2026-08-17 port reconciliation ──────────────────────────────────────────
+#
+# This file was reconciled against the REAL module port list of the unit that
+# actually compiles — src/rtl/local_overrides/axi_chiplet_controller.sv, 206
+# ports — using scripts/cdc/sgdc_port_drift.py, which parses the RTL and needs
+# no tool licence. Before this pass: 166 of 206 ports declared, 40 undeclared.
+# Zero declarations were stale, so nothing here was pointing at a dead name;
+# the drift was entirely one-directional (RTL grew, SGDC did not follow).
+#
+# After this pass: 179 of 206 declared, 27 undeclared, still zero stale.
+#
+# Of the 40, twelve are functional signals in a real clock domain that the
+# black-box boundary needs told about and are declared below; apb_clk gains a
+# `clock` object (above) rather than an abstract_port. The remaining 27 are
+# clocks, resets, DFT, pads, straps, and three build-conditional ports that
+# are deliberately NOT given an abstract_port — see the two blocks at the end
+# of this file for each one and why.
+#
+# THE RULE APPLIED THROUGHOUT: a WRONG clock declaration MASKS a real crossing;
+# a MISSING one only over-reports. So each port below carries the RTL evidence
+# for its domain, and anything whose domain could not be established from the
+# RTL was left undeclared rather than guessed.
+
+# ── hclk-domain functional ports (app_clk) ──────────────────────────────────
+#
+# Observability outputs, all five driven from the far side of the existing
+# 2-flop apb_clk synchronisers inside the controller (RTL lines 6394-6404,
+# "drive the new module outputs from the apb_clk-synced 2-flop CDC
+# registers"). apb_clk == app_clk == hclk at the tidelink_top instantiation,
+# so these leave the black box already synchronised into the app domain. That
+# is the whole point of those synchronisers; declaring them app_clk records
+# it, and NOT declaring them was manufacturing crossings on signals whose
+# synchroniser is right there in the source.
+abstract_port -ports "obs_a2l_replay_link_valid_o" -clock app_clk
+abstract_port -ports "obs_fe_rx_credit_max_o[*]"   -clock app_clk
+abstract_port -ports "obs_fe_rx_is_full_o"         -clock app_clk
+abstract_port -ports "obs_a2l_replay_app_valid_o"  -clock app_clk
+# data_mode_o = sync_obs_fcsm_state_1[2] — bit 2 of the SAME apb_clk-synced
+# FCSM state word. The RTL comment at line 504 states the domain explicitly
+# ("Domain: apb_clk. Source is sync_obs_fcsm_state_1, the far side of the
+# existing 2-flop apb_clk synchroniser").
+abstract_port -ports "data_mode_o"                 -clock app_clk
+
+# Interrupt / status outputs, all apb_clk flops or combinational functions of
+# apb_clk flops:
+#   train_fail_irq_o = train_fail_irq_r, set in the always_ff @(posedge
+#       apb_clk or negedge poresetn) block at RTL line 2192.
+#   nego_error_irq   = nego_error_irq_internal | nego_mask_mismatch_reg.
+#       nego_error_irq_internal comes from u_autoneg, instantiated with
+#       .clk(apb_clk); nego_mask_mismatch_reg is written in the always_ff
+#       @(posedge apb_clk ...) block at RTL line 756.
+#   interrupt        = u_wlink.interrupt, a pure OR of the Wlink APB register
+#       file's W1C error stickies and their enables (Wlink.v:2097, sourced
+#       from regs written in always @(posedge apb_clk ...) blocks).
+abstract_port -ports "train_fail_irq_o"    -clock app_clk
+abstract_port -ports "nego_error_irq"      -clock app_clk
+abstract_port -ports "interrupt"           -clock app_clk
+
+# generalbus_in — the input sibling of generalbus_out (already declared
+# app_clk above). Consumed by Wlink's GeneralBusToWlink adapter, whose clock
+# is assigned `gb2wl_clock = apb_clk` (Wlink.v:2449). tidelink_top currently
+# ties this port to 32'h0, so the declaration is inert today; it is stated
+# anyway so the constraint stays correct if a real driver is ever attached.
+abstract_port -ports "generalbus_in[*]"    -clock app_clk
+
+# Sideband reset / wake. Both are inert in this integration —
+#   sb_reset_in  tied 1'b0            (tidelink_top.sv:2822)
+#   sb_wake      output, unconnected  (tidelink_top.sv:2824)
+# — so neither carries a crossing that a declaration could mask: a constant
+# input has no domain to get wrong, and an output with no consumer has nothing
+# downstream to mislead. They are declared app_clk anyway, matching the
+# chiplet-level constraint for the same black box in
+# cdc/nanosoc_eth_chiplet.sgdc:689-692, so the two files do not drift apart on
+# the same module. Revisit if either is ever really driven.
+abstract_port -ports "sb_reset_in"         -clock app_clk
+abstract_port -ports "sb_wake"             -clock app_clk
+
+# ── BUILD-CONDITIONAL PORTS — DELIBERATELY NOT DECLARED HERE ────────────────
+#
+# Three ports exist only when TIDELINK_PHY_V2 is defined
+# (src/rtl/local_overrides/axi_chiplet_controller.sv:525-534, and the matching
+# `ifdef at tidelink_top.sv:3106):
+#
+#     obs_epoch_anchored_o   link_rx_clk domain
+#     obs_epoch_span_o[5:0]  link_rx_clk domain
+#     xhb_sub_obs_word_i[31:0]  app_clk (hclk) domain
+#
+# Their domains ARE known — the RTL states them outright, at line 526
+# ("link_rx_rx_link_clk domain; the APB slave 2-flop-syncs into apb_clk
+# itself, so NO sync here") and again at line 4692 ("obs_epoch_anchored_o is
+# the rx-link-clk-domain pass-through from Wlink"); xhb_sub_obs_word_i is the
+# TL-009 leak witness driven from tidelink_top's XHB500 ahb_sub side
+# (tidelink_top.sv:3112). Note especially that the first two are NOT app_clk:
+# declaring them app_clk — the neighbouring default, and the obvious guess —
+# would MASK a live link_rx_clk -> hclk crossing.
+#
+# They are nonetheless left UNDECLARED in this file, on purpose. SGDC has no
+# preprocessor, and of the flists only tidelink_top_full_asic_v2 /
+# tidelink_fpga / tidelink_fpga_v2 define TIDELINK_PHY_V2. The CDC Makefile's
+# default is MODULE=tidelink_top -> flists/tidelink_top.flist, which does NOT.
+# In that V1 build the three names match no port, and an unmatched
+# abstract_port is SGDC_abstract_port02 FATAL -> exit code 7 -> a run that
+# reports "0 clocks / 0 crossings" and looks like a tool fault. That exact
+# failure is already on this file's record (see the note at the apb_ctrl_reg_*
+# block above). Declaring them would trade a harmless over-report for a dead
+# run.
+#
+# The chiplet-level SGDC (cdc/nanosoc_eth_chiplet.sgdc:767-785) DOES declare
+# all three, correctly — its .prj defaults to an ASIC filelist that carries
+# +define+TIDELINK_PHY_V2, so there the names always match. Both files are
+# right for their own default build; that is why the constraint lives there
+# and not here.
+#
+# IF THIS FILE IS EVER USED WITH A V2 FLIST (MODULE=tidelink_top_full_asic_v2,
+# tidelink_fpga, tidelink_fpga_v2), add these three lines — and delete them
+# again before going back to a V1 flist:
+#
+#   abstract_port -ports "obs_epoch_anchored_o"  -clock link_rx_clk_o
+#   abstract_port -ports "obs_epoch_span_o[*]"   -clock link_rx_clk_o
+#   abstract_port -ports "xhb_sub_obs_word_i[*]" -clock app_clk
+
+# ── NOT YET CONSTRAINED — needs owner decision ──────────────────────────────
+#
+# 27 ports of axi_chiplet_controller have no abstract_port: the three
+# build-conditional ones covered immediately above, plus the 24 grouped below.
+# Every one is a deliberate omission, not an oversight; each is listed so the
+# next reader does not have to re-derive the state of the file, and so the
+# ones that are genuinely open are visible as open rather than absent.
+#
+# None of these may be given a domain by pattern-matching a neighbour. If one
+# needs constraining, establish the domain from the RTL first — an over-report
+# is recoverable, a wrong declaration is silent.
+#
+# (a) CLOCK PORTS — declared as clock objects, not abstract_ports:
+#       app_clk, apb_clk        declared above (both tied to hclk)
+#       link_rx_clk_o           declared above (generated, /16 of pad_clk_rx)
+#       user_hsclk              Wlink PLL reference; declared at top scope in
+#                               tidelink_top.sgdc as user_ref_clk
+#       pad_clk_rx              declared at top scope in tidelink_top.sgdc
+#       pad_clk_tx              TX-side launch clock, generated inside Wlink.
+#                               OPEN: no clock object anywhere in this flow.
+#       idelay_ref_clk          declared at top scope (FPGA-only 200 MHz ref)
+#
+# (b) RESET PORTS — declared at top scope in tidelink_top.sgdc via
+#     `reset -name`, and covered by the targeted Ac_unsync01 waivers in
+#     waiver.swl (synchronised by WavDemetReset inside Wlink):
+#       poresetn, hresetn
+#
+# (c) DFT — held inactive by set_case_analysis at top scope; scan_out is a
+#     scan-only output with no functional domain:
+#       scan_mode, scan_asyncrst_ctrl, scan_clk, scan_shift, scan_in, scan_out
+#
+# (d) TRULY ASYNCHRONOUS EXTERNAL PADS — declaring any on-chip clock for these
+#     would be a lie. The I2C lines are declared quasi_static at top scope and
+#     are synchronised inside the controller; the D2D pads belong to the PHY
+#     link domains, not to app_clk:
+#       i2c_scl_i, i2c_scl_o, i2c_scl_t, i2c_sda_i, i2c_sda_o, i2c_sda_t
+#       pad_rx      (declared pad_clk_rx domain at top scope)
+#       pad_tx      OPEN: TX pad data, launched in the pad_clk_tx domain that
+#                   has no clock object. Left undeclared on purpose — see (a).
+#
+# (e) STRAPS / QUASI-STATIC INPUTS — stable before reset deassertion, declared
+#     quasi_static at top scope in tidelink_top.sgdc. They are not clocked by
+#     anything, so an abstract_port on this boundary would assert something
+#     false:
+#       role_strap_i, mask_hs_bypass_i, nego_priority_i, puf_seed
+#
+# (f) CROSS-CHECK. Every domain asserted in this file was derived from the RTL
+#     independently of cdc/nanosoc_eth_chiplet.sgdc, which constrains the same
+#     black box at the chiplet level. Comparing the two afterwards: 69 ports
+#     declared in both, ZERO domain disagreements — including the two that
+#     matter most, obs_epoch_anchored_o / obs_epoch_span_o on link_rx_clk_o
+#     rather than app_clk. Two independent derivations agreeing is not proof,
+#     but it is the strongest evidence available without a tool run.
+#
+# Regenerate this reconciliation at any time with:
+#     scripts/cdc/sgdc_port_drift.py --only axi_chiplet_controller

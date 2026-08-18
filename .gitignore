@@ -290,3 +290,11 @@ syn/asic/*/outputs_*/
 **/xcelium.d*/
 **/INCA_libs*/
 **/*.vdb/
+sim_build/
+__pycache__/
+ucli.key
+.result
+*.vpd
+*.fsdb
+csrc/
+simv.daidir/

@@ -327,4 +327,8 @@ ${TIDELINK_HOME}/src/rtl/tidelink_eye_regs.sv
 // ── Top-level wrapper ────────────────────────────────────────────────────────
 // ── Link-clock divider — must come before tidelink_top.sv which instantiates it
 ${TIDELINK_HOME}/src/rtl/tidelink_link_clk_div.sv
+// ── Link-rate control registers (APB quadrant 11) — instantiated by
+//    tidelink_top.sv only when LINK_RATE_REGS_PRESENT=1, so it must be
+//    compiled before it. Harmless (unreferenced) in the default OFF build.
+${TIDELINK_HOME}/src/rtl/tidelink_link_rate_regs.sv
 ${TIDELINK_HOME}/src/rtl/tidelink_top.sv

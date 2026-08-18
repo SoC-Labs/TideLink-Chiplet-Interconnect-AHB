@@ -88,12 +88,10 @@ async def test_diag(dut):
         if rec == 1 and logged < 40:
             logged += 1
             dut._log.info(f"[diag] REC c={c}: "
-                f"rec={rec} awdone={_v(m.rec_awdone)} wdone={_v(m.rec_wdone)} "
-                f"synthAW={_v(m.synth_aw_accept)} synthW={_v(m.synth_w_accept)} "
+                f"rec={rec} synthAW={_v(m.synth_aw_accept)} synthW={_v(m.synth_w_accept)} "
                 f"awv={_v(m.s_axi_awvalid)} awr_brg={_v(m.s_axi_awready_brg)} "
                 f"wv={_v(m.s_axi_wvalid)} wr_brg={_v(m.s_axi_wready_brg)} wlast={_v(m.s_axi_wlast)} "
-                f"pause={_g(m,'u_xhb_sub.u_core.u_addr.pause_addr_submit')} "
-                f"c1_out_rdy={_g(m,'u_xhb_sub.u_core.u_addr.cntrl_1_out_ready')} "
+                f"pipe_v={_v(m.pipe_valid_r)} xhb_hsel={_v(m.xhb_sub_hsel)} "
                 f"addr_rdyo={_g(m,'u_xhb_sub.u_core.u_addr.address_readyout')} "
                 f"os={_v(m.sub_wr_os_ctr)} synthB={_v(m.synth_b_pending)} bready={_v(m.s_axi_bready)} "
                 f"raw={_v(m.xhb_sub_hreadyout_raw)} rdyo={_v(m.ahb_sub_hreadyout)}")

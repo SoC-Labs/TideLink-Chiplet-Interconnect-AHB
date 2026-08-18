@@ -4,9 +4,18 @@
 #   make tidelink_fifo       Run a single environment
 #   make clean               Clean all environments
 
+# ── Environment list ─────────────────────────────────────────────────────────
+# tidelink_link_rate_regs_inert is the OFF-arm gate for the D2D link-rate
+# feature: it certifies that tidelink_top at LINK_RATE_REGS_PRESENT=0 — the
+# default, and what every shipping wrapper elaborates — still behaves exactly
+# as it did before the feature existed. It belongs in ENVS rather than beside
+# the link_rate_* targets below because it is ~17 s including compile, needs no
+# link bring-up, and is a claim about the SHIPPING build, not about the divided
+# modes. Its mutation table (8 edits to the OFF path, all caught) is in
+# the header of tidelink_link_rate_regs_inert/test_link_rate_inert.py.
 ENVS = tidelink_fifo tidelink_returner tidelink_apb_regs tidelink_apb_addr_ctrl tidelink tidelink_ahb tidelink_py_pair tidelink_fc_adapter tidelink_top tidelink_system tidelink_perf tidelink_perf_congestion \
        tidelink_addr_translator tidelink_autoneg tidelink_mul_iter tidelink_phc_cdc tidelink_ptp tidelink_ptp_servo \
-       tidelink_idelay_rx tidelink_rxclk_buf tidelink_clkfreq_check tidelink_link_clk_div tidelink_eye_regs tidelink_phy_align_calibrator \
+       tidelink_idelay_rx tidelink_rxclk_buf tidelink_clkfreq_check tidelink_link_clk_div tidelink_link_rate_regs_inert tidelink_eye_regs tidelink_phy_align_calibrator \
        wav_d2d_gpio_tx wavd2d_gpiorx_clkbuf wavd2d_gpiorx_t3a wavd2d_gpiorx_t3a_off wavd2d_gpiorx_t3a_timeout
 
 # ── Per-environment targets ──────────────────────────────────────────────────

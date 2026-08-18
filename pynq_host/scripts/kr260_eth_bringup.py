@@ -100,7 +100,7 @@ FCSM_LINK_IDLE = 4                 # link-up criterion (bilateral)
 # Each Wlink FC node has SM Control at base+0x14 with bit[16] = `disable_crc`,
 # and a 16-bit RO CRC-error counter at base+0x20 (docs/REGISTER_MAP.md §2.3).
 # Bases are in the Wlink bank, so they are reachable through this same backdoor
-# (the map span already covers 0x0000-0x3FFF).
+# (the map span covers the whole 0x0000-0x7FFF bridge aperture).
 #
 # WHY THIS IS HERE. The five AXI nodes ship with checking DISABLED — the FPGA
 # flist pulls src/rtl/local_overrides/WlinkGenericFCSM{,_1..4}.v, whose reset
@@ -126,8 +126,34 @@ FC_SM_CONTROL   = 0x14             # [16] disable_crc (RW)
 FC_CRC_ERRORS   = 0x20             # [15:0] CRC errors seen (RO)
 FC_DISABLE_CRC_BIT = 16
 
-# Map span from TLAPB_SOC_BASE: 16 KB covers the highest offset we touch (0x2108).
-_MAP_SPAN = 0x4000
+# Map span from TLAPB_SOC_BASE. The real aperture is 32 KB, not the 16 KB this
+# used to map, and the old value could not reach the upper half of the bridge.
+#
+# EVIDENCE (RTL, not inference):
+#   1. The AHB->APB bridge is 15-bit:
+#        nanosoc-ethernet-chiplet/src/rtl/nanosoc_eth_chiplet.sv:682
+#          cmsdk_ahb_to_apb #(.ADDRWIDTH(15)) u_tlapb_bridge (...)
+#      and its PADDR net is `wire [14:0] tlapb_paddr;` (:368), so the bridge
+#      decodes paddr[14:0] => 2**15 = 0x8000 bytes.
+#   2. tidelink_top.sv:845-854 splits that 15-bit window into FOUR 8 KB
+#      quadrants on paddr[14:13]:
+#        00 = Wlink chiplet controller   0x0000-0x1FFF
+#        01 = TideLink config/status     0x2000-0x3FFF
+#        10 = address translator (CAM)   0x4000-0x5FFF
+#        11 = reserved, UNDECODED        0x6000-0x7FFF
+#      A 0x4000 span stops exactly at the top of quadrant 01, so quadrants 10
+#      and 11 were unreachable from this tool. kr260_eth_xfer.py:46 already
+#      addresses the CAM at `_TLAPB + 0x4000`, i.e. above the old span.
+#
+# WIDENING IS SAFE, and does not weaken the containment argument above. The
+# chiplet decode gives the whole of SoC 0x2E03_0000-0x2E03_FFFF (64 KB) to the
+# tlapb bridge (chiplet_d2d_decode.sv:136, `blk == 4'h3` on haddr[19:16]), so
+# 0x8000 stays wholly inside the decoded tlapb block: it cannot reach the
+# wedge-prone peer aperture at 0x2F.. (a_peer is haddr[24]) and cannot leave
+# the eth_ss_0 window. Quadrant 11 is undecoded in tidelink_top, and the
+# response mux (:872-880) falls through to pready=1/pslverr=0 for it, so a
+# stray access there terminates rather than hanging.
+_MAP_SPAN = 0x8000
 _ROLE_NAMES = {"die_a": (ROLE_CFG_MASTER_LOCK, 0, "master/grandmaster"),
                "die_b": (ROLE_CFG_SLAVE_LOCK,  1, "slave")}
 
@@ -135,8 +161,9 @@ _ROLE_NAMES = {"die_a": (ROLE_CFG_MASTER_LOCK, 0, "master/grandmaster"),
 class Backdoor:
     """mmap of the TideLink APB, reached through the eth_ss_0 PS backdoor.
 
-    Only the 16 KB TideLink-APB span is mapped, so no accessor in this class can
-    reach the wedge-prone peer aperture or any out-of-window PL address.
+    Only the 32 KB TideLink-APB span is mapped (the full ADDRWIDTH(15) bridge
+    aperture; see _MAP_SPAN), so no accessor in this class can reach the
+    wedge-prone peer aperture or any out-of-window PL address.
     """
 
     def __init__(self, window_base=WINDOW_BASE):

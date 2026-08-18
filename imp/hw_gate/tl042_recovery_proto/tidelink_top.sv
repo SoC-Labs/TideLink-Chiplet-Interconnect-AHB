@@ -610,12 +610,9 @@ module tidelink_top #(
     wire         s_axi_wready_brg;    // W  ready presented TO the bridge (real|synthetic)
     wire         s_axi_awvalid_dn;    // AW valid presented to the DOWNSTREAM Wlink (masked)
     wire         s_axi_wvalid_dn;     // W  valid presented to the DOWNSTREAM Wlink (masked)
-    wire         synth_aw_accept;     // one-cycle synthetic AW accept strobe (bridge side)
-    wire         synth_w_accept;      // synthetic W accept strobe (per beat until wlast)
-    logic        rec_active;          // AW-unaccepted recovery in progress
-    logic        rec_awdone;          // synthetic AW beat taken (doubles as the AW mask)
-    logic        rec_wdone;           // synthetic W(last) beat taken (doubles as the W mask)
-    logic        rec_bseen;           // synth-B has been armed at least once this recovery
+    wire         synth_aw_accept;     // synthetic AW accept strobe (held for whole recovery)
+    wire         synth_w_accept;      // synthetic W accept strobe (held for whole recovery)
+    logic        rec_active;          // AW-unaccepted recovery in progress (masks + accepts)
 
     wire [11:0]  s_axi_arid;
     wire [35:0]  s_axi_araddr;
@@ -1898,57 +1895,55 @@ module tidelink_top #(
     // (a LEGAL 2-cycle AHB ERROR in the transfer's data phase = F-1) and re-idles
     // (= F-2). The real B was permanently lost, so there is no collision.
     // ── TL-042 Option-1: synthetic AW/W accept + reuse of the synth-B drain ─────
-    // synth_aw_accept / synth_w_accept assert the bridge-facing ready for the
-    // stuck beats; the real downstream ready is MASKED (rec_awdone/rec_wdone) once
-    // synthesised, and the downstream (Wlink) valid is masked in the SAME cycle we
-    // synthesise (…& ~synth_*_accept) AND every later recovery cycle, so a revived
-    // link can never double-accept the same AW/W beat.
-    assign synth_aw_accept   = rec_active & ~rec_awdone & s_axi_awvalid;
-    assign synth_w_accept    = rec_active & ~rec_wdone  & s_axi_wvalid;
-    assign s_axi_awready_brg = (s_axi_awready & ~rec_awdone) | synth_aw_accept;
-    assign s_axi_wready_brg  = (s_axi_wready  & ~rec_wdone ) | synth_w_accept;
-    assign s_axi_awvalid_dn  = s_axi_awvalid & ~rec_awdone & ~synth_aw_accept;
-    assign s_axi_wvalid_dn   = s_axi_wvalid  & ~rec_wdone  & ~synth_w_accept;
+    // synth_aw_accept / synth_w_accept assert the bridge-facing ready for EVERY AW/W
+    // beat the bridge presents while recovering — NOT a one-shot. The bench proved a
+    // one-shot is insufficient: the tidelink address pipe (pipe_valid_r/pipe_hsel_r)
+    // holds xhb_sub_hsel HIGH through the wedge, so the instant the first synthetic
+    // accept drains the stage-1 slice the bridge RE-LATCHES the same held address
+    // (a phantom second AW), re-wedging after a single raw pulse. Holding the accept
+    // for the whole recovery flushes every re-presented beat until the bridge idles.
+    // The real downstream ready is masked for the whole recovery, and the downstream
+    // (Wlink) valid is fully masked (…& ~rec_active) so a revived link cannot accept
+    // any of the flushed beats.
+    assign synth_aw_accept   = rec_active & s_axi_awvalid;
+    assign synth_w_accept    = rec_active & s_axi_wvalid;
+    assign s_axi_awready_brg = synth_aw_accept | (s_axi_awready & ~rec_active);
+    assign s_axi_wready_brg  = synth_w_accept  | (s_axi_wready  & ~rec_active);
+    assign s_axi_awvalid_dn  = s_axi_awvalid & ~rec_active;
+    assign s_axi_wvalid_dn   = s_axi_wvalid  & ~rec_active;
 
-    // Recovery sequencer. Arm on a stall-timeout while an AW is presented but the
-    // DOWNSTREAM ready is low AND no accepted-write is already outstanding (that
-    // case is the pre-existing synth-B's). Retire once AW+W synthesised and drained.
+    // Arm on a stall-timeout with an AW presented but the DOWNSTREAM ready low and no
+    // accepted-write already outstanding (that case is the pre-existing synth-B's).
+    // Retire only when the bridge has flushed every held AW (awvalid low), the
+    // synthetic writes have drained (os==0, synth-B done) and raw is high (idle) —
+    // i.e. the wedge is fully cleared and cannot immediately re-form.
+    wire rec_arm  = sub_stall_expired & s_axi_awvalid & ~s_axi_awready
+                  & (sub_wr_os_ctr == 3'd0) & ~synth_b_pending & ~rec_active;
+    wire rec_done = rec_active & ~s_axi_awvalid & (sub_wr_os_ctr == 3'd0)
+                  & xhb_sub_hreadyout_raw & ~synth_b_pending;
     always_ff @(posedge hclk or negedge hresetn) begin
-        if (!hresetn) begin
-            rec_active <= 1'b0; rec_awdone <= 1'b0; rec_wdone <= 1'b0; rec_bseen <= 1'b0;
-        end else if (!rec_active) begin
-            if (sub_stall_expired & s_axi_awvalid & ~s_axi_awready
-                & (sub_wr_os_ctr == 3'd0) & ~synth_b_pending) begin
-                rec_active <= 1'b1; rec_awdone <= 1'b0; rec_wdone <= 1'b0; rec_bseen <= 1'b0;
-            end
-        end else begin
-            if (synth_aw_accept)               rec_awdone <= 1'b1;  // AW taken (1 beat)
-            if (synth_w_accept & s_axi_wlast)  rec_wdone  <= 1'b1;  // last W beat taken
-            if (synth_b_pending)               rec_bseen  <= 1'b1;  // synth-B armed
-            if (rec_awdone & rec_wdone & rec_bseen & ~synth_b_pending) begin
-                rec_active <= 1'b0; rec_awdone <= 1'b0; rec_wdone <= 1'b0; rec_bseen <= 1'b0;
-            end
-        end
+        if (!hresetn)      rec_active <= 1'b0;
+        else if (rec_arm)  rec_active <= 1'b1;
+        else if (rec_done) rec_active <= 1'b0;
     end
 
-    // TL-042: broaden the arming. Original term (accepted-write stuck) is kept; the
-    // added term fires the synth-B once the synthetic AW has entered the bridge
-    // (rec_awdone) so sub_wr_os_ctr!=0 and the existing drain retires it.
-    wire sub_wr_stuck_fire = ((sub_osr_expired | sub_stall_expired)
-                             & (sub_wr_os_ctr != 3'd0))
-                             | (rec_active & rec_awdone & ~rec_bseen);
+    // Original accepted-write-stuck arm, unchanged.
+    wire sub_wr_stuck_fire = (sub_osr_expired | sub_stall_expired)
+                             & (sub_wr_os_ctr != 3'd0);
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             sub_wr_awid_r   <= '0;
             synth_b_pending <= 1'b0;
         end else begin
             if (sub_aw_accept) sub_wr_awid_r <= s_axi_awid;
-            if (sub_wr_stuck_fire)                            synth_b_pending <= 1'b1;
-            // DRAIN: inject one OKAY B per outstanding write until sub_wr_os_ctr
-            // reaches 0 — clear on the beat that retires the LAST one (ctr<=1 with a
-            // handshake this cycle). One synthetic B per stuck write => all N complete,
-            // XHB500 drains, die_a PS survives the soak.
-            else if (synth_b_pending & s_axi_bready & (sub_wr_os_ctr <= 3'd1)) synth_b_pending <= 1'b0;
+            // Present a synthetic B whenever a write is outstanding either from the
+            // original accepted-write-stuck backstop OR from the TL-042 AW-unaccepted
+            // recovery (each synthetic AW accept incremented sub_wr_os_ctr). Hold B
+            // until every outstanding write has drained (os==0), then drop it. Each
+            // s_axi_bready handshake decrements sub_wr_os_ctr in the counter always_ff.
+            if (sub_wr_stuck_fire | (rec_active & (sub_wr_os_ctr != 3'd0)))
+                                                              synth_b_pending <= 1'b1;
+            else if (sub_wr_os_ctr == 3'd0)                   synth_b_pending <= 1'b0;
         end
     end
     assign s_axi_bvalid = s_axi_bvalid_ctrl | synth_b_pending;

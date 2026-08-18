@@ -37,18 +37,186 @@ waive -du "xhb500_*" -regexp -comment "ARM XHB500 IP — pre-verified CDC"
 # Third-party IP: Wlink chiplet controller (Chisel-generated)
 # ============================================================================
 # Wlink contains its own synchronizers (WavMultibitSync, WavDemetReset,
-# WavSyncPulse, etc.) and internal CDC between PLL-generated clocks.
-# These are outside TideLink's control.
+# WavSyncPulse, etc.) and internal CDC between PLL-generated clocks.  Where
+# that IP is UNTOUCHED, waiving it is legitimate: it is outside TideLink's
+# control and pre-verified by the vendor.
+#
+# 2026-08-17 — THE BLANKET PATTERNS WERE UNSOUND. WHAT CHANGED AND WHY.
+# ----------------------------------------------------------------------------
+# This block used to read:
+#
+#     waive -du "Wlink"              ...
+#     waive -du "Wav*"   -regexp     ...
+#     waive -du "Wlink*" -regexp     ...
+#     waive -du "wlink_*" -regexp    ...
+#     waive -du "ShortPacketToWlink" ...
+#     waive -du "TideLinkToWlink"    ...
+#
+# justified as "Chisel-generated, own CDC / outside TideLink's control".
+# That justification is FALSE for a large fraction of what those patterns
+# matched.  src/rtl/local_overrides/ holds 33 locally-patched module copies;
+# 24 of those FILES (23 distinct module names) fall inside the namespaces
+# above, and EVERY ONE of them differs from its vendor original — verified by
+# byte diff against deps/axi-chiplet-controller/logical/, not by assumption.
+# A namespace waiver therefore suppressed CDC findings in TideLink-authored
+# logic, on the same paths the project is actively debugging:
+#
+#   wlink_wlink_ptp_tl_a2l_48x4  — the PTP a2l replay memory. Not a patch at
+#       all: the Chisel generator never emitted this model, so the file is
+#       SoC-Labs-authored end to end (see its header). "Untouched vendor IP"
+#       was never even arguable for it.
+#   WlinkGenericFCReplayV2_12/_13 — carry the a2l CDC fix. Their AW/W/B
+#       siblings (_1/_3/_5) do NOT carry it and were waived by the same
+#       pattern, i.e. the waiver hid precisely the asymmetry that matters.
+#   WavMultibitSync_18            — a locally-modified SYNCHRONISER
+#       PRIMITIVE, waived under "verified CDC cells". A modified
+#       synchroniser is the one thing a CDC waiver must never cover.
+#   WlinkGenericFCSM/_1/_2/_3/_4/_6, WlinkRxLinkLayer, Wlink, WavD2DGpio*,
+#       WlinkGPIOPHY, WlinkEccSyndrome, WlinkGenericFCReplayAddrSync_18,
+#       ShortPacketToWlink, TideLinkToWlink — all locally modified.
+#
+# THE FIX: waive by explicit module NAME, and only for modules with no copy
+# in src/rtl/local_overrides/.  The list below is GENERATED, not hand-typed —
+#
+#     scripts/cdc/gen_tidelink_waivers.py           # regenerate this block
+#     scripts/cdc/gen_tidelink_waivers.py --check   # CI gate, exit 1 on drift
+#
+# — because a hand list rots the moment someone adds an override, which is
+# exactly how the blanket patterns became wrong in the first place.  The
+# --check mode fails if ANY `-du` waiver in this file covers a module that
+# has a local override, so this hole cannot silently reopen.
+#
+# ASYMMETRY NOTE: a missing entry here only OVER-reports (a vendor module
+# shows real-but-uninteresting internal CDC).  A wrong entry MASKS.  So when
+# the vendor drop is updated and new module names appear, prefer to leave
+# them unwaived until someone has looked, rather than re-widening to a
+# pattern.
+#
+# Counts at generation time: 104 vendor modules in these namespaces,
+# 82 waived below, 22 withheld (locally modified), 1 locally authored.
+# ----------------------------------------------------------------------------
 
-waive -du "Wlink"              -comment "Wlink top — Chisel-generated, own CDC"
-waive -du "Wav*" -regexp       -comment "Wlink primitives — verified CDC cells"
-waive -du "Wlink*" -regexp     -comment "Wlink submodules — Chisel-generated"
-waive -du "AXI4ToWlink"        -comment "Wlink AXI adapter — Chisel-generated"
-waive -du "GeneralBusToWlink"  -comment "Wlink GB adapter — Chisel-generated"
-waive -du "ShortPacketToWlink" -comment "Wlink SP adapter — Chisel-generated"
-waive -du "TideLinkToWlink"    -comment "Wlink TL adapter — Chisel-generated"
-waive -du "APBFanout*" -regexp -comment "Wlink APB fanout — Chisel-generated"
-waive -du "wlink_*" -regexp    -comment "Wlink internal modules — Chisel-generated"
+waive -du "APBFanout"                          -comment "Wlink vendor IP — unmodified"
+waive -du "APBFanout_1"                        -comment "Wlink vendor IP — unmodified"
+waive -du "AXI4ToWlink"                        -comment "Wlink vendor IP — unmodified"
+waive -du "GeneralBusToWlink"                  -comment "Wlink vendor IP — unmodified"
+waive -du "WavAnd"                             -comment "Wlink vendor IP — unmodified"
+waive -du "WavClockGate"                       -comment "Wlink vendor IP — unmodified"
+waive -du "WavClockInv"                        -comment "Wlink vendor IP — unmodified"
+waive -du "WavClockMux"                        -comment "Wlink vendor IP — unmodified"
+waive -du "WavD2DRxDLL"                        -comment "Wlink vendor IP — unmodified"
+waive -du "WavD2DSerdesPLL"                    -comment "Wlink vendor IP — unmodified"
+waive -du "WavD2DSerdesRx"                     -comment "Wlink vendor IP — unmodified"
+waive -du "WavD2DSerdesTx"                     -comment "Wlink vendor IP — unmodified"
+waive -du "WavDemetReset"                      -comment "Wlink vendor IP — unmodified"
+waive -du "WavDemetReset_107"                  -comment "Wlink vendor IP — unmodified"
+waive -du "WavDemetReset_124"                  -comment "Wlink vendor IP — unmodified"
+waive -du "WavDemetReset_129"                  -comment "Wlink vendor IP — unmodified"
+waive -du "WavDemetReset_27"                   -comment "Wlink vendor IP — unmodified"
+waive -du "WavDemetReset_7"                    -comment "Wlink vendor IP — unmodified"
+waive -du "WavDemetSet"                        -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO"                            -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_1"                          -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_11"                         -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_12"                         -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_14"                         -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_15"                         -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_17"                         -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_18"                         -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_2"                          -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_20"                         -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_21"                         -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_23"                         -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_3"                          -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_5"                          -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_6"                          -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_8"                          -comment "Wlink vendor IP — unmodified"
+waive -du "WavFIFO_9"                          -comment "Wlink vendor IP — unmodified"
+waive -du "WavMultibitSync"                    -comment "Wlink vendor IP — unmodified"
+waive -du "WavMultibitSync_15"                 -comment "Wlink vendor IP — unmodified"
+waive -du "WavMultibitSync_3"                  -comment "Wlink vendor IP — unmodified"
+waive -du "WavResetSync"                       -comment "Wlink vendor IP — unmodified"
+waive -du "WavSyncPulse"                       -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkCrcGen"                        -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkCrcGen_10"                     -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkCrcGen_2"                      -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkCrcGen_4"                      -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkCrcGen_8"                      -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayAddrSync"       -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayAddrSync_15"    -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayAddrSync_3"     -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayV2"             -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayV2_10"          -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayV2_11"          -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayV2_14"          -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayV2_15"          -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayV2_2"           -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayV2_4"           -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayV2_6"           -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayV2_7"           -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayV2_8"           -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCReplayV2_9"           -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkGenericFCSM_5"                 -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkRxRouter"                      -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkTxLinkLayer"                   -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkTxPstateCtrl"                  -comment "Wlink vendor IP — unmodified"
+waive -du "WlinkTxRouter"                      -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_WavFIFOMem"                   -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_WavFIFOPtrLogic"              -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_WavReplayFIFOPtrLogic"        -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_axi_arFC_a2l_101x8"     -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_axi_arFC_l2a_101x8"     -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_axi_awFC_a2l_101x8"     -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_axi_awFC_l2a_101x8"     -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_axi_bFC_a2l_14x8"       -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_axi_bFC_l2a_14x8"       -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_axi_rFC_a2l_47x32"      -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_axi_rFC_l2a_47x32"      -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_axi_wFC_a2l_37x32"      -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_axi_wFC_l2a_37x32"      -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_generalbus_gb_a2l_32x4" -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_generalbus_gb_l2a_32x4" -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_tidelink_tl_a2l_48x16"  -comment "Wlink vendor IP — unmodified"
+waive -du "wlink_wlink_tidelink_tl_l2a_48x16"  -comment "Wlink vendor IP — unmodified"
+
+# ----------------------------------------------------------------------------
+# DELIBERATELY NOT WAIVED — locally modified, so the vendor justification does
+# not apply.  If any of these reports a CDC violation it is a finding about
+# SoC Labs logic and must be read, not suppressed.  Adding a `-du` line for
+# any name below will fail `gen_tidelink_waivers.py --check`.
+#
+# Wlink hierarchy (patched copies in src/rtl/local_overrides/):
+#   Wlink                            — link top; local PSTATE/obs changes
+#   WlinkRxLinkLayer                 — RX LL; training-filler handling
+#   WlinkGPIOPHY                     — GPIO PHY wrapper
+#   WlinkEccSyndrome                 — ECC syndrome
+#   WlinkGenericFCSM                 — FC state machine  (+_1 _2 _3 _4 _6)
+#   WlinkGenericFCSM_1
+#   WlinkGenericFCSM_2
+#   WlinkGenericFCSM_3
+#   WlinkGenericFCSM_4
+#   WlinkGenericFCSM_6
+#   WlinkGenericFCReplayV2_12        — carries the a2l CDC self-latch fix
+#   WlinkGenericFCReplayV2_13        — carries the a2l CDC self-latch fix
+#   WlinkGenericFCReplayV2_1         — AW/W/B sibling; fix NOT ported. Leaving
+#   WlinkGenericFCReplayV2_3           these unwaived is the whole point: the
+#   WlinkGenericFCReplayV2_5           blanket pattern hid the difference
+#                                      between the fixed and unfixed nodes.
+#   WlinkGenericFCReplayAddrSync_18  — replay address sync
+#   ShortPacketToWlink               — SP adapter, locally modified
+#   TideLinkToWlink                  — TL adapter, locally modified
+#   wlink_wlink_ptp_tl_a2l_48x4      — SoC-Labs-AUTHORED a2l replay memory;
+#                                      no vendor original exists at all
+#
+# Wav primitives (patched copies in src/rtl/local_overrides/):
+#   WavD2DGpio                       — D2D GPIO PHY datapath
+#   WavD2DGpioRx                     — D2D GPIO RX
+#   WavD2DGpioTx                     — D2D GPIO TX
+#   WavMultibitSync_18               — MODIFIED SYNCHRONISER PRIMITIVE. Its
+#                                      unmodified siblings (WavMultibitSync,
+#                                      _15, _3) ARE waived above; this one is
+#                                      not, and must not be.
+# ----------------------------------------------------------------------------
 
 # ============================================================================
 # Third-party IP: Chiplet Controller (axi_chiplet_controller)
@@ -57,13 +225,40 @@ waive -du "wlink_*" -regexp    -comment "Wlink internal modules — Chisel-gener
 # file, so SpyGlass does not elaborate its internals. Port-level clock domains
 # are declared via abstract_port in the SGDC.
 #
-# The -du waivers below are retained as a safety net — they have no effect when
-# the module is black-boxed but will catch violations if stop_module is removed.
-
-waive -du "axi_chiplet_controller" -comment "Chiplet controller wrapper — pre-verified internal CDC"
+# 2026-08-17 — the `-du axi_chiplet_controller` "safety net" REMOVED.
+#
+# The rationale for that waiver was the same false premise as the Wlink block
+# above: "pre-verified internal CDC".  The unit that actually compiles is
+# src/rtl/local_overrides/axi_chiplet_controller.sv, which differs from
+# deps/axi-chiplet-controller/logical/top/axi_chiplet_controller.sv by ~5.4k
+# diff lines and 15 added ports.  It is TideLink-authored integration logic
+# wearing a vendor module name.
+#
+# The waiver was described as inert ("no effect when black-boxed"), and today
+# it is — .prj sets stop_module on this unit.  But its stated purpose was to
+# take effect the moment stop_module is lifted, and that is precisely the run
+# where the modified internals need to be READ, not suppressed.  An inert
+# waiver whose only live case is the wrong answer is worse than none.
+#
+# If a genuinely-vendor sub-unit inside the controller needs waiving after
+# stop_module is lifted, waive that sub-unit by name (the generated list
+# above already covers the unmodified Wlink hierarchy).
+#
+#   waive -du "axi_chiplet_controller"   <- deliberately absent; see above
 
 # I2C sideband controllers (Verilog-RTL I2C from Alex Forencich / Xilinx)
-waive -du "i2c_master"         -comment "Third-party I2C master IP — own CDC not required"
+#
+# `i2c_master` is NOT waived: src/rtl/local_overrides/i2c_master.v is a
+# locally patched copy (19 diff lines vs the vendor file).  Which copy gets
+# compiled is flist-dependent — flists/tidelink_top.flist reads the VENDOR
+# file, flists/tidelink_fpga.flist reads the OVERRIDE — so a name-scoped
+# waiver is sound in one flow and unsound in the other.  Leaving it unwaived
+# over-reports on the tidelink_top flow, which is the safe direction.
+#
+#   waive -du "i2c_master"               <- deliberately absent; see above
+#
+# i2c_master_axil is likewise locally modified (53 diff lines) and likewise
+# unwaived; it never had a waiver.
 waive -du "i2c_master_wbs"     -comment "Third-party I2C master wrapper — Chisel/Bluespec generated"
 waive -du "i2c_slave"          -comment "Third-party I2C slave IP — own CDC not required"
 waive -du "i2c_slave_axil_master" -comment "Third-party I2C slave AXIL wrapper"
@@ -130,8 +325,50 @@ waive -rule SGDC_waive25    -file "waiver.swl" \
       -comment "Pre-existing safety-net waivers for stop_module'd hierarchy"
 waive -rule checkSGDC_01    -file "xhb500.sgdc" \
       -comment "xhb500 current_design auto-migrated — stop_module'd at top"
-waive -rule checkSGDC_05    \
-      -comment "abstract_port auto-migrated for stop_module'd subblocks"
+# 2026-08-17 — checkSGDC_05: global waiver SCOPED to the two sub-block SGDCs.
+#
+# FIRST, A CORRECTION, because the wrong version of this is written down in
+# more than one place in the tree. checkSGDC_05 is NOT the unmatched-
+# abstract_port detector. Per the installed rule documentation
+# ($SPYGLASS_HOME/htmlhelp/spyglass/checkSGDC_05.htm, SpyGlass 2022.06-SP2):
+#
+#     "Checks if constraints are valid for non-top environments. [...] If a
+#      constraint is not effective in a non-top environment, that constraint
+#      is migrated to the top and violation is flagged."
+#
+# That is exactly what this flow does on purpose: axi_chiplet_controller.sgdc
+# and xhb500.sgdc declare constraints under a NON-TOP `current_design`, for
+# blocks that are stop_module'd at the top. SpyGlass migrates them, and
+# flags each migration. So the original justification here — "abstract_port
+# auto-migrated for stop_module'd subblocks" — was ACCURATE, and the waiver
+# was suppressing an expected, benign message rather than hiding drift.
+#
+# The real unmatched-abstract_port detectors are SGDC_abstract_port02
+# ("'<port>' not found on/within module '<module>'") and SGDC_abstract_port21.
+# Neither is waived anywhere in this file, or anywhere in this tree. They are
+# live and must stay live: SGDC_abstract_port02 is FATAL in this flow (exit
+# code 7, a run that reports "0 clocks / 0 crossings" and reads like a tool
+# fault), and that is a feature — it makes a stale port name impossible to
+# ignore. NOTHING in this file may ever waive them.
+#
+# WHAT IS ACTUALLY BEING FIXED, THEN. The waiver was global and unscoped: it
+# silenced checkSGDC_05 for the top-level SGDC too, where a migration message
+# would NOT be expected and would be worth reading. Scoping it to the two
+# files whose whole purpose is non-top constraint declaration keeps the noise
+# suppressed and the signal live.
+#
+# AND THE HONEST LIMIT. Neither rule — nor any rule — catches the drift that
+# actually recurred here. SGDC_abstract_port02/21 fire on a declaration
+# pointing at a name that no longer exists. An OMITTED port (apb_ctrl_reg_rf,
+# and eleven others) produces no declaration at all, so there is nothing for
+# them to check; the port simply gets defaulted. That direction is only
+# reachable by comparing the SGDC against the real port list, which is what
+# scripts/cdc/sgdc_port_drift.py does — statically, in both directions, with
+# no licence. Treat that script as the standing guard, not this rule.
+waive -rule checkSGDC_05 -file "axi_chiplet_controller.sgdc" \
+      -comment "Non-top current_design by design — stop_module'd block, constraints legitimately migrate to top"
+waive -rule checkSGDC_05 -file "xhb500.sgdc" \
+      -comment "Non-top current_design by design — stop_module'd block, constraints legitimately migrate to top"
 waive -rule Ac_clockperiod01 \
       -comment "Edge-List autocompleted for async clock groups — no functional impact"
 

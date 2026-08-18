@@ -14,7 +14,12 @@
 #
 #   make control   # unpatched copy  -> write WEDGES (no recovery)  [the bug]
 #   make fix       # patched copy    -> write RECOVERS + double-accept edge case
-#   make all       # both
+#   make both      # control + fix
+#
+# NOTE: the aggregate target is `both`, NOT `all`. cocotb's Makefile.sim defines
+# `all: sim` as the default goal; a user `all:` here would MERGE into it
+# (`all: sim control fix`), so every no-target `$(MAKE)` the control/fix recipes
+# issue would recurse into control/fix. Keeping our own name avoids that.
 # =============================================================================
 SIM             = vcs
 TOPLEVEL_LANG   = verilog
@@ -39,7 +44,10 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 BASE_FLIST  ?= $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist
 SHIM        ?= shim_fix.sv
 LOCAL_FLIST := $(CURDIR)/_gen_$(basename $(notdir $(SHIM))).flist
-_gen := $(shell sed -E 's@.*v2shims/v2_tidelink_top\.sv@$(CURDIR)/$(SHIM)@' $(BASE_FLIST) > $(LOCAL_FLIST))
+# Regenerate ONLY when content changes, so an unchanged flist keeps its mtime and
+# does not needlessly re-trigger the VCS compile (CUSTOM_COMPILE_DEPS below).
+_gen := $(shell _t=$$(mktemp); sed -E 's@.*v2shims/v2_tidelink_top\.sv@$(CURDIR)/$(SHIM)@' $(BASE_FLIST) > $$_t; \
+                if cmp -s $$_t $(LOCAL_FLIST) 2>/dev/null; then rm -f $$_t; else mv $$_t $(LOCAL_FLIST); fi)
 COMPILE_ARGS += -f $(LOCAL_FLIST)
 
 # Same tb config the recovery suite compiles with.
@@ -61,7 +69,7 @@ CUSTOM_COMPILE_DEPS += $(_flist_deps)
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
-.PHONY: control fix all clean_builds
+.PHONY: control fix both clean_builds
 
 # CONTROL — unpatched copy: the write must WEDGE (hreadyout stuck 0).
 control:
@@ -80,7 +88,7 @@ fix:
 	        MODULE=test_tl042_awwedge \
 	        TESTCASE=test_fix_double_accept_masked
 
-all: control fix
+both: control fix
 
 clean_builds:
 	rm -rf $(CURDIR)/sim_build_ctrl $(CURDIR)/sim_build_fix $(CURDIR)/_gen_*.flist

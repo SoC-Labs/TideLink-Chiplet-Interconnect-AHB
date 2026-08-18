@@ -1475,16 +1475,27 @@ async def test_11_credit_survives_enable_dip(dut):
     # Ring a batch of doorbells M->S; the receiver acc must increment (delivery
     # survives). Clear-first (read-to-clear), ring K, then read one increment.
     K = 6
+    # SETTLE BUDGET SCALES WITH THE D2D RATE. These waits are in HCLK cycles but
+    # what they are actually waiting for is a doorbell to cross the LINK, and the
+    # link word clock is hclk/(16*div). A fixed 150/600 silently encodes "div==1":
+    # at /4 the same wait is a quarter of the link cycles and the accumulator is
+    # read before delivery completes. Measured: this test was the ONLY failure at
+    # /4 and /8, and it failed with fe_rx_credit_max=0x1f and fe_rx_is_full=0 —
+    # i.e. a healthy ring, which its own assertions above had just proved.
+    _div = 1 << int(tb.dut.link_div_ratio.value)
     await tb.s_apb.read(APB_DOORBELL_RESP_ACC)   # clear receiver acc
     await ClockCycles(tb.dut.hclk, 20)
     for _ in range(K):
         await tb.m_apb.write(APB_DOORBELL, 1)
-        await ClockCycles(tb.dut.hclk, 150)
-    await ClockCycles(tb.dut.hclk, 600)
+        await ClockCycles(tb.dut.hclk, 150 * _div)
+    await ClockCycles(tb.dut.hclk, 600 * _div)
     s_acc = await tb.s_apb.read(APB_DOORBELL_RESP_ACC)
     tb.log.info(f"  post-dip M->S doorbell batch ({K} rings): "
                 f"slave DOORBELL_RESP_ACC = {s_acc}")
     assert s_acc > 0, (
         f"post-dip M->S sustained delivery STALLED: slave "
-        f"DOORBELL_RESP_ACC={s_acc} after {K} doorbell rings. The enable dip "
-        "collapsed the credit ring (Bug-C re-zero) so no data crosses the link.")
+        f"DOORBELL_RESP_ACC={s_acc} after {K} doorbell rings at /{_div}. "
+        "NOTE the credit-ring assertions above have already passed, so this is "
+        "NOT the Bug-C re-zero they guard: the ring is healthy and something "
+        "downstream of it is not delivering. Check the settle budget above "
+        "before blaming the ring.")

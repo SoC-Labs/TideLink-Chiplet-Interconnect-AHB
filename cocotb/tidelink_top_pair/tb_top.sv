@@ -172,6 +172,30 @@ module tb_top #(
     logic poresetn = 1'b0;
     logic hresetn  = 1'b0;
 
+    // ── D2D link-clock divider ratio (tidelink_link_clk_div) ──────────────
+    // 0=/1 bypass, 1=/2, 2=/4, 3=/8, 4=/16. Forwarded to BOTH dies so the
+    // link stays symmetric — a divided TX on one side only would also work
+    // (the far RX is rate-agnostic by construction) but that is a different
+    // experiment and is not what this signal is for.
+    //
+    // DEFAULT 3'd0 ON PURPOSE: /1 bypass is bit-identical to the pre-divider
+    // clock path, so every existing test in this directory is unaffected.
+    // cocotb drives it before POR release to run the link at a lower rate.
+    logic [2:0] link_div_ratio = 3'd0;
+    initial begin
+        int _r;
+        // +LINK_DIV_RATIO=<n> lets ANY existing test in this directory run at a
+        // lower D2D rate without being modified. That is the point: the
+        // strongest evidence that a divided link works is the full autonomous
+        // bring-up test passing unchanged at /2 and /4, not a new bespoke test
+        // that only exercises what its author thought to check.
+        if ($value$plusargs("LINK_DIV_RATIO=%0d", _r)) begin
+            link_div_ratio = _r[2:0];
+            $display("[tb_top] LINK_DIV_RATIO=%0d (D2D rate = ref_clk/%0d)",
+                     _r, (1 << _r));
+        end
+    end
+
     // ── I2 per-die POR skew injection (PLAN_TIDELINK_INTEGRATION §3 I2) ──
     // cocotb holds {m,s}_por_gate low to delay one die's reset release
     // relative to the other (asymmetric-POR / deploy-skew emulation,
@@ -527,6 +551,7 @@ module tb_top #(
 
         // Wlink PLL reference
         .user_ref_clk      (ref_clk),
+        .link_clk_div_ratio_i (link_div_ratio),
 
         // PHY pads — cross-wired via skid blocks (gated to 0 while the
         // driving die is held in reset — see I2 POR-skew block above)
@@ -748,6 +773,7 @@ module tb_top #(
         .scan_out          (/* unused */),
 
         .user_ref_clk      (ref_clk),
+        .link_clk_div_ratio_i (link_div_ratio),
 
         .pad_clk_tx        (s_pad_clk_tx),
         .pad_tx            (s_pad_tx),

@@ -1527,45 +1527,69 @@ bugs:
   - id: TL-037
     title: No AXI firewall / AXI timeout on the cross-die write path (PS hard-hangs, no recovery)
     severity: high
-    area: fpga/integration
-    status: open
+    area: rtl/tidelink_top          # CORRECTED 2026-08-17 (was: fpga/integration)
+    status: sim_proven              # CORRECTED 2026-08-17 (was: open) — fix proven via an out-of-tree patch, NOT applied to tracked RTL, needs sign-off to land. NOT "fixed": no board touched, no synthesis check.
     summary: >
-      A wedged cross-die write hangs the PS AXI bus with NO software-visible
+      A wedged cross-die write/read hangs the PS AXI bus with NO software-visible
       timeout: the store never returns, ssh dies at 60 s, and recovery is
-      JTAG-POR ONLY. There is no AXI Firewall / AXI Timeout IP in the block
-      design to terminate the stalled transaction and return a DECERR, so a
-      single lost B response escalates from "one failed write" to "board
-      unreachable, POR required". This is a PRE-EXISTING documented proposal
-      (docs/AXI_DATANODE_RECOVERY_AMPLIFIER_SOUND_2026_08_01.md:160,210,287)
-      that was never given a registry id — grep of the registry for
-      `firewall|axi timeout` returns nothing.
+      JTAG-POR ONLY. The original framing was "no AXI Firewall / AXI Timeout IP
+      in the block design" — still TRUE and still absent (grep of the whole repo
+      for `axi_firewall|axi_timeout|firewall` returns zero instantiations,
+      only prose) — but a 2026-08-14 investigation
+      (imp/hw_gate/tl037/TL037_RESULT_2026_08_14.md, test commit 2c2f8d4) found
+      that framing INCOMPLETE: src/rtl/tidelink_top.sv already contains the
+      timeout mechanism this bug asks for, and it is dead for the case that
+      actually matters. See root_cause below.
     root_cause: >
-      Not an RTL defect: an integration/survivability gap. The AXI interconnect
-      between the PS master and the TideLink peer window has no timeout
-      terminator, so a far-side stall propagates all the way back into a
-      non-interruptible PS store.
+      CORRECTED 2026-08-17 (was: "Not an RTL defect... integration/survivability
+      gap" — WRONG, and self-contradicted this same entry's own
+      fix.netlist_affecting: true). This IS an RTL defect in tidelink_top.sv's
+      shared ahb_sub backstop logic, not merely an absent block-design IP. Both
+      AHB-ERROR fire sites (per-beat stall :1636-1645, I5 outstanding-timeout
+      :1669-1696) are gated on sub_rd_os_r, and the synth-B write drain (:1856)
+      is gated on sub_wr_os_ctr != 0 — so a transfer that stalls INSIDE XHB500
+      BEFORE its AW/AR ever reaches s_axi (sub_rd_os_r/sub_wr_os_ctr never go
+      high) is covered by NONE of the three mechanisms: the per-beat timer runs
+      to expiry, resets itself, and fires nothing, forever — ahb_sub_hreadyout
+      stays low and the PS access never returns. Reachable immediately after ANY
+      backstop (including N1's, fixed @e008c58) successfully rescues one
+      transaction: on a wedged link you get exactly one recoverable bus error,
+      then every access after it hangs unbounded again.
     fix:
       approach: >
-        Instantiate AXI Firewall (or AXI Timeout) on the PS->peer-window path in
-        the eth-chiplet block design; program a bounded timeout; return DECERR on
-        expiry so the PS store completes and Linux survives. Pair with the
-        existing synth-B drain so the bridge also re-idles.
-      files: [fpga/targets/kr260-eth-chiplet]
+        RTL fix in tidelink_top.sv (a terminal pre-acceptance timeout covering
+        the stall window the existing backstops miss) — sim-proven with a
+        non-vacuous A/B in both directions, and reproduced under ASIC_MIRROR=1
+        (the shipping ASIC-V2 wlink error-path combination: same
+        HANG-without-fix / ERROR-with-fix result, byte-identical counters). NOT
+        YET APPLIED to the tracked RTL — exists only as an out-of-tree patch
+        pending review/sign-off to land. Full writeup:
+        imp/hw_gate/tl037/TL037_RESULT_2026_08_14.md.
+      files: [src/rtl/tidelink_top.sv]
       commit: null
       branch: null
       netlist_affecting: true
+      patch: imp/hw_gate/tl037/tl037_fix_ahb_sub_terminal_timeout.patch
     caveats:
-      - "SURVIVABILITY MITIGATION, NOT A ROOT-CAUSE FIX — it converts a hard hang into a reported error; the write is still lost."
-      - "FPGA-ONLY (PL block design). Does NOT help the ASIC, where the same stall must be handled in RTL. Do not let it mask TL-035/TL-009 on the tapeout trunk."
-    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
+      - "CORRECTED 2026-08-17 (was: 'FPGA-ONLY (PL block design). Does NOT help the ASIC' — WRONG). NETLIST-AFFECTING AND ASIC-RELEVANT: the fix lives in tidelink_top.sv, present in both flists/tidelink_fpga_v2.flist and flists/tidelink_top_full_asic_v2.flist. It matters MORE on the ASIC, where the ASIC flist strips the recovery-FCSM deps copies (07-29 decision) so these tidelink_top ahb_sub backstops are the ONLY recovery left on this path."
+      - "The absent FPGA AXI Firewall / AXI Timeout IP is still worth adding as defence in depth for anything upstream of tidelink_top (PS smartconnect / axi_ahblite_bridge), but it is no longer the only mitigation and is no longer a reason to treat TL-037 as out of ASIC scope."
+      - "NOT LANDED. Sim-proven only (test_tl037_ahb_sub_terminal_timeout.py) — no board touched, no synthesis/timing/area check, and the fix patch has not been applied to the tracked src/rtl/tidelink_top.sv. Do not read status:sim_proven as fixed."
+    verification:
+      sim_test: cocotb/tidelink_axi_datanode_recovery/test_tl037_ahb_sub_terminal_timeout.py
+      in_sim_gate: false
+      hw_tested: false
     signoff:
       claude_verdict: >
-        Real, valuable for rig throughput (removes the JTAG-POR-per-wedge tax
-        that has been costing whole sessions), but explicitly NOT a substitute
-        for the root-cause fix and NOT applicable to silicon.
-      evidence: ["docs/AXI_DATANODE_RECOVERY_AMPLIFIER_SOUND_2026_08_01.md:160,210,287", "registry grep firewall|axi timeout = 0 hits"]
+        Real and still open. The registry's original root_cause and FPGA-only
+        caveat were wrong and self-contradicted the entry's own
+        netlist_affecting: true — corrected 2026-08-17 per
+        imp/hw_gate/tl037/TL037_RESULT_2026_08_14.md. The fix is sim-proven
+        (including under ASIC_MIRROR=1) but NOT applied to tracked RTL and NOT
+        hardware-tested; do not mark this fixed until it lands and is
+        HW-validated.
+      evidence: ["imp/hw_gate/tl037/TL037_RESULT_2026_08_14.md", "commit 2c2f8d4 (test(tl037): reproduce the terminal-timeout gap; registry root-cause is wrong)", "imp/hw_gate/n1_repro/N1_SIM_RESULT_2026_08_14.md §6"]
       approved: false
-    related: [TL-035, TL-009, TL-005]
+    related: [TL-035, TL-009, TL-005, TL-042, N1]
 
   # ---------------------------------------------------------------------------
   - id: TL-038

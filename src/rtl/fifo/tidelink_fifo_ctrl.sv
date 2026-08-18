@@ -188,6 +188,45 @@ module tidelink_fifo_ctrl #(
     assign read_complete  = valid_ahb_access && read_packet_active_r && (haddr == read_target_addr_r) && ~hwrite;
 
     // -------------------------------------------------------------------------
+    // Credit-legitimacy detector (N3 FIX, 2026-08-17, Hazard 4) — declared
+    // HERE (ahead of the Pointer Management always_comb below, which now
+    // consumes read_would_overmint) rather than down in the "Credit Counter"
+    // section where credit_after_write/credit_sum conceptually belong: VCS
+    // requires an identifier referenced inside an always_comb to be declared
+    // textually ahead of that block, not merely ahead of its own section.
+    // -------------------------------------------------------------------------
+
+    // BUG-002 fix: saturate at zero to prevent unsigned underflow wrap
+    wire [RAM_ADDR_W-2:0] credit_after_write =
+        write_complete
+            ? ((credit_count_r >= (RAM_ADDR_W-1)'(write_packet_delta))
+                ? credit_count_r - (RAM_ADDR_W-1)'(write_packet_delta)
+                : '0)
+            : credit_count_r;
+
+    // Credit + delta at FULL RAM_ADDR_W width, for the saturate-at-MAX compare
+    // below. credit_after_write <= 2^13-1 and read_packet_delta <= 2^12, so
+    // this cannot overflow RAM_ADDR_W=14 bits. Declared at module scope (not
+    // inside the always_comb): a declaration in an unnamed procedural block
+    // is not portable across synthesis tools, and this file is compiled by
+    // both the FPGA and the ASIC flows.
+    wire [RAM_ADDR_W-1:0] credit_sum = RAM_ADDR_W'(credit_after_write) + read_packet_delta;
+
+    // N3 FIX (2026-08-17, Hazard 4) — the credit-legitimacy clamp in the
+    // Credit Counter section below (credit_sum > MAX_CREDITS) already PROVES,
+    // by its own comment, that this read_complete cannot correspond to a
+    // packet the write side ever actually finished committing (real-world
+    // trigger: tidelink_fc_adapter.sv TX_STALL_TIMEOUT abandoning an
+    // in-flight beat with an AHB ERROR). Prior to this fix that detection
+    // clamped the REPORTED credit but never stopped the read POINTER from
+    // advancing -- so a truncated packet left read_ptr permanently drifted
+    // from write_ptr while credit still read "numerically legal", and the
+    // very next legitimate packet came back as all-zero words (PKT_LEN=0x0).
+    // Reused below (Pointer Management) to gate the pointer move on the exact
+    // same predicate.
+    wire read_would_overmint = (credit_sum > RAM_ADDR_W'(unsigned'(MAX_CREDITS)));
+
+    // -------------------------------------------------------------------------
     // Pointer Management and Address Translation
     // -------------------------------------------------------------------------
     always_comb begin
@@ -199,7 +238,21 @@ module tidelink_fifo_ctrl #(
         if (write_complete) begin
             write_ptr_nxt = write_ptr_r + RAM_ADDR_W'(write_packet_delta << 2);
         end
-        if (read_complete) begin
+        // N3 FIX (2026-08-17) — do not advance the pointer on a PHANTOM
+        // read_complete. read_would_overmint (declared next to credit_sum,
+        // below) is the exact same "would this read_complete legitimately
+        // mint credit above MAX_CREDITS" detector the credit clamp already
+        // uses -- per that clamp's own comment, credit_sum can only exceed
+        // MAX_CREDITS if this read_complete does NOT correspond to a packet
+        // the write side ever actually finished committing (e.g. the
+        // TX_STALL_TIMEOUT-abandoned beat scenario documented there). Until
+        // this fix, the clamp caught the bad credit value but the pointer
+        // moved anyway -- read_ptr drifted away from write_ptr, silently
+        // misaligning every subsequent legitimate packet's aperture. INERT ON
+        // THE HEALTHY PATH for the identical reason the clamp is: on a
+        // correct exchange credit_sum never reaches MAX_CREDITS, so
+        // read_would_overmint is never true and this term is always 1.
+        if (read_complete && !read_would_overmint) begin
             read_ptr_nxt = read_ptr_r + RAM_ADDR_W'(read_packet_delta << 2);
         end
     end
@@ -439,22 +492,12 @@ module tidelink_fifo_ctrl #(
     // read_complete's, rather than the two being mutually exclusive branches
     // of one if/else-if — so a same-cycle write+read updates credit correctly
     // in both directions instead of silently dropping one of them.
-
-    // BUG-002 fix: saturate at zero to prevent unsigned underflow wrap
-    wire [RAM_ADDR_W-2:0] credit_after_write =
-        write_complete
-            ? ((credit_count_r >= (RAM_ADDR_W-1)'(write_packet_delta))
-                ? credit_count_r - (RAM_ADDR_W-1)'(write_packet_delta)
-                : '0)
-            : credit_count_r;
-
-    // Credit + delta at FULL RAM_ADDR_W width, for the saturate-at-MAX compare
-    // below. credit_after_write <= 2^13-1 and read_packet_delta <= 2^12, so
-    // this cannot overflow RAM_ADDR_W=14 bits. Declared at module scope (not
-    // inside the always_comb): a declaration in an unnamed procedural block
-    // is not portable across synthesis tools, and this file is compiled by
-    // both the FPGA and the ASIC flows.
-    wire [RAM_ADDR_W-1:0] credit_sum = RAM_ADDR_W'(credit_after_write) + read_packet_delta;
+    //
+    // credit_after_write / credit_sum / read_would_overmint are declared
+    // ABOVE, next to write_packet_delta/read_packet_delta (N3 FIX, 2026-08-17)
+    // — the Pointer Management always_comb block now also consumes
+    // read_would_overmint, and VCS requires the identifier declared ahead of
+    // that use, not just ahead of this section.
 
     always_comb begin
         credit_count_nxt = credit_after_write;

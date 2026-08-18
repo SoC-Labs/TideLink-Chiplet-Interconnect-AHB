@@ -281,15 +281,16 @@ define sim_gate_run
 endef
 
 .PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
-	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 sim_gate_retire_plumb sim_gate_fifo_twin2_tree \
+	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 sim_gate_ptp_link_sync sim_gate_retire_plumb sim_gate_fifo_twin2_tree \
 	sim_gate_v2_perf sim_gate_v2_reduced_lane sim_gate_v2_fc_contiguous sim_gate_epoch_silicon \
 	sim_gate_epoch_anchor_plumb \
-	sim_gate_v2_sustained sim_gate_v2_trunc_credit \
+	sim_gate_v2_sustained sim_gate_v2_trunc_credit sim_gate_v2_trunc_aperture \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_fifo_randinit sim_gate_v1elab \
 	sim_gate_force_recal sim_gate_dftelab \
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen sim_gate_txgen_ext_hijack \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
 	sim_gate_axi_datanode_recovery sim_gate_axi_datanode_gaps \
+	sim_gate_n1_read_backstop \
 	sim_gate_axinode_obs \
 	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write \
 	sim_gate_v2_mbox_writeprotect \
@@ -360,6 +361,22 @@ sim_gate_t30:
 	$(call sim_gate_run,t30_autonomous_fc_handoff,\
 	  cd cocotb/tidelink_top_pair && $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_30_autonomous_fc_handoff)
 
+# --- Two-board PTP convergence (F13, 2026-08-17) -----------------------------
+# A REAL two-PHC sync test: tb_phc_model.sv gives each die a free-running
+# behavioural PHC (phc_locked_i is NOT tied — test_phc_locked_is_real_not_tied
+# proves it tracks a live lock gate), master(GM)/slave(Sub) servos exchange
+# SYNC/DELAY_REQ + FC SIDEBAND timestamps ACROSS THE LINK, and the numeric gate
+# (SERVO_STEP_THRESH_NS = 12000 ns) asserts the servo offset converges and the
+# two PHC counters actually align — not just that PTP registers exist.
+# Existed on disk, invoked from nowhere (no Makefile, no CI, not even listed
+# in docs/SIM_GATE_COVERAGE.md, which mischaracterised two-board PTP
+# convergence as un-sim-able). Confirmed green standalone before wiring
+# (both tests in the module PASS, ~46s real time). Same V2/autonomy build as
+# t30/t31 (SIM_GATE_TP_ENV), so it shares the sim_build_l4 compile.
+sim_gate_ptp_link_sync:
+	$(call sim_gate_run,ptp_link_sync,\
+	  cd cocotb/tidelink_top_pair && $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_ptp_link_sync)
+
 # --- PS-facing APB safety (2026-07-09) ---------------------------------------
 # Both of these lock a bug class that HANGS the Zynq PS: the CPU's M_AXI_GP has
 # no transaction timeout, so any APB access that never gets pready wedges the
@@ -411,6 +428,20 @@ sim_gate_v2_sustained:
 sim_gate_v2_trunc_credit:
 	$(call sim_gate_run,v2_truncated_pkt_credit,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_truncated_pkt_credit)
+
+# N3 / "Hazard 4" — read_ptr aperture drift (2026-08-17). Sibling of
+# sim_gate_v2_trunc_credit, SAME truncated-packet stimulus: proves the
+# read-pointer advance is now gated on the same credit-legitimacy clamp
+# (read_would_overmint) the credit ceiling above already uses, so a
+# never-committed (truncated) packet's phantom read_complete cannot drift
+# read_ptr away from write_ptr. The credit test alone did NOT catch this --
+# credit reads "numerically legal" while the pointer still silently moves --
+# so this suite additionally asserts the very next legitimate packet comes
+# back 100% byte-exact with a correct non-zero PKT_LEN, the actual observable
+# consequence (pre-fix: all-zero words, PKT_LEN=0x0).
+sim_gate_v2_trunc_aperture:
+	$(call sim_gate_run,v2_truncated_pkt_aperture_offset,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=zero MODULE=test_v2_truncated_pkt_aperture_offset)
 
 sim_gate_v2_syncdet:
 	$(call sim_gate_run,v2_autonomous_sync_detect,\
@@ -773,7 +804,8 @@ sim_gate_axi_datanode_recovery:
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_b_soak_multi_drain && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_bid_corrupt_wedges_no_fix && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_axirec TESTCASE=test_axi_bid_corrupt_recovers_fixk && \
-	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery writehold)
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery writehold && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery wrhold_drain_guard)
 
 # ── AXI data-node COVERAGE GAPS (2026-08-02) ─────────────────────────────────
 # Closes two holes the B-node suite above left open, found reviewing the
@@ -799,18 +831,92 @@ sim_gate_axi_datanode_recovery:
 #         differs ONLY in the crc_on argument, so it is its own non-vacuity
 #         control. This is what makes TL-018's severity argument measured
 #         rather than asserted — it must RUN, not merely exist.
+#  GAP-4  TL-037 ahb_sub TERMINAL TIMEOUT (added 2026-08-17). Every recovery on
+#         this port needs the stalled transfer already counted outstanding
+#         (sub_rd_os_r / sub_wr_os_ctr); XHB500 can stall BEFORE that
+#         acceptance — reachable the instant any earlier backstop (N1
+#         included) rescues a transaction whose remote response never
+#         returns — and the per-beat stall timer then expires into a dead gate
+#         forever. `gaps_tl037` proves the CONTROL (first stuck read IS
+#         bounded), the PRIMARY A/B for both read and write (second access
+#         hangs pre-fix, bounded post-fix), and the escape-vs-safety bar
+#         (fires, clears, normal path survives) against the fix in
+#         imp/hw_gate/tl037/tl037_fix_ahb_sub_terminal_timeout.patch.
 #
 # Two sim_builds: the GAP-2 tests need the short (2^13) I5 outstanding timeout
 # so the backstop fires inside a sim-able window; GAP-1/GAP-3 use the 2^16
 # default (the CRC/NACK path must be what recovers, not a backstop masking it).
+# GAP-4 needs its own sim_build/defines (short stall timeout too).
 sim_gate_axi_datanode_gaps:
 	$(call sim_gate_run,axi_datanode_gaps,\
 	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_gaps_nodes \
-	         cocotb/tidelink_axi_datanode_recovery/sim_build_gaps && \
+	         cocotb/tidelink_axi_datanode_recovery/sim_build_gaps \
+	         cocotb/tidelink_axi_datanode_recovery/sim_build_tl037 && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_nodes && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_backstop && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_ecc && \
-	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_crc)
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_crc && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_tl037)
+
+# ── N1 (TAPEOUT BLOCKER, fixed @e008c58, 2026-08-14) regression ─────────────
+# Both ahb_sub backstops shared ONE age timer (sub_osr_ctr_r) and ONE
+# outstanding predicate, so a COINCIDENT stuck READ + stuck WRITE expired
+# together: the write's synth_b_pending masked the read's 2-cycle AHB ERROR at
+# :1898/:1906 while sub_rd_os_r was cleared UNCONDITIONALLY at :1675 — with
+# both re-fire sites `if (sub_rd_os_r)`, the read could never error again and
+# the PS hung with NO recovery. The fix (e008c58) defers the abandon: keep
+# sub_rd_os_r SET when the ERROR would be masked, so a later timer window
+# delivers it once the synth-B drain retires.
+#
+# Three tests landed by e393ad6 (8 test functions total; only these 4 HARD
+# ASSERT a verdict — the other 4 are explicitly record-only adversarial probes
+# or skip-by-default backup vehicles, so they are deliberately NOT wired here):
+#   test_n1_read_backstop_defeat.py::
+#     test_n1_control_stuck_read_alone_gets_error         CONTROL (non-vacuity):
+#       a stuck read with NO coincident write must still get its ERROR.
+#     test_n1_coincident_stuck_rd_wr_defeats_read_backstop PRIMARY repro: proves
+#       the coincident state is reachable through XHB500 from ordinary posted
+#       (EWR) traffic on a different 4KB page, then measures whether the read
+#       ever completes/errors — this is the N1 finding itself.
+#   test_n1_readbackstop_suppress.py::
+#     test_n1_control_read_backstop_recovers    INDEPENDENT second-session
+#       CONTROL (no exchange with the file above; forces s_axi_arvalid instead
+#       of real AR routing) — same non-vacuity guarantee from an unrelated
+#       construction.
+#   test_n1_fix_recovery_dam.py::
+#     test_n1_coincident_deferred_recovery      Proves the FIX recovers: on the
+#       current (already-fixed) RTL, the coincident read is deferred at the
+#       first expiry, the masking write drains, and HRESP=ERROR is delivered
+#       in a STRICTLY LATER window (EXPECT=recover, the default).
+#
+# All three need the SHORT I5 window (2^13) so the shared timer's expiry is
+# reachable in sim; the two pair_v2_common-based files also gate their own
+# Python-side EXPIRY math on N1_TIMEOUT_LOG2, which MUST match the RTL define
+# (see each file's own docstring). Each TESTCASE is its own sim — a second
+# run_bringup_full() does not re-POR cleanly.
+sim_gate_n1_read_backstop:
+	$(call sim_gate_run,n1_read_backstop,\
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_n1 \
+	         cocotb/tidelink_axi_datanode_recovery/sim_build_n1_suppress \
+	         cocotb/tidelink_axi_datanode_recovery/sim_build_n1_fixrecovery && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_n1 \
+	    EXTRA_DEFINES=+define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=13 \
+	    MODULE=test_n1_read_backstop_defeat \
+	    TESTCASE=test_n1_control_stuck_read_alone_gets_error && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery SIM_BUILD=sim_build_n1 \
+	    EXTRA_DEFINES=+define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=13 \
+	    MODULE=test_n1_read_backstop_defeat \
+	    TESTCASE=test_n1_coincident_stuck_rd_wr_defeats_read_backstop && \
+	  N1_TIMEOUT_LOG2=13 $(MAKE) -C cocotb/tidelink_axi_datanode_recovery \
+	    SIM_BUILD=sim_build_n1_suppress \
+	    EXTRA_DEFINES=+define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=13 \
+	    MODULE=test_n1_readbackstop_suppress \
+	    TESTCASE=test_n1_control_read_backstop_recovers && \
+	  N1_TIMEOUT_LOG2=13 $(MAKE) -C cocotb/tidelink_axi_datanode_recovery \
+	    SIM_BUILD=sim_build_n1_fixrecovery \
+	    EXTRA_DEFINES=+define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=13 \
+	    MODULE=test_n1_fix_recovery_dam \
+	    TESTCASE=test_n1_coincident_deferred_recovery)
 
 # F-1 (KNOWN DEFECT, 2026-08-02): I5's AHB ERROR is driven with NO transfer in
 # its data phase on the POSTED-write path. I5 is deliberately HREADYOUT-blind so
@@ -1436,9 +1542,9 @@ sim_gate_dftelab:
 
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
-	t30_autonomous_fc_handoff v2_pair_data v2_autonomous_sync_detect \
+	t30_autonomous_fc_handoff ptp_link_sync v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon epoch_anchor_plumb \
-	v2_pair_sustained v2_truncated_pkt_credit v2_xhb_lostresp_pipe \
+	v2_pair_sustained v2_truncated_pkt_credit v2_truncated_pkt_aperture_offset v2_xhb_lostresp_pipe \
 	fifo_rx_phantom_pop fifo_rx_randinit v1_elab asic_v1_elab asic_v2_elab dft_wrapper_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
 	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
@@ -1446,7 +1552,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
-	axi_datanode_recovery axi_datanode_gaps \
+	axi_datanode_recovery axi_datanode_gaps n1_read_backstop \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
 	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \
@@ -1460,7 +1566,7 @@ SIM_GATE_SENTINELS := xfail_f14b_datamode_wedge xfail_epoch_shipping_corrector v
 # bench trip, so they run in the QUICK gate too.
 SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
 	v2_autonomous_sync_detect v2_winscan_fsm v2_perf_ctrl v2_reduced_lane \
-	v2_truncated_pkt_credit \
+	v2_truncated_pkt_credit v2_truncated_pkt_aperture_offset \
 	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
 
@@ -1503,6 +1609,9 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@# livelock budget; same FIX2 root cause as v2_mask_hs_regress). Nightly: make sim_gate_t33
 	@#   (docs/WAIVER_TL024_FIX2_MASK_STAGGER.md)
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_t30
+	@# Two-board PTP convergence (F13): real SYNC/DELAY_REQ exchange across the
+	@# link, numeric servo-offset + PHC-skew convergence gate.
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_ptp_link_sync
 	@# NACK-wedge / ACK-drop / state-7 recovery — the two PROVEN-passing recovery
 	@# tests, promoted into the blocking gate 2026-07-29 (test_14 stays out; see
 	@# sim_gate_nack_wedge_sustained). Reuses the t31/t30 sim_build_l4 compile.
@@ -1514,6 +1623,10 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@# pushback): per-node injection on the four nodes only B ever covered,
 	@# plus the I5 backstop-semantics properties that were never asserted.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_axi_datanode_gaps
+	@# N1 (TAPEOUT BLOCKER, fix @e008c58): coincident stuck-read/stuck-write
+	@# regression — the write backstop must no longer permanently mask the
+	@# read backstop's AHB ERROR.
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_n1_read_backstop
 	@# I1 eth-chiplet bring-up regressions (SELF_ARM + FIX-E + isolated-write).
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_i1_selfarm
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_i1_fixe_training_release
@@ -1525,6 +1638,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_aperture
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_xfail_mask_hs
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_winscan
@@ -1586,6 +1700,7 @@ sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_t30
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_aperture
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_syncdet
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_winscan
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_perf

@@ -283,6 +283,13 @@ module tidelink_top #(
     output wire                     ahb_sub_hresp,
     output wire                     ahb_sub_hreadyout,
 
+    // BURST FIX (2026-08-18): per-BEAT W-consumption strobe for the chiplet's
+    // peer-write data-hold re-arm. = internal s_axi_wvalid & s_axi_wready (the
+    // XHB500 u_xhb_sub W handshake). Replaces a downward hierarchical reference
+    // from nanosoc_eth_chiplet into u_tidelink. Plain observability output; no
+    // existing tb wires it (unobserved, not X).
+    output wire                     ahb_sub_w_beat_consumed_o,
+
     // --------------------------------------------------------------------------
     // AHB Subordinate — TideLink TX Aperture
     // (direct to TideLink FC node, same size as remote RX FIFO)
@@ -623,6 +630,12 @@ module tidelink_top #(
     wire         s_axi_wlast;
     wire         s_axi_wvalid;
     wire         s_axi_wready;
+
+    // BURST FIX (2026-08-18): drive the new output from the internal per-beat W
+    // handshake. This is TL-002's own wr_hold_clr WITHOUT the & s_axi_wlast term,
+    // so it strobes on EVERY beat, not just the burst-final one — which is the
+    // whole point: the chiplet's capture must re-arm per beat, not per burst.
+    assign ahb_sub_w_beat_consumed_o = s_axi_wvalid & s_axi_wready;
 
     wire [11:0]  s_axi_bid;         // muxed: controller B, or synthetic SLVERR (F-1/F-2)
     wire  [1:0]  s_axi_bresp;

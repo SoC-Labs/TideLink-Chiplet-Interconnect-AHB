@@ -220,6 +220,16 @@ SIM_GATE_TP_ENV := TIDELINK_PHY_V2=1 BYPASS_AUTONEG=0 TB_TOP_NO_DUMP=1 \
 	EXTRA_DEFINES="+define+TB_TOP_SHORT_CAL_HOLD=64" SIM_BUILD=sim_build_l4 \
 	COCOTB_RESOLVE_X=ZEROS
 
+# Literal-comma helper for $(call ...) arguments: $(call ...) itself splits
+# its argument list on unescaped commas, so a comma-separated value (e.g. a
+# multi-TESTCASE cocotb list) embedded directly in a $(call sim_gate_run,...)
+# argument gets silently truncated at the first comma -- $(comma) defers that
+# comma's appearance until after argument splitting. See sim_gate_v2_auto_
+# anchor's TESTCASE=...$(comma)... below for the one gate target that needs it
+# (2026-08-18; caught by comparing the gate run's TESTS=1 log line against the
+# TESTS=2 line from running the same two TESTCASE names directly, un-nested).
+comma := ,
+
 # $(call sim_gate_run,<suite-name>,<command>) — run one suite, tee-free log
 # capture, never fail the make (the summary decides the exit code).
 #
@@ -284,7 +294,8 @@ endef
 	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write \
 	sim_gate_v2_mbox_writeprotect \
 	sim_gate_calibrator_wrap \
-	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5
+	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5 \
+	sim_gate_v2_auto_anchor
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -1237,6 +1248,37 @@ sim_gate_v2_xhb_lostresp_pipe:
 	    COCOTB_RESULTS_FILE=sim_build_lostresp/res_lostresp.xml \
 	    MODULE=test_v2_xhb_lostresp_pipe)
 
+# HAZARD-3 / N2 fix (2026-08-18): the AUTO_ANCHOR recovery-beacon force term
+# must respect the link layer's own io_link_tx_tx_idle before it can force a
+# SYNC insertion. It used to ride swi_sync_force_always_in unconditionally,
+# collapsing WavD2DGpio_v2.tx_sync_en_w to insert_en alone and dropping BOTH
+# io_link_tx_tx_idle and the postcount==0 serialiser-drain guard -- a live app
+# word mid-shift in the TX serializer could be corrupted. These two tests
+# prove (1) tx_sync_en_w stays low while io_link_tx_tx_idle is hierarchically
+# forced 0, with insertion able to resume once idle genuinely returns, and
+# (2) a continuous hierarchical monitor across an end-to-end burst never
+# samples tx_sync_en_w high while io_link_tx_tx_idle==0 on either die.
+# AUTO_ANCHOR=1 is REQUIRED (the beacon must actually be able to go live);
+# EPOCH_PROFILE=zero matches test_auto_anchor_no_word_loss_during_burst's
+# existing config -- own SIM_BUILD (_autoanchor key, cocotb/tidelink_top_
+# pair_v2/Makefile) so this never shares a compile with an AUTO_ANCHOR=0
+# suite at the same EPOCH_PROFILE (this project has been bitten by exactly
+# that class of sim_build collision before). NOT run under EPOCH_PROFILE=
+# staircase here: test_v2_auto_anchor.py's module docstring documents a
+# measured, disclosed regression in the PRE-EXISTING test_auto_anchor_
+# delivers_under_skew under that profile (io_link_tx_tx_idle never reads 1
+# under that specific severe-skew stress scenario, so the now-idle-qualified
+# beacon cannot fire there) -- that test was not wired into sim_gate before
+# this fix either, and fixing it is dedicated follow-up work + HW validation,
+# out of scope here.
+sim_gate_v2_auto_anchor:
+	$(call sim_gate_run,v2_auto_anchor,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 AUTO_ANCHOR=1 EPOCH_PROFILE=zero \
+	    SIM_BUILD=sim_build_zero_autoanchor \
+	    COCOTB_RESULTS_FILE=sim_build_zero_autoanchor/res_auto_anchor.xml \
+	    MODULE=test_v2_auto_anchor \
+	    TESTCASE=test_auto_anchor_force_respects_tx_idle_forced$(comma)test_auto_anchor_no_corruption_word_boundary_forced)
+
 # Anti-vacuous wiring cross-check (2026-07-30): fails if any suite in
 # SIM_GATE_ALL_SUITES / SIM_GATE_SENTINELS is SCORED by the summary but never
 # INVOKED by the sim_gate recipe (the "gate green on another branch's run"
@@ -1407,7 +1449,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	axi_datanode_recovery axi_datanode_gaps \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
-	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5
+	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \
+	v2_auto_anchor
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -1477,6 +1520,8 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_isolated_write
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_mbox_writeprotect
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_xhb_lostresp_pipe
+	@# HAZARD-3 / N2 fix: AUTO_ANCHOR beacon force must respect io_link_tx_tx_idle.
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_auto_anchor
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

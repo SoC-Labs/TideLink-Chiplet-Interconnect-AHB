@@ -73,6 +73,19 @@ module tb_top #(
     logic poresetn = 1'b0;
     logic hresetn  = 1'b0;
 
+    // D2D link-clock divider ratio — same hook as cocotb/tidelink_top_pair.
+    // NOTE this tb is a SEPARATE COPY of that one; patching there does not
+    // reach here (the duplicate-copies trap). Default 3'd0 = /1 bypass, so
+    // every existing skew test is unaffected.
+    logic [2:0] link_div_ratio = 3'd0;
+    initial begin
+        int _r;
+        if ($value$plusargs("LINK_DIV_RATIO=%0d", _r)) begin
+            link_div_ratio = _r[2:0];
+            $display("[tb_top] LINK_DIV_RATIO=%0d (D2D rate = ref_clk/%0d)", _r, (1 << _r));
+        end
+    end
+
     // Per-side debug strap (cocotb drives high to ungate slave APB writes
     // before role_lock — same role as fpga gpio 0x44041000).
     logic m_apb_debug_unlock = 1'b1;
@@ -330,6 +343,7 @@ module tb_top #(
 
         // Wlink PLL reference
         .user_ref_clk      (ref_clk),
+        .link_clk_div_ratio_i (link_div_ratio),
 
         // PHY pads — cross-wired via skid blocks
         .pad_clk_tx        (m_pad_clk_tx),
@@ -544,6 +558,7 @@ module tb_top #(
         .scan_out          (/* unused */),
 
         .user_ref_clk      (ref_clk),
+        .link_clk_div_ratio_i (link_div_ratio),
 
         .pad_clk_tx        (s_pad_clk_tx),
         .pad_tx            (s_pad_tx),

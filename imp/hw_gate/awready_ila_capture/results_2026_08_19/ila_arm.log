@@ -1,0 +1,126 @@
+
+****** Vivado v2025.2 (64-bit)
+  **** SW Build 6299465 on Fri Nov 14 12:34:56 MST 2025
+  **** IP Build 6300035 on Fri Nov 14 10:48:45 MST 2025
+  **** SharedData Build 6298862 on Thu Nov 13 04:50:51 MST 2025
+  **** Start of session at: Wed Aug 19 10:21:20 2026
+    ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+    ** Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+
+source /tmp/ila_capture_awready.tcl
+# set TGT localhost:3121/xilinx_tcf/Xilinx/XFL1MHS3ZB1PA
+# set LTX /tmp/tidelink_design_wrapper.ltx
+# set CSV /tmp/ila_awready.csv
+# set CSVT /tmp/ila_awready_trig.csv
+# file delete -force /tmp/ila_armed /tmp/ila_done /tmp/ila_fail /tmp/do_capture \
+#                    /tmp/ila_trigged $CSV $CSVT
+# proc fail {msg} { puts "ILA_FAIL: $msg"; exec sh -c "echo '$msg' > /tmp/ila_fail"; exit 1 }
+# if {[catch {
+#   open_hw_manager
+#   connect_hw_server -url localhost:3121
+#   current_hw_target [get_hw_targets $TGT]
+#   set_property PARAM.FREQUENCY 2000000 [current_hw_target]
+#   open_hw_target
+# } err]} { fail "connect/open: $err" }
+INFO: [Labtools 27-2285] Connecting to hw_server url TCP:localhost:3121
+INFO: [Labtools 27-3415] Connecting to cs_server url TCP:localhost:0
+INFO: [Labtools 27-3417] Launching cs_server...
+INFO: [Labtools 27-2221] Launch Output:
+
+
+******** Xilinx cs_server v2025.2.0
+  ****** Build date   : Nov 13 2025-23:16:52
+    **** Build number : 2025.2.1763075812
+      ** Copyright 2017-2022 Xilinx, Inc. All Rights Reserved.
+      ** Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
+
+
+
+INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Xilinx/XFL1MHS3ZB1PA
+# set dev ""
+# foreach d [get_hw_devices] { if {[string match -nocase *xck26* $d]} { set dev $d } }
+# if {$dev eq ""} { set dev [lindex [get_hw_devices] end] }
+# current_hw_device $dev
+# puts "ILA_DEV: $dev"
+ILA_DEV: xck26_0
+# if {[catch {
+#   set_property PROBES.FILE      $LTX $dev
+#   set_property FULL_PROBES.FILE $LTX $dev
+#   refresh_hw_device $dev
+# } err]} { fail "refresh: $err" }
+INFO: [Labtools 27-2302] Device xck26 (JTAG device index = 0) is programmed with a design that has 1 ILA core(s).
+# set ila [lindex [get_hw_ilas -quiet -of_objects $dev] 0]
+# if {$ila eq ""} { fail "no ILA on device" }
+# puts "ILA_CORE: $ila"
+ILA_CORE: hw_ila_1
+# set allp [get_hw_probes -quiet -of_objects $ila]
+# puts "ILA_PROBE_COUNT: [llength $allp]"
+ILA_PROBE_COUNT: 64
+# foreach want {s_axi_awvalid s_axi_awready ahb_sub_hreadyout a2l_full \
+#               ack_nack_fifo_io_rdata ack_nack_fifo_io_rempty isAckPacket isNackPacket \
+#               crcCorruptSeen swi_enable state socl_l7_wdog_cnt link_addr_to_app_clk} {
+#   set p [get_hw_probes -quiet *tidelink_0*${want}* -of_objects $ila]
+#   if {$p eq ""} { puts "ILA_PROBE_MISSING: $want" } else { puts "ILA_PROBE_OK: $want ([llength $p])" }
+# }
+ILA_PROBE_OK: s_axi_awvalid (1)
+ILA_PROBE_OK: s_axi_awready (1)
+ILA_PROBE_OK: ahb_sub_hreadyout (1)
+ILA_PROBE_OK: a2l_full (1)
+ILA_PROBE_OK: ack_nack_fifo_io_rdata (1)
+ILA_PROBE_OK: ack_nack_fifo_io_rempty (1)
+ILA_PROBE_OK: isAckPacket (1)
+ILA_PROBE_OK: isNackPacket (1)
+ILA_PROBE_OK: crcCorruptSeen (1)
+ILA_PROBE_OK: swi_enable (1)
+ILA_PROBE_OK: state (1)
+ILA_PROBE_OK: socl_l7_wdog_cnt (1)
+ILA_PROBE_OK: link_addr_to_app_clk (1)
+# if {[catch { set_property CONTROL.TRIGGER_POSITION 512 $ila } e]} { puts "TRIGPOS_WARN: $e" }
+# if {[catch { set_property CONTROL.DATA_DEPTH 4096 $ila } e]} { puts "DEPTH_WARN: $e" }
+# set pv [get_hw_probes -quiet *tidelink_0*s_axi_awvalid -of_objects $ila]
+# set pr [get_hw_probes -quiet *tidelink_0*s_axi_awready -of_objects $ila]
+# if {[llength $pv] != 1} { fail "awvalid glob matched [llength $pv] probes (need 1): $pv" }
+# if {[llength $pr] != 1} { fail "awready glob matched [llength $pr] probes (need 1): $pr" }
+# if {[catch {
+#   set_property TRIGGER_COMPARE_VALUE eq1'b1 [lindex $pv 0]
+#   set_property TRIGGER_COMPARE_VALUE eq1'b0 [lindex $pr 0]
+# } e]} { fail "trigger set: $e" }
+# puts "ILA_TRIGGER: (awvalid==1 & awready==0) on die_a  [lindex $pv 0] / [lindex $pr 0]"
+ILA_TRIGGER: (awvalid==1 & awready==0) on die_a  tidelink_design_i/tidelink_0/inst/u_tidelink_top/s_axi_awvalid / tidelink_design_i/tidelink_0/inst/u_tidelink_top/s_axi_awready
+# if {[catch { run_hw_ila $ila } err]} { fail "arm: $err" }
+INFO: [Labtools 27-1964] The ILA core 'hw_ila_1' trigger was armed at 2026-Aug-19 10:21:29
+# puts "ILA_ARMED (hands off the core until /tmp/do_capture)"
+ILA_ARMED (hands off the core until /tmp/do_capture)
+# exec sh -c "touch /tmp/ila_armed"
+# set got 0
+# for {set i 0} {$i < 900} {incr i} { if {[file exists /tmp/do_capture]} { set got 1; break }; after 1000 }
+# puts "DO_CAPTURE=$got after ${i}s"
+DO_CAPTURE=1 after 76s
+# set trigged 0
+# set tsize -1
+# if {[catch { upload_hw_ila_data $ila } ue]} {
+#   puts "TRIG_UPLOAD_NOTE: $ue"
+# } else {
+#   if {[catch { write_hw_ila_data -csv_file $CSVT [current_hw_ila_data] } we]} {
+#     puts "TRIG_WRITE_NOTE: $we"
+#   } else {
+#     set tsize [file size $CSVT]
+#     if {$tsize > 20000} { set trigged 1; exec sh -c "touch /tmp/ila_trigged" }
+#   }
+# }
+INFO: [Labtools 27-1965] The ILA core 'hw_ila_1' trigger was stopped by user at 2026-Aug-19 10:22:45
+WARNING: [Labtools 27-157] hw_ila [hw_ila_1] stopped. No data to upload.
+# puts "TRIGGERED=$trigged TRIG_CSV_BYTES=$tsize"
+TRIGGERED=0 TRIG_CSV_BYTES=6713
+# if {[catch { run_hw_ila -trigger_now $ila } e1]} { puts "TRIGGER_NOW_WARN: $e1" }
+INFO: [Labtools 27-1964] The ILA core 'hw_ila_1' trigger was armed at 2026-Aug-19 10:22:45
+# if {[catch { wait_on_hw_ila -timeout 2 $ila } e2]} { puts "WAIT_WARN: $e2" }
+# if {[catch {
+#   upload_hw_ila_data $ila
+#   write_hw_ila_data -csv_file $CSV [current_hw_ila_data]
+# } err]} { fail "upload/write: $err" }
+INFO: [Labtools 27-1966] The ILA core 'hw_ila_1' triggered at 2026-Aug-19 10:22:45
+# exec sh -c "touch /tmp/ila_done"
+# puts "CAPTURE_DONE csv=$CSV trigged=$trigged"
+CAPTURE_DONE csv=/tmp/ila_awready.csv trigged=0
+INFO: [Common 17-206] Exiting Vivado at Wed Aug 19 10:22:46 2026...

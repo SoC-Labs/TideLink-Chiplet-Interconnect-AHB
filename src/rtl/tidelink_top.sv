@@ -1950,14 +1950,51 @@ module tidelink_top #(
     // the I5 outstanding backstop) while its W beat's wready never rises — leaving
     // wr_hold_r stuck and the master stalled even though the I5 synth-B has
     // force-completed the write inside XHB500. Guard against that new hang by ALSO
-    // clearing on synth_b_pending (the ahb_sub backstop force-completing the
-    // write); synth_b_pending only asserts at the ~2^16 I5 timeout, orders of
+    // clearing when the drain force-completes the write (see TL-043 below);
+    // that release only fires deep inside the ~2^16 I5 timeout's drain, orders of
     // magnitude past any legitimate W backpressure, so it NEVER pre-empts the
-    // normal W-handshake clear. (synth_b_pending is a register => invariant kept.)
+    // normal W-handshake clear.
+    //
+    // ── TL-043 FIX (2026-08-18): drain-guard LEVEL blinded every OTHER write ──
+    // The original guard above ORed synth_b_pending straight into wr_hold_clr as a
+    // LEVEL. synth_b_pending is a REGISTER that stays asserted for the WHOLE multi-
+    // cycle synth-B drain (one synthetic OKAY-B per outstanding write until
+    // sub_wr_os_ctr hits 0), not a pulse. Because wr_hold_clr ORed it in directly,
+    // ANY peer write whose address latched (wr_hold_set pulsed) at ANY point while
+    // synth_b_pending==1 had its wr_hold_r driven straight back to 0 the same
+    // cycle it would be set -- defeating the Rank-1 TL-002 data-phase hold
+    // (e28c898) for that write, for the whole drain window, not just the one stuck
+    // write the drain exists to rescue. Reachable from ORDINARY bufferable/EWR
+    // traffic (a stuck write plus any second write), not just a wedged link.
+    // FIX: edge-qualify the release. Re-derive locally (default_nettype none
+    // forbids a forward reference to the "last synthetic B" predicate defined near
+    // synth_b_pending's own clear, below) the SAME condition used to clear
+    // synth_b_pending itself, and OR *that* pulse into wr_hold_clr instead of the
+    // level. The original deadlock guard is preserved (the drain's LAST synthetic
+    // B still releases any write stuck behind a wedged W FC node), but the release
+    // no longer blinds every OTHER write in flight during the drain.
+    // RESIDUAL (disclosed, not chased): a peer write whose address phase latches
+    // on the SAME cycle as the drain's last synthetic B, before its own AW has
+    // reached s_axi, can still see its hold released one cycle early -- a single-
+    // cycle race per drain episode, versus the prior 100%-exposed-for-the-whole-
+    // drain-duration bug.
     logic wr_hold_r;
     wire  wr_hold_set = ext_is_nonseq & ahb_sub_hwrite & ~pipe_valid_r;
+    // Same predicate as the synth_b_pending clear at its own always_ff below
+    // (synth_b_pending & s_axi_bready & (sub_wr_os_ctr <= 3'd1)): fires ONCE, on
+    // the drain's last synthetic B beat, not for the level's whole duration.
+    wire  wr_hold_drain_release = synth_b_pending & s_axi_bready & (sub_wr_os_ctr <= 3'd1);
+`ifdef TIDELINK_WR_HOLD_CLR_LEVEL_MUTANT
+    // Mutation-test build ONLY (cocotb/tidelink_axi_datanode_recovery/
+    // test_tl002_wrhold_drain_guard.py): recreate the pre-fix LEVEL guard so the
+    // new white-box test can be shown to FAIL against it. Never set in the
+    // shipping flow.
     wire  wr_hold_clr = (s_axi_wvalid & s_axi_wready & s_axi_wlast) // W beat landed
-                      | synth_b_pending;                           // backstop drain (guard)
+                      | synth_b_pending;                           // pre-fix LEVEL (bug, TL-043)
+`else
+    wire  wr_hold_clr = (s_axi_wvalid & s_axi_wready & s_axi_wlast) // W beat landed
+                      | wr_hold_drain_release;                     // TL-043: edge-qualified drain release
+`endif
 `ifdef TIDELINK_DISABLE_WR_HOLD
     // Reproduce-first isolation build (throwaway): disable the hold to recover the
     // pre-fix behaviour and prove the new tests FAIL without the fix. Never set in

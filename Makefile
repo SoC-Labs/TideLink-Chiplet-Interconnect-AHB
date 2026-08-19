@@ -802,18 +802,32 @@ sim_gate_axi_datanode_recovery:
 #         differs ONLY in the crc_on argument, so it is its own non-vacuity
 #         control. This is what makes TL-018's severity argument measured
 #         rather than asserted — it must RUN, not merely exist.
+#  GAP-4  TL-037 ahb_sub TERMINAL TIMEOUT (added 2026-08-17). Every recovery on
+#         this port needs the stalled transfer already counted outstanding
+#         (sub_rd_os_r / sub_wr_os_ctr); XHB500 can stall BEFORE that
+#         acceptance — reachable the instant any earlier backstop (N1
+#         included) rescues a transaction whose remote response never
+#         returns — and the per-beat stall timer then expires into a dead gate
+#         forever. `gaps_tl037` proves the CONTROL (first stuck read IS
+#         bounded), the PRIMARY A/B for both read and write (second access
+#         hangs pre-fix, bounded post-fix), and the escape-vs-safety bar
+#         (fires, clears, normal path survives) against the fix in
+#         imp/hw_gate/tl037/tl037_fix_ahb_sub_terminal_timeout.patch.
 #
 # Two sim_builds: the GAP-2 tests need the short (2^13) I5 outstanding timeout
 # so the backstop fires inside a sim-able window; GAP-1/GAP-3 use the 2^16
 # default (the CRC/NACK path must be what recovers, not a backstop masking it).
+# GAP-4 needs its own sim_build/defines (short stall timeout too).
 sim_gate_axi_datanode_gaps:
 	$(call sim_gate_run,axi_datanode_gaps,\
 	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_gaps_nodes \
-	         cocotb/tidelink_axi_datanode_recovery/sim_build_gaps && \
+	         cocotb/tidelink_axi_datanode_recovery/sim_build_gaps \
+	         cocotb/tidelink_axi_datanode_recovery/sim_build_tl037 && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_nodes && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_backstop && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_ecc && \
-	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_crc)
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_crc && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_tl037)
 
 # F-1 (KNOWN DEFECT, 2026-08-02): I5's AHB ERROR is driven with NO transfer in
 # its data phase on the POSTED-write path. I5 is deliberately HREADYOUT-blind so

@@ -1,4 +1,22 @@
 // =============================================================================
+// ##  DO NOT DERIVE A TAPEOUT FLIST FROM THIS FILE.  ##
+//
+// This is the FPGA filelist. It DELIBERATELY re-points WlinkGenericFCSM 0-4
+// from deps/ to src/rtl/local_overrides/ so the FPGA build gets the recovery
+// FCSMs. That re-point is an FPGA-ONLY decision: per the 2026-07-29 hold, the
+// ASIC/tapeout flists keep those five files on the recovery-stripped deps/
+// copies, and that hold was RATIFIED as the tapeout decision on 2026-08-20.
+//
+// A generator that builds a tapeout filelist by reading THIS file silently
+// imports the FPGA choice into a tapeout netlist. That is not hypothetical:
+// the compute chiplet did exactly this (scripts/gen_resolved_flist.py) and
+// inherited the re-point without anyone deciding it. It is invisible in an RTL
+// diff, because the six override files are byte-identical to their deps/
+// counterparts -- it is a FLIST divergence, not an RTL fork, which is why it
+// survives review.
+//
+// The tapeout filelist is  flists/tidelink_top_full_asic_v2.flist.  Use it.
+// =============================================================================
 // tidelink_fpga_v2.flist — S3 PHY-swap build variant (V2) of the FPGA filelist
 //
 // V2 = the NEW shared GPIO-PHY component (deps/tidelink-phy, the

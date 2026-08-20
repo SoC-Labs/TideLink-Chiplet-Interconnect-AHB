@@ -238,7 +238,24 @@ module tidelink_top #(
     // Forwards to axi_chiplet_controller.AUTO_ANCHOR_EN (2026-08-04): on link-up,
     // pulse the SYNC beacon once (TX-idle-gated) to latch the deskew re-anchor on
     // the SELF_ARM path. DEFAULT OFF; nanosoc_eth_chiplet.sv passes 1'b1.
-    parameter bit    AUTO_ANCHOR_EN       = 1'b0
+    parameter bit    AUTO_ANCHOR_EN       = 1'b0,
+    // Link-rate control registers (docs/D2D_RATE_CONTROL_ARCH.md). When 1, the
+    // previously undecoded APB quadrant 11 (apb_paddr[14:13]==2'b11, SoC
+    // 0x2E03_6000 on the ethernet chiplet) is populated with
+    // tidelink_link_rate_regs, and its ratio takes over u_link_clk_div.ratio_i
+    // through a STICKY source mux once software has written CTRL at least once.
+    //
+    // DEFAULT OFF, and the OFF build is behaviourally identical to the build
+    // before this parameter existed: BOTH the register instance AND the source
+    // mux live inside the generate below, so at 1'b0 the divider's ratio_i is
+    // the link_clk_div_ratio_i port itself (a plain alias, no mux), quadrant 11
+    // keeps its old read-as-zero / pready=1 fall-through, and no flop is added.
+    // The feature is NOT confined to that generate, though — apb_sel_rate, the
+    // rate_* response wires and the u_link_clk_div port bindings are at module
+    // scope in both arms. The block comment at g_link_rate_regs enumerates that
+    // residue, says why each item is inert at 1'b0, and says what a real revert
+    // has to touch.
+    parameter bit    LINK_RATE_REGS_PRESENT = 1'b0
 )(
     // --------------------------------------------------------------------------
     // Clock and Reset
@@ -860,11 +877,18 @@ module tidelink_top #(
     //   paddr[14:13] == 00 → Wlink chiplet controller (paddr[12:0])
     //   paddr[14:13] == 01 → TideLink config registers (paddr[11:0])
     //   paddr[14:13] == 10 → Address translator config (paddr[12:0])
-    //   paddr[14:13] == 11 → Reserved
+    //   paddr[14:13] == 11 → Link-rate control registers (paddr[12:0]),
+    //                        populated only when LINK_RATE_REGS_PRESENT=1.
+    //                        With the parameter at its 1'b0 default this
+    //                        quadrant behaves exactly as the "Reserved,
+    //                        undecoded" quadrant it used to be: reads return
+    //                        zero, pready is 1, pslverr is 0 — see the
+    //                        rate_* constant tie-off in the generate below.
     // =========================================================================
     wire apb_sel_wlink     = apb_psel && !apb_paddr[14] && !apb_paddr[13];
     wire apb_sel_tidelink  = apb_psel && !apb_paddr[14] &&  apb_paddr[13];
     wire apb_sel_addr_xlat = apb_psel &&  apb_paddr[14] && !apb_paddr[13];
+    wire apb_sel_rate      = apb_psel &&  apb_paddr[14] &&  apb_paddr[13];
 
     // Wlink APB response signals
     wire [SYS_DATA_W-1:0] wlink_prdata;
@@ -881,16 +905,27 @@ module tidelink_top #(
     wire                   adr_xlat_pready;
     wire                   adr_xlat_pslverr;
 
+    // Link-rate regs APB response signals. Driven either by the register bank
+    // or, at LINK_RATE_REGS_PRESENT=0, by the constants that reproduce the old
+    // undecoded fall-through exactly ('0 / 1'b1 / 1'b0) — see g_link_rate_*
+    // beside u_link_clk_div.
+    wire [SYS_DATA_W-1:0] rate_prdata;
+    wire                   rate_pready;
+    wire                   rate_pslverr;
+
     // Unified APB response mux
     assign apb_prdata  = apb_sel_wlink     ? wlink_prdata     :
                          apb_sel_tidelink  ? tl_regs_prdata   :
-                         apb_sel_addr_xlat ? adr_xlat_prdata   : '0;
+                         apb_sel_addr_xlat ? adr_xlat_prdata  :
+                         apb_sel_rate      ? rate_prdata      : '0;
     assign apb_pready  = apb_sel_wlink     ? wlink_pready     :
                          apb_sel_tidelink  ? tl_regs_pready   :
-                         apb_sel_addr_xlat ? adr_xlat_pready   : 1'b1;
+                         apb_sel_addr_xlat ? adr_xlat_pready  :
+                         apb_sel_rate      ? rate_pready      : 1'b1;
     assign apb_pslverr = apb_sel_wlink     ? wlink_pslverr    :
                          apb_sel_tidelink  ? tl_regs_pslverr  :
-                         apb_sel_addr_xlat ? adr_xlat_pslverr  : 1'b0;
+                         apb_sel_addr_xlat ? adr_xlat_pslverr :
+                         apb_sel_rate      ? rate_pslverr     : 1'b0;
 
     // =========================================================================
     // TideLink config APB mux: 2:1 TRANSACTION-ATOMIC arbiter
@@ -2947,6 +2982,16 @@ module tidelink_top #(
     // hazard pass — it is explicitly NOT claimed by this change.
     wire link_hsclk_w;
 
+    // Ratio actually presented to the divider. At LINK_RATE_REGS_PRESENT=0
+    // this is a plain alias of the link_clk_div_ratio_i port (see
+    // g_link_rate_absent below), so the OFF build has no mux here at all.
+    wire [2:0] link_ratio_sel_w;
+
+    // Divider readback (its clk_in domain). ratio_o is a clamp of the ratio_r
+    // the divider already uses internally, so connecting it costs no logic;
+    // it is resynchronised inside the register bank when that is present.
+    wire [2:0] link_ratio_eff_w;
+
     tidelink_link_clk_div #(
         // /1 bypass out of reset: the shipping configuration stays the one
         // already signed off, and divided modes are opt-in at bring-up.
@@ -2957,11 +3002,129 @@ module tidelink_top #(
         // longer than the fabric's precisely so the PHY survives a warm reset;
         // resetting its reference on hresetn would break that.
         .rst_n      (poresetn),
-        .ratio_i    (link_clk_div_ratio_i),
+        .ratio_i    (link_ratio_sel_w),
         .scan_mode  (scan_mode),
         .clk_out    (link_hsclk_w),
-        .ratio_o    (/* unconnected — readback surfaced by the integration */)
+        .ratio_o    (link_ratio_eff_w)
     );
+
+    // =========================================================================
+    // Link-rate control registers — APB quadrant 11 (docs/D2D_RATE_CONTROL_ARCH.md)
+    // =========================================================================
+    // WHAT IS IN THIS GENERATE, AND WHAT IS NOT. Deleting this generate does NOT
+    // revert the feature. Exactly two things are inside it: the
+    // tidelink_link_rate_regs instance, and the sticky source mux that lets it
+    // own u_link_clk_div.ratio_i. Everything else the feature added sits at
+    // MODULE SCOPE and is elaborated for both arms:
+    //   * the parameter LINK_RATE_REGS_PRESENT itself, in the module header
+    //     — necessarily so;
+    //   * the quadrant-11 decode term `wire apb_sel_rate`, the response wires
+    //     rate_prdata / rate_pready / rate_pslverr, and the three legs that read
+    //     them in the unified APB response mux (`assign apb_prdata` /
+    //     `apb_pready` / `apb_pslverr`, in the "Unified APB address decode"
+    //     block above). A continuous assign cannot be split across a generate,
+    //     so the mux has to name those wires unconditionally; only their DRIVERS
+    //     are per-arm;
+    //   * the declarations of link_ratio_sel_w and link_ratio_eff_w just above,
+    //     and the two u_link_clk_div bindings onto them (.ratio_i was
+    //     link_clk_div_ratio_i; .ratio_o was unconnected). u_link_clk_div is a
+    //     single module-scope instance and has to stay one: its EXACT
+    //     hierarchical path is hard-coded in the chiplet's
+    //     ASIC/genus-innovus/inputs/tidelink_constraints.sdc (set _lcd
+    //     ".../u_tidelink/u_link_clk_div"), and that constraint's guard reads a
+    //     path that does not resolve as "pre-divider netlist" and SKIPS with a
+    //     note rather than erroring. Duplicating the instance per arm would
+    //     insert a g_link_rate_*/ level into that path, so the link-clock
+    //     case-analysis would silently stop being applied while the flow still
+    //     ran green. That is why this residue was left at module scope rather
+    //     than relocated.
+    //
+    // WHY THE RESIDUE IS INERT AT LINK_RATE_REGS_PRESENT=0. The ELSE arm drives
+    // every one of those module-scope nets with a constant or an alias, so the
+    // OFF build is behaviourally identical to the RTL before the feature existed:
+    //   * link_ratio_sel_w = link_clk_div_ratio_i, so ratio_i is the port,
+    //     unmuxed — one alias, no logic, no flop;
+    //   * rate_prdata / rate_pready / rate_pslverr = '0 / 1'b1 / 1'b0, exactly
+    //     the values quadrant 11's old undecoded fall-through produced, so an
+    //     access there still reads zero, acks in one cycle and never errors;
+    //   * link_ratio_eff_w reaches nothing but the lint sink below — .ratio_o is
+    //     a clamp of a flop the divider already had, so wiring it adds no logic;
+    //   * apb_sel_rate is one 3-input AND of nets the decoder already fans out,
+    //     and it steers the mux to those constants and to nothing else.
+    // A full revert is therefore: delete this generate AND the module-scope items
+    // listed above. Deleting the generate alone leaves link_ratio_sel_w and the
+    // rate_* wires with no driver — 'z into the divider's ratio_i and onto the
+    // APB response mux. Lint flags that, but simulation propagates it happily, so
+    // it is a silent functional break, not a revert.
+    //
+    // WRITE WINDOW. role_locked_o is the write gate, not a convenience: a rate
+    // change re-times the transmit side and invalidates the phase offset the
+    // calibrator solved for, so it is legal only while the PHY is still held in
+    // POR. The bank refuses (and records) a CTRL write after role-lock. There
+    // is deliberately NO warm/live change path and NO POR-extension interlock
+    // here — the latter is a separate, separately-reviewed change.
+    //
+    // role_locked_o is an hclk signal: u_chiplet_controller is instantiated
+    // with .apb_clk(hclk) and .app_clk(hclk) below, so no synchroniser is
+    // wanted on it (one would open a post-lock window in which a write is
+    // still accepted — the exact hazard the gate exists to close).
+    if (LINK_RATE_REGS_PRESENT) begin : g_link_rate_regs
+        wire [2:0] rate_ratio_w;
+        wire       rate_src_sticky_w;
+
+        tidelink_link_rate_regs #(
+            // The bank is handed apb_paddr[12:0]; bits [14:13] are already
+            // consumed by apb_sel_rate.
+            .APB_ADDR_W (13),
+            .SYS_DATA_W (SYS_DATA_W)
+        ) u_link_rate_regs (
+            .hclk          (hclk),
+            // hresetn scopes the bank's ratio_eff OBSERVATION pipeline only.
+            .hresetn       (hresetn),
+            // poresetn scopes everything in the bank that DETERMINES the rate
+            // (ratio_req / src_sticky and the stickies describing them). It is
+            // the same reset u_link_clk_div runs on, three lines above, and it
+            // has to be: with those flops on hresetn instead, a warm reset
+            // cleared src_sticky, this mux fell back to link_clk_div_ratio_i,
+            // and the divider — still out of reset, still clocking the PHY —
+            // retimed a LIVE link. See RESET SCOPES in tidelink_link_rate_regs.sv.
+            .poresetn      (poresetn),
+
+            .psel          (apb_sel_rate),
+            .penable       (apb_penable),
+            .pwrite        (apb_pwrite),
+            .paddr         (apb_paddr[12:0]),
+            .pwdata        (apb_pwdata),
+            .pstrb         (apb_pstrb),
+            .prdata        (rate_prdata),
+            .pready        (rate_pready),
+            .pslverr       (rate_pslverr),
+
+            .role_locked_i (role_locked_o),
+            .ratio_eff_i   (link_ratio_eff_w),
+
+            .ratio_o       (rate_ratio_w),
+            .src_sticky_o  (rate_src_sticky_w)
+        );
+
+        // Sticky source mux. The port stays authoritative until software has
+        // written CTRL once; from then on the bank owns the ratio and never
+        // hands it back (a "the strap wins again" transition is a state no
+        // bring-up script could reason about).
+        assign link_ratio_sel_w = rate_src_sticky_w ? rate_ratio_w
+                                                    : link_clk_div_ratio_i;
+    end else begin : g_link_rate_absent
+        assign link_ratio_sel_w = link_clk_div_ratio_i;
+
+        // Quadrant 11 as it was before this feature: undecoded.
+        assign rate_prdata  = {SYS_DATA_W{1'b0}};
+        assign rate_pready  = 1'b1;
+        assign rate_pslverr = 1'b0;
+
+        /* verilator lint_off UNUSED */
+        wire _unused_link_rate = |{link_ratio_eff_w, apb_sel_rate};
+        /* verilator lint_on UNUSED */
+    end
 
     axi_chiplet_controller #(
         // Re-enabled for build #3 (Fix A2 + Fix B per

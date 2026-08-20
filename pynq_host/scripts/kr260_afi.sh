@@ -264,6 +264,48 @@ do_fix() {
         return 0
     fi
 
+    # ── TARGET-CONDITIONAL CANARIES (2026-08-20) ────────────────────────────
+    # The escape above is opt-IN, so a caller who does not already know about
+    # the hazard gets the bare-link addresses and wedges the PS. That is the
+    # documented-and-still-shipped failure: this file has warned about it since
+    # it was written, and it still hung kr260-01 on first use against the
+    # eth-chiplet target. Fail SAFE on an unrecognised target instead: read a
+    # canary only where we know one is decoded.
+    #
+    #   pair-onchip  : CAN_ROLE/CAN_MASK at 0x8403_xxxx  (bare link, as before)
+    #   eth-chiplet  : marker word 0x4_2E03_21F8, top byte 0xB5 — verified
+    #                  answering on silicon 2026-08-19 via the PS backdoor
+    #   unset/other  : SKIP. An unknown target is exactly the case that wedges.
+    case "${KR260_AFI_TARGET:-}" in
+        eth-chiplet|kr260-eth-chiplet*)
+            echo "AFI canaries — eth-chiplet target: reading the Region-F marker"
+            _m=$(dm_read 0x42E0321F8 2>/dev/null || echo "")
+            if [ -n "$_m" ] && [ $(( (_m >> 24) & 0xFF )) -eq 181 ]; then
+                echo "    [PASS] 0x4_2E03_21F8 = ${_m} (marker 0xB5 present)"
+                echo "AFI: FIX OK — both ports 32-bit and the eth-chiplet marker answers."
+            else
+                echo "    [WARN] 0x4_2E03_21F8 did not return the 0xB5 marker (got '${_m:-<none>}')." >&2
+                echo "           Treating as INSTRUMENT-NOT-ANSWERING, not as a DUT failure." >&2
+            fi
+            return 0
+            ;;
+        pair-onchip|kr260-pair-onchip*)
+            : ;;   # fall through to the bare-link canaries below
+        "")
+            echo "AFI: FIX OK — both ports 32-bit; canaries SKIPPED (KR260_AFI_TARGET unset)."
+            echo "     Set KR260_AFI_TARGET=pair-onchip to run the bare-link canaries,"
+            echo "     or =eth-chiplet for the Region-F marker. Skipping because the"
+            echo "     bare-link addresses WEDGE the PS on designs that do not decode"
+            echo "     them, and an unset target cannot be assumed safe."
+            return 0
+            ;;
+        *)
+            echo "AFI: FIX OK — both ports 32-bit; canaries SKIPPED (unknown target"
+            echo "     '${KR260_AFI_TARGET}'). Skipping is deliberate: see above." ;
+            return 0
+            ;;
+    esac
+
     echo
     if ! do_canaries; then
         echo "AFI: CANARY FAILED — widths are 32-bit but the APB canaries are wrong." >&2

@@ -1,0 +1,871 @@
+diff --git a/src/rtl/nanosoc_eth_chiplet.sv b/src/rtl/nanosoc_eth_chiplet.sv
+index 3f08b9c..d559b58 100644
+--- a/src/rtl/nanosoc_eth_chiplet.sv
++++ b/src/rtl/nanosoc_eth_chiplet.sv
+@@ -36,15 +36,53 @@
+ //   instantiated single-port (NUM_PORTS=1) with FC_DATA_W=48.
+ //-----------------------------------------------------------------------------
+ 
++//-----------------------------------------------------------------------------
++// CPU0 (network_core) IMEM preload image — DEFAULT.
++//
++// Overridable three ways, deliberately, because the four consumers of this file
++// each have a different one of them available:
++//
++//   1. leave it alone           -> "image.hex", resolved by $readmemh against
++//                                  the COMPILER's working directory. Both HAPS-SX
++//                                  flows already stage the built firmware there
++//                                  (fpga/haps-sx/Makefile: IMAGE_HEX := $(BUILD)/
++//                                  image.hex, and Vivado/ProtoCompiler are run
++//                                  from $(BUILD)); it also matches the SoC's own
++//                                  default for CC_IMEM_MEM_FPGA_IMG, so CPU0 and
++//                                  CPU1 stay symmetric.
++//   2. +define+NANOSOC_ETH_IMEM_IMG="<path>"   command-line flows.
++//   3. `define NANOSOC_ETH_IMEM_IMG "<path>" prepended to a materialised copy of
++//      this file  -> the ipx::package_project route. A project-level define does
++//      NOT survive packaging as a fileset property, which is why the value used
++//      to be hardcoded here; but an IN-BODY define does, and
++//      tidelink/fpga/vivado_ip/nanosoc_eth_chiplet_filelist.tcl already relies on
++//      exactly that mechanism for `RAM_PRELOAD` (sl_ahb_rom.v) and
++//      `TIDELINK_PHY_V2` (the v2 shims). Same lever, one more file.
++//   4. instance override .ETH_IMEM_IMG("<path>") on the parameter below, for any
++//      flow that instantiates this RTL top directly (the HAPS-SX board top, the
++//      g2_soc_pair bench).
++//
++// NEVER put an absolute path here. It bakes one developer's $HOME into tracked
++// RTL that the ASIC filelist compiles, so a clone anywhere else silently gets a
++// nonexistent hex.
++//-----------------------------------------------------------------------------
++`ifndef NANOSOC_ETH_IMEM_IMG
++  `define NANOSOC_ETH_IMEM_IMG "image.hex"
++`endif
++
+ module nanosoc_eth_chiplet #(
+     // TideLink GPIO-PHY lane count. RTL default is 8; kept as a chiplet param so
+     // the PHY-pad boundary width tracks the instance parameter in one place.
+     parameter NUM_PHY_LANES = 8,
+-    // TideChart device class = grandmaster-election priority (lower wins).
+-    // Surfaced here (finding G1) so the two build targets can strap it per die
+-    // (die_a 0x0001 < die_b 0x0002) for DETERMINISTIC root election instead of
+-    // the current 0x0001-on-both dual-root. Threads straight to tidechart_shim.
+-    parameter [15:0] DEVICE_CLASS = 16'h0001
++    // TideChart grandmaster-election priority (lower wins). Threads straight to
++    // tidechart_shim. Strap it DIFFERENTLY per die (e.g. die_a 0x0001, die_b
++    // 0x0002); equal values on both dies leave the election without a tiebreak
++    // and both dies can settle as root.
++    parameter [15:0] DEVICE_CLASS = 16'h0001,
++    // CPU0 (network_core) IMEM $readmemh preload image. See the header
++    // above for the four ways to set it and why none of them is a
++    // hardcoded absolute path.
++    parameter ETH_IMEM_IMG = `NANOSOC_ETH_IMEM_IMG
+ ) (
+     // =========================================================================
+     // SoC boundary — EVERY nanosoc_multicore_soc port that is NOT d2d_* is
+@@ -167,17 +205,14 @@ module nanosoc_eth_chiplet #(
+     input  wire        role_strap_i,
+ 
+     // =========================================================================
+-    // Link bring-up straps.
++    // Link bring-up straps. Ports rather than internal tie-offs: their values
++    // are a per-die decision the integrator makes at the pad ring.
+     //
+-    // These were tie-offs. They are ports because a chiplet cannot bring its
+-    // link up without them, and because their values are a per-die decision the
+-    // integrator makes at the pad ring, not something this RTL should assume.
+-    //
+-    // `nego_priority_i` is the auto-negotiation priority, normally sourced from
+-    // OTP or a die UID. Two dies that both present 0 have no tiebreak.
+-    // `mask_hs_bypass_i` and `apb_debug_unlock_i` open the software-driven
+-    // role-lock path used during bring-up; both were held low, which shut it.
+-    // `puf_seed` / `puf_ready` come from TideChart's PUF sampler when enabled.
++    //   nego_priority_i     auto-negotiation priority, normally from OTP or a die
++    //                       UID. Two dies both presenting 0 have no tiebreak.
++    //   mask_hs_bypass_i    together open the software-driven role-lock path used
++    //   apb_debug_unlock_i  during bring-up; both low keeps that path shut.
++    //   puf_seed/puf_ready  from TideChart's PUF sampler, when enabled.
+     // =========================================================================
+     input  wire [15:0] nego_priority_i,
+     input  wire        mask_hs_bypass_i,
+@@ -186,10 +221,9 @@ module nanosoc_eth_chiplet #(
+     input  wire        puf_ready,
+ 
+     // =========================================================================
+-    // DFT. Scan was tied off, which is correct for functional elaboration and
+-    // wrong for a chip. A production pad ring wires these to the scan
+-    // controller; leaving them internal would silently drop the chiplet's scan
+-    // chain on the floor.
++    // DFT. Exposed at the boundary so a production pad ring can wire them to the
++    // scan controller; tying them off internally would drop the chiplet's scan
++    // chain.
+     // =========================================================================
+     input  wire        scan_mode,
+     input  wire        scan_asyncrst_ctrl,
+@@ -199,9 +233,8 @@ module nanosoc_eth_chiplet #(
+     output wire        scan_out,
+ 
+     // =========================================================================
+-    // Link status / observability. Bring-up and silicon debug need these; a
+-    // physical team decides whether each becomes a pad, a test point, or a
+-    // register bit. They must not be invisible.
++    // Link status / observability for bring-up and silicon debug. The physical
++    // team decides whether each becomes a pad, a test point or a register bit.
+     // =========================================================================
+     output wire        link_active_o,      // Wlink link layer is up
+     output wire        d2d_reset_o,        // die-to-die reset out
+@@ -238,124 +271,74 @@ module nanosoc_eth_chiplet #(
+ 
+     // HREADY presented to TideLink's `ahb_sub` subordinate.
+     //
+-    // NOT `d2d_ahb_m_hready`. That is the decoder's response mux, which selects
+-    // the peer's own `hreadyout` while the peer owns the data phase. TideLink's
++    // Forced high while the peer owns the data phase, otherwise the true global
++    // HREADY.
++    //
++    // It must NOT be `d2d_ahb_m_hready`. That is the decoder's response mux, which
++    // selects the peer's own `hreadyout` during the peer data phase, and TideLink's
+     // `ahb_sub_hreadyout` reads `ahb_sub_hready` combinationally
+-    // (tidelink_top.sv:1119,1169), so feeding it back closes a cycle with no
+-    // register in it:
++    // (tidelink_top.sv:1119,1169). Feeding it back closes a cycle with no register
++    // in it:
+     //
+     //     hready -> ext_addr_phase -> ext_is_nonseq -> ahb_sub_hreadyout
+     //            -> hready_r (DPH_PEER arm) -> hready
+     //
+-    // It oscillates on back-to-back peer transfers — a memcpy across the
+-    // aperture. VCS does not error; it spins with simulation time frozen.
++    // which oscillates on back-to-back peer transfers (a memcpy across the
++    // aperture). VCS does not error; it spins with simulation time frozen.
+     //
+-    // AMBA says a subordinate's HREADYOUT must not be a function of HREADY, so
+-    // withholding the peer's own contribution from its own HREADY input is not a
+-    // lie — it removes an input the subordinate should never have used. Every
+-    // other slave still sees the true global HREADY, so a peer address phase
+-    // presented during another slave's wait state is still correctly ignored.
++    // AMBA forbids a subordinate's HREADYOUT being a function of HREADY, so
++    // withholding the peer's own contribution from its own HREADY input removes an
++    // input the subordinate should never have used. Every other slave still sees
++    // the true global HREADY, so a peer address phase presented during another
++    // slave's wait state is still correctly ignored.
+     //
+-    // Audited 2026-07-10: `ahb_sub` is the ONLY TideLink port with this
+-    // dependence. `ahb_ptp_hreadyout` is constant 1; `ahb_tx_hreadyout` is
+-    // registered state only; the FIFO bottoms out at `cmsdk_ahb_to_sram`
+-    // (`assign HREADYOUT = 1'b1`); both APB banks are `cmsdk_ahb_to_apb`, whose
+-    // HREADYOUT is a function of its registered FSM state.
++    // `ahb_sub` is the ONLY TideLink port with this dependence: ahb_ptp_hreadyout
++    // is constant 1, ahb_tx_hreadyout is registered state only, the FIFO bottoms
++    // out at cmsdk_ahb_to_sram (HREADYOUT = 1'b1), and both APB banks are
++    // cmsdk_ahb_to_apb, whose HREADYOUT is a function of registered FSM state.
+     //
+-    // See docs/D2D_HREADY_LOOP.md.
++    // See docs/design/D2D_HREADY_LOOP.md.
+     wire        hready_to_peer = dph_peer ? 1'b1 : d2d_ahb_m_hready;
+ 
+-    // ---- Peer-write data alignment (docs/G2_SOC_PAIR_STATUS.md) --------------
+-    // TideLink's ahb_sub XHB500 bridge pipelines the ADDRESS by one cycle
+-    // (tidelink_top.sv:1156, pipe_haddr_r) but samples write data LIVE
+-    // (u_xhb_sub .hwdata(ahb_sub_hwdata)). It sequences the AXI AW beat, then the
+-    // W beat one cycle later. A compliant AHB master drives HWDATA for the single
+-    // data-phase cycle and releases it, so the bridge's W beat — one cycle after
+-    // AW — captures 0. (g2_peer_aperture's hand-timed master held HWDATA across
+-    // the whole data phase and masked this; two real SoCs in g2_soc_pair expose
+-    // it: 0xC0FFEE01 leaves the SoC on d2d_ahb_m but s_axi_wdata inside TideLink
+-    // is 0.) Delay the write data one cycle so it is still valid on the bridge's
+-    // W cycle. Under wait states the SoC holds HWDATA stable, so the extra
+-    // register is harmless (same value in, same value out). ahb_sub carries only
+-    // the peer-aperture path, so an unconditional delay is safe.
+-    // 2026-08-05 (Rank 2): the fixed 1-cycle delay was TIMING-FRAGILE — it only
+-    // aligns when XHB500's W beat fires exactly one cycle after AW. On silicon the
+-    // link-ingress AXI W channel backpressures (wready low >=1 cyc under CDC/credit/
+-    // outstanding-write pressure), the W beat slips past the single held cycle, and
+-    // the bridge captures 0 (the 5/5 peer-write data-phase drop; g2 sim is blind to
+-    // it — idle link holds wready high). Replace shift-every-cycle with LOAD-and-
+-    // HOLD: latch the write data during its peer-write data phase (the cycle after a
+-    // peer-write address-accept) and HOLD it until the next peer write, so
+-    // ahb_sub_hwdata is stable across any W-channel backpressure depth. ahb_sub
+-    // carries only the peer-aperture path, so holding is safe.
+-    // 2026-08-06 (Rank 2 v2): the earlier version gated the load on a REGISTERED
+-    // address-accept (peer_wr_dph_r), which stayed high one cycle too long and
+-    // re-captured the RELEASED bus (0) at T+3 — bit-identical to the fragile 1-cycle
+-    // delay (g2 test_diag_q_hold proved this; silicon still dropped 5/5). Gate the
+-    // capture on dph_peer instead — the ACTUAL peer data phase, which drops the
+-    // cycle the phase ends, so we capture only while the AHB master is driving and
+-    // then genuinely HOLD. peer_wr_r latches write-ness at the address-accept so we
+-    // never capture a peer READ's data phase.
+-    // 2026-08-06 (Rank 2 v3): capture-ONCE-and-hold. hready_to_peer forces HREADY
+-    // high at the data phase, so the AHB master drives the payload for exactly ONE
+-    // cycle then releases (bus -> 0). Any capture-EVERY-cycle scheme (v1/v2) re-grabs
+-    // that released 0 while dph_peer is still high, so hwdata_q reverts to 0 (g2
+-    // test_diag_q_hold: payload at T+2, 0 at T+3 — identical to the fragile fix, and
+-    // it dropped 5/5 on silicon). Instead latch the payload on the FIRST peer-write
+-    // data-phase cycle only (cap_done_r), and HOLD it — so ahb_sub_hwdata presents
+-    // the payload on every subsequent cycle regardless of when XHB500's W beat fires
+-    // (any backpressure depth). cap_done_r re-arms when the data phase ends.
+-    // -------------------------------------------------------------------------
+-    // BURST-FIX PROTOTYPE (2026-08-18, David Mapstone) — proto copy, NOT the
+-    // shared RTL. The committed hold delivered beat 0's payload on EVERY beat of a
+-    // continuous INCR<n> peer write: dph_peer never drops across a burst
+-    // (chiplet_d2d_decode advances dph_code only on hready), so cap_done_r never
+-    // re-armed and ahb_sub_hwdata stayed latched at beat 0. See BURST_FIX_DESIGN.md.
++    // ---- Peer-write data steering into TideLink's ahb_sub --------------------
++    // TideLink's ahb_sub XHB500 bridge pipelines the AHB ADDRESS by one cycle
++    // (tidelink_top.sv:1156, pipe_haddr_r) but samples write data LIVE, and it
++    // sequences the AXI AW beat and the W beat independently. A compliant AHB
++    // master drives HWDATA for its single data-phase cycle and then releases the
++    // bus, so if the W beat has not fired by then XHB500 captures the RELEASED bus
++    // (0). The W channel can backpressure for an arbitrary number of cycles under
++    // CDC / credit / outstanding-write pressure, so no FIXED delay aligns them.
+     //
+-    // SHAPE: PASS the LIVE per-beat payload straight through to ahb_sub_hwdata (no
+-    // register in the path, so a tight SEQ burst beat — whose XHB500 W beat lands
+-    // the SAME cycle the master presents the beat, because SEQ beats skip the
+-    // NONSEQ pipeline-fill wait state — is delivered with its OWN data), and
+-    // substitute a FROZEN hold ONLY while a beat the master has already RELEASED is
+-    // still waiting for its W beat. That freeze is the single-write "released-0"
+-    // defence the committed hold existed for; passthrough restores per-beat data.
++    // Scheme: pass the LIVE per-beat payload straight through to ahb_sub_hwdata,
++    // and substitute a FROZEN copy only across a beat the master has already
++    // released whose W beat has not yet landed.
++    //   * passthrough keeps per-beat data correct on a continuous INCR<n> burst,
++    //     where a SEQ beat's W beat can land the same cycle the master presents it;
++    //   * the freeze is the released-bus defence for a single write.
+     //
+-    // THE ADVANCE / UNFREEZE IS GATED BY `w_beat_consumed` = s_axi_wvalid &
+-    // s_axi_wready (per BEAT — no wlast): the ONLY event that certifies this beat's
+-    // payload was handed off to the link, so it is the only safe point to release
+-    // the hold. DEDICATED wire, deliberately NOT ORed/gated with wr_hold_r /
+-    // synth_b_pending (that coupling is the TL-042-v1 trap that collapsed 16/16 ->
+-    // 0/16 on hardware).
+-    //   PROTO NOTE: read by a downward hierarchical reference into u_tidelink
+-    //   because s_axi_* is tidelink-internal. The production fix should surface it
+-    //   as a 1-bit tidelink_top output (ahb_sub_w_beat_consumed_o) — a trivial,
+-    //   non-invasive TideLink addition; see BURST_FIX_DESIGN.md "Productionisation".
++    // The unfreeze is gated ONLY by `w_beat_consumed` (s_axi_wvalid & s_axi_wready
++    // at the ahb_sub boundary, per BEAT, no wlast) — the one event that certifies
++    // this beat reached the link. Two release conditions that look equivalent and
++    // are not:
++    //   * do NOT release on ~dph_peer alone. chiplet_d2d_decode advances dph_code
++    //     only on hready, so dph_peer never drops mid-burst and the hold would
++    //     deliver beat 0's payload on every beat.
++    //   * do NOT OR the release with wr_hold_r or synth_b_pending. Either couples
++    //     it to something other than the W handshake, and the hold can advance past
++    //     a beat the link never consumed.
++    // d2d_ahb_m_hready is read only to detect the RELEASE point (when to freeze),
++    // never to advance past a beat.
+     //
+-    // d2d_ahb_m_hready (the master's OWN data-phase completion) is read only to
+-    // detect the RELEASE point (when to freeze); the advance past a beat is always
+-    // consume-gated by w_beat_consumed, so this is NOT the rejected "re-arm on the
+-    // AHB side" — q never advances past a beat the W channel has not consumed.
+-    //
+-    // TRAP AVOIDANCE:
+-    //   * per-data-phase (today's bug): the hold is released on a BEAT handshake
+-    //     (w_beat_consumed), not on ~dph.
+-    //   * capture-every-cycle-grabs-released-0 (v1/v2, 5/5 on silicon): the value
+-    //     is FROZEN (hwdata_hold_r captured at the release edge) the moment the
+-    //     master releases a not-yet-consumed beat, so the released bus (0) is never
+-    //     presented to XHB500.
+-    //   * one-shot that outlives its condition (retracted rd_pipe_r): cap_done_r is
+-    //     a LEVEL cleared only by w_beat_consumed — the condition's own handshake.
++    // ahb_sub carries only the peer-aperture path, so holding there is safe.
+     // -------------------------------------------------------------------------
+     reg         peer_wr_r;            // in-flight peer access is a write
+     reg         cap_done_r;           // 1 = present the FROZEN hold (released, not-yet-consumed beat)
+     reg         peer_wcon_r;          // current beat's W beat already landed (consume-before-release)
+     reg  [31:0] hwdata_hold_r;        // frozen payload captured at the release edge
+ 
+-    // AXI-side W-channel consumption at the ahb_sub/XHB500 boundary (per beat).
+-    // PORT (productionised): driven by tidelink_top's new 1-bit output
+-    // ahb_sub_w_beat_consumed_o (= s_axi_wvalid & s_axi_wready), wired at the
+-    // u_tidelink instantiation below. Replaces the earlier proto downward
+-    // hierarchical reference into u_tidelink internals.
++    // Per-beat W-channel consumption at the ahb_sub/XHB500 boundary, from
++    // tidelink_top's ahb_sub_w_beat_consumed_o (= s_axi_wvalid & s_axi_wready),
++    // wired at the u_tidelink instantiation below.
+     wire w_beat_consumed;
+ 
+     // ahb_sub_hwdata (wired below at the tidelink instance): LIVE passthrough,
+@@ -374,8 +357,8 @@ module nanosoc_eth_chiplet #(
+ 
+             if (dph_peer & peer_wr_r) begin
+                 if (cap_done_r) begin
+-                    // FROZEN, holding a released-but-unconsumed beat: unfreeze the
+-                    // cycle its W beat actually lands (consume-certified advance).
++                    // Frozen on a released-but-unconsumed beat: unfreeze the cycle
++                    // its W beat actually lands.
+                     if (w_beat_consumed) begin
+                         cap_done_r  <= 1'b0;
+                         peer_wcon_r <= 1'b0;
+@@ -384,8 +367,8 @@ module nanosoc_eth_chiplet #(
+                     // Master COMPLETED (released) this beat's AHB data phase:
+                     //  * W beat already landed (now or earlier) -> beat fully handed
+                     //    off; keep passing the next beat straight through.
+-                    //  * else released BEFORE consumption (the silicon released-0
+-                    //    hazard) -> FREEZE the just-driven value and hold until
++                    //  * else released BEFORE consumption (the released-bus hazard)
++                    //    -> FREEZE the just-driven value and hold until
+                     //    w_beat_consumed.
+                     if (peer_wcon_r | w_beat_consumed)
+                         peer_wcon_r <= 1'b0;
+@@ -414,56 +397,56 @@ module nanosoc_eth_chiplet #(
+     wire        hresp_tx,     hresp_fifo,     hresp_ptp,     hresp_tlapb,     hresp_tcapb,     hresp_peer;
+ 
+     // =========================================================================
+-    // BURST-FIX GUARD (2026-08-18, David Mapstone) — bufferable/EWR peer-write
+-    // FAIL-LOUD. PROTO copy, NOT the shared RTL. See BURST_FIX_GUARD.md.
++    // BUFFERABLE (EWR) PEER-WRITE REJECT — fail loud on an unvalidated path.
++    //
++    // The depth-1 hold above is validated for NON-bufferable (hprot[2]=0) peer
++    // writes only. A bufferable peer write instead reaches XHB500's early-write-
++    // response path (up to HAZARD_LIST_SIZE=4 posted writes, early-synthesised B),
++    // whose depth>1 behaviour through a single-deep hold is untested and could
++    // corrupt silently. hprot is master-driven passthrough end to end, so the path
++    // is architecturally reachable. Three layers make it visible instead:
+     //
+-    // The depth-1 hold above is VALIDATED only for the non-bufferable (hprot[2]=0)
+-    // peer-write path (BURST_FIX_HARDENING.md, 5/5). A BUFFERABLE (hprot[2]=1)
+-    // peer-write reaches XHB500's EWR path (up to HAZARD_LIST_SIZE=4 posted writes,
+-    // early-synthesised B); its depth>1 behaviour through this single-deep hold is
+-    // UNTESTED, so a bufferable peer-write burst could SILENTLY reproduce the
+-    // corruption class. hprot is master-driven passthrough end-to-end, so the path
+-    // is architecturally REACHABLE. This guard makes it FAIL LOUD, LAYERED (owner
+-    // tidelink-63 call, 2026-08-18):
++    //   (iii) a 2-cycle AHB HRESP=ERROR to the master for ANY bufferable peer
++    //         write, single or burst, so software cannot mistake an unvalidated
++    //         write for a landed OKAY;
++    //   (ii)  a sticky synthesizable observation flag (mark_debug), held to reset,
++    //         for post-hoc silicon/ILA visibility;
++    //   (i)   a simulation $error under `ifndef SYNTHESIS.
+     //
+-    //   (iii) MANDATORY CORE — return a 2-cycle AHB HRESP=ERROR to the master for
+-    //         ANY bufferable peer-write (single OR burst). The write VISIBLY FAILS;
+-    //         software cannot mistake an unvalidated write for a landed OKAY.
+-    //         "we don't know this landed" beats a false OKAY on a path whose data
+-    //         integrity was never established.
+-    //   (ii)  a synthesizable STICKY obs flag (mark_debug), latched on the same
+-    //         condition and held to reset — post-hoc silicon/ILA visibility
+-    //         (N1/TL-037 pattern: protocol-correct response + observable state).
+-    //   (i)   a SIM assertion ($error, `ifndef SYNTHESIS) — catches it in verif.
++    // SUPERSEDED IN PART (see "CHANGE 2 of 2" below). Layer (iii), the HRESP=
++    // ERROR, has been REMOVED: the ahb_sub_hprot tie-down at the u_tidelink
++    // instantiation now clears HPROT[3:2] on the peer path, so a bufferable peer
++    // write can no longer arm XHB500's EWR and no longer needs rejecting. Layer
++    // (ii) is unchanged and still observes the master's real request. Layer (i)
++    // has been REPOINTED from "the master asked for bufferable" (now benign) to
++    // "the tie-down is in effect at the ahb_sub boundary" (a real defect).
++    // The paragraphs below describe the ORIGINAL reject and are kept for the
++    // rationale; where they say ERROR is presented, that no longer happens.
+     //
+-    // OWNER CONSTRAINTS honoured:
+-    //   1. TIMING — the reject is DECIDED at the ADDRESS phase on hprot[2]
+-    //      (ewr_peer_wr_aphase), BEFORE any data enters the depth-1 hold; the
+-    //      2-cycle ERROR is presented in the immediately-following data phase.
+-    //   2. SCOPE — BLANKET: every hprot[2]=1 peer-write is rejected (single OR
+-    //      burst). No depth-2+ collision cleverness on an already-untested path.
++    // The reject is DECIDED at the address phase on hprot[2] (ewr_peer_wr_aphase),
++    // before any data enters the hold; the ERROR is presented in the immediately
++    // following data phase. The scope is deliberately blanket — no depth-2+
++    // collision detection on an already-untested path.
+     //
+-    // MECHANISM — a TOP-LEVEL, non-invasive interpose on the peer response wires
+-    // BETWEEN u_tidelink (drives *_tl below) and u_d2d_decode (consumes the muxed
+-    // hresp_peer / hreadyout_peer). It MIRRORS the 2-cycle ERROR the shared
+-    // chiplet_d2d_decode already raises for an unmapped default (its dflt_err2
+-    // sequencer, chiplet_d2d_decode.sv:197-206), but implemented HERE so neither
+-    // shared file is touched. Read data is passed through unchanged (a write
+-    // ignores hrdata).
++    // MECHANISM: a top-level interpose on the peer response wires between
++    // u_tidelink (which drives *_tl) and u_d2d_decode (which consumes hresp_peer /
++    // hreadyout_peer). It mirrors the 2-cycle ERROR chiplet_d2d_decode already
++    // raises for an unmapped default (its dflt_err2 sequencer,
++    // chiplet_d2d_decode.sv:197-206) but lives here so neither shared file is
++    // touched. Read data passes through unchanged; a write ignores hrdata.
+     //
+-    // DORMANT for hprot[2]=0: ewr_reject_active is 0 for every non-bufferable
+-    // transfer, so the decoder sees tidelink's native response verbatim and the
+-    // validated path is byte-for-byte unaffected.
++    // For hprot[2]=0, ewr_reject_active was 0, so the decoder saw TideLink's native
++    // response verbatim and the validated path was bit-for-bit unaffected. (After
++    // CHANGE 2 the override and ewr_reject_active are gone entirely, so this now
++    // holds for EVERY hprot value.)
+     //
+-    // RESIDUAL (honest): the ERROR is returned to the MASTER; it does not un-post
+-    // whatever TideLink's ahb_sub may already have forwarded to the far die (the
+-    // hready_to_peer loop-break completes ahb_sub's transfer independently). The
+-    // guarantee is "the master is TOLD the write failed and must not trust it",
+-    // per the owner rationale — not "no data physically crossed". The even-louder
+-    // variant that ALSO gates hsel_peer into u_tidelink (so nothing is posted) is
+-    // documented in BURST_FIX_GUARD.md but deliberately NOT implemented (scope 2).
++    // LIMIT: the ERROR goes to the MASTER. It does not un-post whatever ahb_sub may
++    // already have forwarded to the far die — hready_to_peer completes ahb_sub's
++    // transfer independently. The guarantee is that the master is TOLD the write
++    // failed, not that no data crossed. Also gating hsel_peer so nothing is posted
++    // is described in BURST_FIX_GUARD.md and deliberately not implemented.
+     // =========================================================================
+-    // tidelink ahb_sub native response (renamed); the guard overrides it.
++    // tidelink ahb_sub native response; the reject mux overrides it.
+     wire [31:0] hrdata_peer_tl;
+     wire        hreadyout_peer_tl;
+     wire        hresp_peer_tl;
+@@ -474,51 +457,50 @@ module nanosoc_eth_chiplet #(
+     wire ewr_peer_wr_aphase = hsel_peer & d2d_ahb_m_hready
+                             & d2d_ahb_m_hwrite & d2d_ahb_m_hprot[2];
+ 
+-    reg  ewr_reject_dph_r;   // the outstanding peer data phase must be ERROR-rejected
+-    reg  ewr_err2_r;         // 0 = ERROR cycle 1 (hready low); 1 = ERROR cycle 2 (hready high)
+-    (* mark_debug = "true" *) reg ewr_seen_sticky_r;  // (ii) sticky obs — set on detect, held to reset
++    // ---- CHANGE 2 of 2: GUARD DEMOTED TO OBSERVE-ONLY -----------------------
++    // Depends on CHANGE 1 (the ahb_sub_hprot tie-down at the u_tidelink
++    // instantiation). Revert BOTH together, or neither: this block on its own
++    // would leave a bufferable peer write unguarded AND unrejected.
++    //
++    // WHY. The 2-cycle HRESP=ERROR existed because a bufferable peer write
++    // reached XHB500's EWR path, whose depth>1 behaviour through the depth-1
++    // hold is untested. With CHANGE 1 the bridge's hprot[2]/[3] are 0 for every
++    // peer transfer, so EWR can no longer arm and such a write is now handled by
++    // the SAME validated non-bufferable path as any other. Continuing to ERROR
++    // it would fail traffic that is, by construction, safe — and DMA-250 and
++    // other initiators legitimately set HPROT[2].
++    //
++    // WHAT IS KEPT. ewr_peer_wr_aphase still reads the UNMODIFIED
++    // d2d_ahb_m_hprot[2], so the sticky bit still records the genuine fact "an
++    // initiator requested a bufferable peer write" for silicon/ILA triage. It is
++    // deliberately NOT repointed at the tied-down value, which would be 0 by
++    // construction and would observe nothing.
++    (* mark_debug = "true" *) reg ewr_seen_sticky_r;  // sticky obs — set on detect, held to reset
+ 
+     always @(posedge sys_hclk or negedge sys_hresetn) begin
+-        if (!sys_hresetn) begin
+-            ewr_reject_dph_r  <= 1'b0;
+-            ewr_err2_r        <= 1'b0;
++        if (!sys_hresetn)
+             ewr_seen_sticky_r <= 1'b0;
+-        end else begin
+-            // (ii) sticky obs flag — set on the address-phase detect; cleared only
+-            // by reset. Observed-only, so non-behaviour-changing.
+-            if (ewr_peer_wr_aphase)
+-                ewr_seen_sticky_r <= 1'b1;
+-
+-            // (iii) 2-cycle ERROR sequencer. Enter the reject data phase on the
+-            // address-accept (the earliest point); a fresh detect always re-arms.
+-            if (ewr_peer_wr_aphase) begin
+-                ewr_reject_dph_r <= 1'b1;
+-                ewr_err2_r       <= 1'b0;   // first data-phase cycle is err1 (hready low)
+-            end else if (ewr_reject_dph_r) begin
+-                if (!ewr_err2_r)
+-                    ewr_err2_r       <= 1'b1;  // err1 -> err2
+-                else begin
+-                    ewr_reject_dph_r <= 1'b0;  // err2 done -> release
+-                    ewr_err2_r       <= 1'b0;
+-                end
+-            end
+-        end
++        else if (ewr_peer_wr_aphase)
++            ewr_seen_sticky_r <= 1'b1;   // read-only; changes no behaviour
+     end
+ 
+-    // Present the 2-cycle ERROR on the peer response wires INTO u_d2d_decode while a
+-    // bufferable-peer-write reject is in flight; otherwise pass tidelink through.
+-    wire ewr_reject_active = ewr_reject_dph_r;
+-    assign hrdata_peer    = hrdata_peer_tl;                                   // writes ignore hrdata
+-    assign hreadyout_peer = ewr_reject_active ? ewr_err2_r : hreadyout_peer_tl;
+-    assign hresp_peer     = ewr_reject_active ? 1'b1       : hresp_peer_tl;
++    // Peer responses now pass TideLink through verbatim — no reject override.
++    assign hrdata_peer    = hrdata_peer_tl;   // writes ignore hrdata
++    assign hreadyout_peer = hreadyout_peer_tl;
++    assign hresp_peer     = hresp_peer_tl;
+ 
+ `ifndef SYNTHESIS
+-    // (i) SIM assertion — a bufferable peer-write must never reach the validated
+-    // path; fire the cycle one is accepted at the address phase.
++    // Simulation assertion, REPOINTED. Asserting on what the MASTER requested is
++    // no longer a failure (CHANGE 1 makes it safe). What must never happen is the
++    // tie-down not holding, so assert the INVARIANT at the ahb_sub boundary: the
++    // bits TideLink actually receives must be 0 on every peer transfer. This
++    // fails loud if CHANGE 1 is ever reverted, bypassed, or reordered, which the
++    // old assertion could not detect.
+     always @(posedge sys_hclk) begin
+-        if (sys_hresetn === 1'b1 && ewr_peer_wr_aphase === 1'b1)
+-            $error("[BURST_FIX_GUARD] BUFFERABLE/EWR peer-write REJECTED: hprot=0x%0h haddr=0x%08h @ %0t -- hprot[2]=1 path is UNVALIDATED through the depth-1 hold; returning 2-cycle HRESP=ERROR to the master.",
+-                   d2d_ahb_m_hprot, d2d_ahb_m_haddr, $time);
++        if (sys_hresetn === 1'b1 && hsel_peer === 1'b1 &&
++            (u_tidelink.ahb_sub_hprot[3:2] !== 2'b00))
++            $error("[EWR_TIEDOWN] ahb_sub_hprot[3:2]=0b%02b at TideLink (expected 00): haddr=0x%08h master hprot=0x%0h @ %0t -- the peer-path HPROT tie-down is NOT in effect; XHB500 EWR/cacheable paths are reachable.",
++                   u_tidelink.ahb_sub_hprot[3:2], d2d_ahb_m_haddr, d2d_ahb_m_hprot, $time);
+     end
+ `endif
+ 
+@@ -583,51 +565,41 @@ module nanosoc_eth_chiplet #(
+     wire        tc_link_state_change;
+     wire        tc_bcast_ack;
+     wire        tc_link_active;
+-    // FIX #3 (TideChart data-mode gate, 2026-08-09): the tidelink FCSM>=4
+-    // "link carries FC/EXT words" strobe (tl_data_mode_o). It feeds the
+-    // TideChart election gate below IN PLACE OF the premature tc_link_active
+-    // (== role_locked_o, asserts ~5us before the link can carry a CLAIM), which
+-    // caused the silent dual-root. Mirrors tb_tc_pair.sv:378.
++    // TideLink's FCSM>=4 "link carries FC/EXT words" strobe (tl_data_mode_o). This
++    // gates the TideChart root election below, NOT tc_link_active: tc_link_active
++    // is role_locked_o, which asserts ~5us before the link can carry a CLAIM, so
++    // electing on it lets both dies claim root.
+     wire        tc_data_mode;
+ 
+     //=========================================================================
+     // DEAD-END SINKS FOR DELIBERATELY UNUSED INSTANCE OUTPUTS
+     //
+-    // POLICY (this supersedes the older "tie the pin to `()`" note; the reason
+-    // it changed is recorded here so nobody re-litigates it):
++    // Convention for this file:
+     //
+     //   1. NEVER omit a pin. An omitted pin is indistinguishable from an
+     //      oversight, and on an INPUT it floats — Z in simulation, tied
+-    //      arbitrarily by synthesis. Verilator reports it as PINMISSING and HAL
+-    //      as UNCONI, both of which gate. That rule is unchanged and absolute.
++    //      arbitrarily by synthesis. Verilator reports PINMISSING and HAL reports
++    //      UNCONI; both gate.
+     //
+-    //   2. For an unused OUTPUT, do not stop at `.port()`. An empty output pin
+-    //      is inert in silicon, but it is reported forever — Verilator
+-    //      PINCONNECTEMPTY, HAL *W,UNCONN — and the integration ruleset waives
+-    //      HAL's UNCONO (a module's own undriven output) without waiving UNCONN
+-    //      (a dangling output at an instance). So `.port()` leaves a permanent,
+-    //      unwaived, un-triaged residue that the next reviewer has to re-judge
+-    //      from scratch. Twenty of them accumulated in this file.
++    //   2. For an unused OUTPUT, `.port()` is not enough. It is inert in silicon
++    //      but reported forever (Verilator PINCONNECTEMPTY, HAL *W,UNCONN), and
++    //      the integration ruleset waives HAL's UNCONO (a module's own undriven
++    //      output) WITHOUT waiving UNCONN (a dangling output at an instance) — so
++    //      it leaves permanent, unwaived residue for the next reviewer to re-judge.
+     //
+-    //   3. Instead, drive the unused output into a NAMED `*_nc` wire declared
+-    //      here with a one-line reason. That is the convention nanosoc_gen
+-    //      already emits in the generated SoC top (`cc_periph_uart_txen_nc`,
+-    //      `dmac_0_apb_bridge_pstrb_nc`, `dap_ss_0_jtagnsw_nc`, ...), and it is
+-    //      the exact pattern the recorded HAL waiver names: "intentional
+-    //      dead-end sinks routed to named `*_nc` wires" (`-nocheck URDWIR`,
+-    //      nanosoc-multicore-system/lint/hal.tcl:117). The waiver's own
+-    //      justification then actually applies to what it is waiving, which is
+-    //      not true of a blanket code-level waiver — see
+-    //      docs/LINT_REMEDIATION_PLAN.md §4, where exactly that mismatch hid
+-    //      the `dmac_0_err_w` DMA-error hole.
++    //   3. Instead, drive the unused output into a NAMED `*_nc` wire declared here
++    //      with a one-line reason. That is what nanosoc_gen emits in the generated
++    //      SoC top (`cc_periph_uart_txen_nc`, `dap_ss_0_jtagnsw_nc`, ...) and what
++    //      the HAL waiver actually names: "intentional dead-end sinks routed to
++    //      named `*_nc` wires" (`-nocheck URDWIR`,
++    //      nanosoc-multicore-system/lint/hal.tcl:117), so the waiver's own
++    //      justification applies to exactly what it waives.
+     //
+-    // Net effect: zero silicon change (a driven-but-unread wire is removed by
+-    // synthesis), and every one of these decisions is greppable as `_nc` with
+-    // its reason attached instead of surviving as an anonymous lint line.
++    // Synthesis removes a driven-but-unread wire, so this costs nothing in silicon
++    // and each decision stays greppable as `_nc` with its reason attached.
+     //
+     // ANYTHING ADDED HERE MUST BE A DELIBERATE DEAD END. If a signal has a
+-    // plausible consumer, wire it up instead — `_nc` is a decision, not a
+-    // parking space.
++    // plausible consumer, wire it up — `_nc` is a decision, not a parking space.
+     //=========================================================================
+ 
+     // SoC d2d manager: locked-transfer indication. Every slave in the D2D
+@@ -667,7 +639,7 @@ module nanosoc_eth_chiplet #(
+     wire  [1:0] tl_i2c_axi_rresp_nc;
+     wire        tl_i2c_axi_rlast_nc;
+ 
+-    // TideChart <-> IRQC AXI-Stream pair (TideChart phase P4). The
++    // TideChart <-> IRQC AXI-Stream pair. The
+     // ahb-chiplet-irqc block is NOT instantiated in this chiplet, so the
+     // TC->IRQC stream has no consumer and the IRQC->TC stream has no producer.
+     // The corresponding INPUTS are tied idle at the instance (tready_i = 0,
+@@ -694,17 +666,19 @@ module nanosoc_eth_chiplet #(
+     // deployed memory map). Every non-d2d port maps straight to this boundary;
+     // the d2d_* ports drive the link below.
+     //
+-    // FIRMWARE BAKE (fw_p0 Rank 1, 2026-08-09): override ETH_IMEM_MEM_FPGA_IMG
+-    // so CPU0 (network_core) IMEM comes up initialised from the "alive" app at
+-    // bitstream time (the `ifdef RAM_PRELOAD ROM/preload-BRAM path in
+-    // nanosoc_region_imem -> sl_ahb_rom -> sl_fpga_rom_word). Absolute path so
+-    // $readmemh resolves both in the IP package OOC elaboration and the flat
+-    // build synth. RAM_PRELOAD itself is baked in-body by the eth-chiplet
+-    // filelist (vivado_ip/nanosoc_eth_chiplet_filelist.tcl) — the define does
+-    // NOT survive ipx::package_project as a fileset property.
++    // FIRMWARE BAKE: ETH_IMEM_MEM_FPGA_IMG initialises CPU0 (network_core) IMEM at
++    // bitstream time, through the `ifdef RAM_PRELOAD preload-BRAM path
++    // (nanosoc_region_imem -> sl_ahb_rom -> sl_fpga_rom_word). RAM_PRELOAD is
++    // defined in-body by the eth-chiplet filelist
++    // (vivado_ip/nanosoc_eth_chiplet_filelist.tcl) — the define does not survive
++    // ipx::package_project as a fileset property — and the image path rides the
++    // SAME in-body mechanism (see ETH_IMEM_IMG / `NANOSOC_ETH_IMEM_IMG at the top
++    // of this file). Nothing here is ASIC-relevant: no ASIC flow defines
++    // RAM_PRELOAD, so nanosoc_region_imem takes its `else` SRAM branch, sl_ahb_rom
++    // is not even in the ASIC filelist, and this string reaches no $readmemh.
+     //=========================================================================
+     nanosoc_multicore_soc #(
+-        .ETH_IMEM_MEM_FPGA_IMG ("/home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet/src/rtl/eth_imem_alive.hex")
++        .ETH_IMEM_MEM_FPGA_IMG (ETH_IMEM_IMG)
+     ) u_soc (
+         // System clock / reset
+         .sys_fclk                       (sys_fclk),
+@@ -938,18 +912,16 @@ module nanosoc_eth_chiplet #(
+     // (tx/fifo apertures are 16 KB -> haddr[13:0]). NUM_PHY_LANES passes to the
+     // GPIO PHY pads.
+     //=========================================================================
+-    // I1 eth-chiplet bring-up fix (docs/I1_SELFARM_FIX.md): SELF_ARM_TRAIN_EN=1
+-    // self-latches role_lock on the PS ROLE_CFG[1] write (the peer-I2C mask
+-    // handshake never completes on this chiplet, so the default gated latch left
+-    // role_locked=0 -> mutual clock enable + calibrator stuck in reset ->
+-    // cal_done=0/fcsm=0). Conscious opt-in ONLY on this eth-chiplet instance;
+-    // every other tidelink integration keeps the 1'b0 default.
+-    // TXGEN_PRESENT(0): tidelink_top defaults it to 1'b1 for the FPGA bring-up
+-    // builds, and nothing here was overriding it — so the PL-side TX traffic
+-    // GENERATOR was being synthesised into silicon (1,771 u_tx_gen cells,
+-    // ~2,981 um2). tidelink/src/rtl/asic/tidelink_dft_wrapper.sv:203 sets it to
+-    // 0, but that wrapper is in no flist: the chip instantiates tidelink_top
+-    // directly, so the gate never applied. Set it explicitly at the point of use.
++    // SELF_ARM_TRAIN_EN(1): self-latch role_lock on the ROLE_CFG[1] write. The
++    // peer-I2C mask handshake never completes on this chiplet, so the default
++    // gated latch leaves role_locked=0, which holds the mutual clock enable and the
++    // calibrator in reset (cal_done=0, fcsm=0). Opt-in on THIS instance only; other
++    // tidelink integrations keep the 1'b0 default. See tidelink/docs/I1_SELFARM_FIX.md.
++    // TXGEN_PRESENT(0): tidelink_top defaults this to 1'b1 for the FPGA bring-up
++    // builds, so it must be set explicitly HERE or the PL-side TX traffic generator
++    // (~1,771 cells, ~2,981 um2) is synthesised into silicon. The ASIC DFT wrapper
++    // that would otherwise clear it (tidelink/src/rtl/asic/tidelink_dft_wrapper.sv)
++    // is in no flist — the chip instantiates tidelink_top directly.
+     tidelink_top #(.NUM_PHY_LANES(NUM_PHY_LANES), .SELF_ARM_TRAIN_EN(1'b1), .AUTO_ANCHOR_EN(1'b1), .TXGEN_PRESENT(1'b0)) u_tidelink (
+         // Clocks / resets — all from the SoC clock/reset controller output.
+         .hclk       (sys_hclk),
+@@ -957,96 +929,81 @@ module nanosoc_eth_chiplet #(
+         .poresetn   (sys_poresetn),
+         .phc_clk    (sys_hclk),       // PHC shares the AHB clock in this build
+         .phc_resetn (sys_hresetn),
+-        // D2D link-clock divider ratio. 3'd0 = /1 bypass = the pre-divider
+-        // clock path, which is what this tapeout ships.
++        // D2D link-clock divider ratio. 3'd0 = /1 bypass — the pre-divider clock
++        // path, which is what this tapeout ships and the ONLY ratio signed off.
+         //
+-        // CONNECTED ONLY NOW THAT THE PIN CARRIES THE PORT. The guard comment
+-        // that stood here forbade this connection "WITHOUT FIRST MOVING THE
+-        // tidelink SUBMODULE PIN", because a connection to a port the pinned
+-        // tidelink does not have makes the superproject unelaboratable from its
+-        // own pin (%Error: Pin not found). That precondition is now met, in the
+-        // order that keeps the repo clonable at every step:
+-        //   1. feat/link-clk-divider PUSHED  -> 635f59cc, verified with
+-        //      `git ls-remote origin`, i.e. a clone can now fetch it
+-        //   2. superproject pin MOVED to 635f59cc  (this commit)
+-        //   3. this connection re-added        (this commit, same commit as 2 —
+-        //      between them the wrapper would lint red, so they must not split)
++        // The knob is reachable by the build but INERT in silicon, for two reasons
++        // that this literal is not:
++        //   (a) No register drives it. That register belongs in TIDELINK's APB
++        //       quadrant 11 (paddr[14:13], tidelink_top.sv:846-854 declares
++        //       apb_sel_* for quadrants 00/01/10 only and the response mux falls
++        //       through for 11), a free 8 KB at SoC 0x2E03_6000-0x2E03_7FFF — NOT
++        //       in this chiplet's APB space. Design: docs/design/D2D_RATE_CONTROL_ARCH.md.
++        //       It is write-gated on !role_locked_o, because a rate change
++        //       invalidates the calibrator's phase offset and is legal only while
++        //       the PHY is held in POR; there is no warm-change path. It reaches
++        //       u_link_clk_div.ratio_i through a STICKY SOURCE MUX, so this tie
++        //       stays the reset-time source rather than a placeholder to delete.
++        //   (b) No SDC constrains a divided ratio. ASIC/genus-innovus/inputs/
++        //       tidelink_constraints.sdc signs off the /1 configuration only and
++        //       pins the bypass leg with set_case_analysis on the divider's enable
++        //       flops, so a clean STA says nothing about /2../16. The evidence for
++        //       the divided modes is SIMULATION ONLY: cocotb/tidelink_top_pair
++        //       passes all 11 tests at /1 /2 /4 /8 /16, which is a digital go/no-go,
++        //       not an eye or BER measurement.
+         //
+-        // Do NOT reintroduce a bare `grep -c link_clk_div_ratio_i` as the check
+-        // for whether this port is wired: the previous guard comment named the
+-        // port six times, so that grep returned 6 against a wrapper with ZERO
+-        // connections. Anchor on the connection form instead:
++        // Connecting this port requires the PINNED tidelink submodule to declare
++        // it, or the superproject stops elaborating from its own pin. To test
++        // whether it is wired, anchor on the connection form — a bare
++        // `grep -c link_clk_div_ratio_i` also counts the mentions in this comment:
+         //     grep -cE '^[[:space:]]*\.link_clk_div_ratio_i'
+-        //
+-        // [OPEN — UNCHANGED BY THIS COMMIT] the knob is reachable by the BUILD
+-        // now, but still inert in SILICON, and this literal was never what stood
+-        // in the way. Two of the three conditions the previous comment listed
+-        // remain open:
+-        //   (a) a register to drive it. It belongs in TIDELINK's free APB
+-        //       quadrant, NOT in this chiplet's APB space.
+-        //
+-        //       CORRECTED 2026-08-18 — what stood here was wrong, and it was
+-        //       steering the next reader to the wrong die-side. It read: "must
+-        //       live in THIS chiplet's APB space because TideLink has no free
+-        //       aperture (every paddr[8:5] nibble is claimed)". The parenthetical
+-        //       is TRUE but SCOPED; the "because" it supports is FALSE.
+-        //
+-        //       tidelink_top splits its 15-bit APB window on paddr[14:13] into
+-        //       four quadrants (tidelink_top.sv:846-854):
+-        //           00 -> Wlink chiplet controller   (apb_sel_wlink)
+-        //           01 -> TideLink config registers  (apb_sel_tidelink)
+-        //           10 -> Address translator config  (apb_sel_addr_xlat)
+-        //           11 -> Reserved  — NO apb_sel_* wire exists for it
+-        //       Only three apb_sel_* wires are declared, and the response mux
+-        //       (tidelink_top.sv:872-880) falls through for quadrant 11:
+-        //       prdata='0, pready=1'b1, pslverr=1'b0. So quadrant 11 is
+-        //       undecoded and free — a full 8 KB at SoC 0x2E03_6000-0x2E03_7FFF
+-        //       (this chiplet's TideLink APB window is 0x2E03xxxx, 15-bit, see
+-        //       u_tlapb_bridge ADDRWIDTH(15) above).
+-        //
+-        //       The paddr[8:5] nibble census was a real measurement, but it
+-        //       surveyed quadrant 01 ONLY. That quadrant is APB_ADDR_W=12
+-        //       (tidelink_top.sv:45) and is fed tl_apb_paddr = apb_paddr[11:0]
+-        //       (tidelink_top.sv:981), so every paddr[8:5] decode in
+-        //       tidelink_apb_regs.sv sits inside quadrant 01 and says nothing
+-        //       whatever about quadrants 10 or 11.
+-        //
+-        //       Design: see docs/D2D_RATE_CONTROL_ARCH.md. The register is
+-        //       write-gated on !role_locked_o (a rate change invalidates the
+-        //       calibrator's phase offset, so it is legal only while the PHY is
+-        //       held in POR, before role_lock — there is NO warm-change path),
+-        //       and reaches u_link_clk_div.ratio_i through a STICKY SOURCE MUX
+-        //       so that the link_clk_div_ratio_i port below stays authoritative
+-        //       until software first writes. That is why this tie stays 3'd0:
+-        //       it remains the reset-time source, not a placeholder to delete.
+-        //       Until that register exists the rate cannot be changed on
+-        //       hardware at all — on silicon or on FPGA.
+-        //   (b) an SDC that constrains a DIVIDED ratio. ASIC/genus-innovus/
+-        //       inputs/tidelink_constraints.sdc signs off the /1 configuration
+-        //       ONLY and says so, pinning the bypass leg via set_case_analysis on
+-        //       the divider's enable flops. A clean STA says nothing about /2../16.
+-        // Evidence for the divided modes is SIMULATION ONLY: the full 11-test
+-        // cocotb/tidelink_top_pair suite passes at /1 /2 /4 /8 /16. That is a
+-        // digital go/no-go, not an eye or BER measurement.
+         .link_clk_div_ratio_i (3'd0),
+         // ahb_sub — peer aperture (0x2F, address-translated). Full 32-bit haddr;
+         // carries hburst/hprot; no hmastlock (reduced shape).
+         .ahb_sub_hsel       (hsel_peer),
+         .ahb_sub_haddr      (d2d_ahb_m_haddr),
+         .ahb_sub_hburst     (d2d_ahb_m_hburst),
+-        .ahb_sub_hprot      (d2d_ahb_m_hprot),
++        // ---- CHANGE 1 of 2: EWR TIE-DOWN (revert this line alone to undo) ----
++        // Force non-cacheable/non-bufferable on the peer path. HPROT[2]
++        // (bufferable) is the sole arm of XHB500's early-write-response: the
++        // bridge is instantiated as .hprot({3'h0, xhb_sub_hprot}) so hprot[6]
++        // is hardwired 0 and `ewr <= hprot[2] & ~hprot[6]`
++        // (..._core_wdata.sv:248) reduces to exactly this bit; the same term
++        // gates hazard_add (..._core_addr.sv:233) and pause_addr_submit
++        // (:155), i.e. the multiple-outstanding-write behaviour the D2D wedge
++        // builds on. HPROT[3] (cacheable) is cleared too: it sets write_mod /
++        // awcache[1] and clears singles_burst (..._core_addr.sv:147), which
++        // lets a fixed-length burst become one multi-beat AXI burst rather
++        // than singles. HPROT[1:0] pass through unchanged so the
++        // privileged/data mapping into awprot (..._core_addr.sv:254) stays
++        // correct. Downstream of the bus matrix, so this covers ALL
++        // initiators (both CPUs, DMA-250, DAP, debug bridge, backdoor).
++        //
++        // ⚠ DEPENDENTS — DO NOT RELAX THIS WITHOUT RE-READING THEM.
++        // Forcing hprot[2]=0 here makes hprot[2]=1 UNREACHABLE for peer
++        // writes, which in turn makes two existing protections DEAD CODE:
++        //   (1) the bufferable/EWR guard above (ewr_peer_wr_aphase arms on
++        //       exactly hsel_peer & hready & hwrite & d2d_ahb_m_hprot[2]);
++        //   (2) XHB500's Fix-K hazard-list BID correction, which is EWR-only.
++        // That is deliberate and is a STRONGER property than the guard gave:
++        // the dangerous path cannot be CONSTRUCTED, rather than being caught
++        // at runtime. But it means THIS LINE is now the sole thing standing
++        // between peer writes and the untested EWR depth>1 path. If it is
++        // ever relaxed for throughput (peer bursts issue as AXI singles with
++        // it in place, which is a real cost), (1) and (2) must be revived
++        // FIRST — by then they will read as dead code and be easy to delete.
++        .ahb_sub_hprot      ({2'b00, d2d_ahb_m_hprot[1:0]}),  // force non-cacheable/non-bufferable on the peer path
+         .ahb_sub_hsize      (d2d_ahb_m_hsize),
+         .ahb_sub_htrans     (d2d_ahb_m_htrans),
+-        .ahb_sub_hwdata     (d2d_ahb_m_hwdata_q),   // delayed 1 cyc — see above
++        .ahb_sub_hwdata     (d2d_ahb_m_hwdata_q),   // live, frozen on release — see above
+         .ahb_sub_hwrite     (d2d_ahb_m_hwrite),
+         .ahb_sub_hready     (hready_to_peer),   // NOT d2d_ahb_m_hready — comb loop
+-        // BURST-FIX GUARD: tidelink's native peer response feeds the guard mux
+-        // (*_tl); the guard drives the decoder-facing hrdata_peer/hreadyout_peer/
+-        // hresp_peer (2-cycle HRESP=ERROR for a bufferable peer-write, else pass).
++        // TideLink's native peer response feeds the EWR-reject mux (*_tl); that mux
++        // drives the decoder-facing hrdata_peer / hreadyout_peer / hresp_peer.
+         .ahb_sub_hrdata     (hrdata_peer_tl),
+         .ahb_sub_hresp      (hresp_peer_tl),
+         .ahb_sub_hreadyout  (hreadyout_peer_tl),
+-        // BURST-FIX PORT (proto): per-beat W-consumption strobe replacing the XMR.
++        // Per-beat W-consumption strobe — see the peer-write steering block above.
+         .ahb_sub_w_beat_consumed_o (w_beat_consumed),
+         // ahb_tx — TX aperture (0x2E00). RAM_ADDR_W haddr[13:0]; no hburst/hprot.
+         .ahb_tx_hsel        (hsel_tx),
+@@ -1092,7 +1049,7 @@ module nanosoc_eth_chiplet #(
+         .apb_prdata         (tlapb_prdata),
+         .apb_pready         (tlapb_pready),
+         .apb_pslverr        (tlapb_pslverr),
+-        // Scan / DFT — no scan in this integration; tie inactive, capture open.
++        // Scan / DFT — passed straight through from the chiplet boundary.
+         .scan_mode          (scan_mode),
+         .scan_asyncrst_ctrl (scan_asyncrst_ctrl),
+         .scan_clk           (scan_clk),
+@@ -1160,10 +1117,7 @@ module nanosoc_eth_chiplet #(
+         .tl_bcast_ack_i         (tc_bcast_ack),
+         // Link status.
+         .link_active            (tc_link_active),
+-        // Data-mode status (FCSM>=4): now CONNECTED (FIX #3, 2026-08-09) and
+-        // routed to the TideChart shim's election gate below, in place of the
+-        // premature link_active. Closes the silent dual-root sequencing race
+-        // (root-cause: scratchpad/tidechart_rootcause.md sec 2/3).
++        // Data-mode status (FCSM>=4) — drives the TideChart election gate below.
+         .tl_data_mode_o         (tc_data_mode),
+         // Reset output — no consumer at this integration level.
+         .d2d_reset_o            (d2d_reset_o),
+@@ -1236,7 +1190,7 @@ module nanosoc_eth_chiplet #(
+     tidechart_shim #(
+         .NUM_PORTS    (1),
+         .FC_DATA_W    (48),
+-        .DEVICE_CLASS (DEVICE_CLASS)     // per-die strap (G1) — was hard-defaulted 0x0001
++        .DEVICE_CLASS (DEVICE_CLASS)     // per-die election priority strap
+     ) u_tidechart (
+         .clk    (sys_hclk),
+         .resetn (sys_hresetn),
+@@ -1247,20 +1201,17 @@ module nanosoc_eth_chiplet #(
+         .tc_axis_tx_tvalid          (tc_tx_tvalid),
+         .tc_axis_tx_tdata_flat      (tc_tx_tdata),
+         .tc_axis_tx_tready          (tc_tx_tready),
+-        // FIX #3 (2026-08-09): gate the root election on DATA-MODE (FCSM>=4),
+-        // NOT the premature tc_link_active (== role_locked_o). NUM_PORTS=1 here
+-        // so the 1-bit tc_data_mode maps directly (tb_tc_pair.sv:378 uses
+-        // {1'b0,m_data_mode} only because its shim is NUM_PORTS=2). tc_link_active
+-        // stays driven and is still consumed by link_active_o + u_d2d_decode.
++        // The root election gates on DATA-MODE (FCSM>=4), not on the premature
++        // tc_link_active (== role_locked_o). NUM_PORTS=1 here, so the 1-bit
++        // tc_data_mode maps directly. tc_link_active is still driven and still
++        // consumed by link_active_o and u_d2d_decode.
+         .link_active                (tc_data_mode),
+-        // Root-election tie-break. Derived from the existing role strap rather
+-        // than a new port: the two dies already differ there (master ties 0,
+-        // slave ties 1), which is exactly the distinctness the election needs,
+-        // and it costs no pad. Left unconnected the election falls back to
+-        // LFSR/PUF entropy and both dies can claim root — the very failure
+-        // tidechart 3005d11 was written to remove.
+-        // NOTE this overloads role_strap_i with a second meaning; if the roles
+-        // and the election root ever need to differ, this becomes a real port.
++        // Root-election tie-break, reused from the role strap (master ties 0,
++        // slave ties 1) so it costs no extra pad. It MUST differ between the two
++        // dies: left unconnected the election falls back to LFSR/PUF entropy and
++        // both dies can claim root. This overloads role_strap_i with a second
++        // meaning — if the role and the election root ever need to differ, this
++        // becomes a real port.
+         .device_strap               ({7'b0, role_strap_i}),
+         // Congestion sideband.
+         .local_link_state_i_flat    (tc_local_link_state),
+@@ -1277,10 +1228,10 @@ module nanosoc_eth_chiplet #(
+         .apb_pslverr                (tcapb_pslverr),
+         // Interrupt.
+         .tidechart_irq              (tc_tidechart_irq),
+-        // Phase-P4 IRQC AXI-Stream pair — the ahb-chiplet-irqc block is NOT
+-        // present in this integration, so both streams are held idle: TC->IRQC
+-        // has no consumer (tready low), IRQC->TC has no producer (tvalid low).
+-        // The output ends go to named `*_nc` sinks (see the sink block above).
++        // IRQC AXI-Stream pair — the ahb-chiplet-irqc block is NOT present in this
++        // integration, so both streams are held idle: TC->IRQC has no consumer
++        // (tready low), IRQC->TC has no producer (tvalid low). The output ends go
++        // to named `*_nc` sinks (see the sink block above).
+         .tc_to_irqc_tvalid_o        (tc_to_irqc_tvalid_nc),
+         .tc_to_irqc_tdata_o         (tc_to_irqc_tdata_nc),
+         .tc_to_irqc_tready_i        (1'b0),

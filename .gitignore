@@ -69,7 +69,7 @@ syn/asic/formality/fm_shell_command.log
 syn/asic/formality/*.svf
 
 # Generated IP (from set_env.sh)
-deps/xhb500/generated/
+deps/xhb500/generated
 
 # Vivado tool transcripts (cached in repo root by `vivado -mode batch ...`)
 vivado*.jou

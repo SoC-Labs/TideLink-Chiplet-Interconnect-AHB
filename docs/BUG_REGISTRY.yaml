@@ -1107,10 +1107,37 @@ bugs:
   # These were real defects/decisions with NO TL-0xx id.
   # ===========================================================================
   - id: TL-027
-    title: a2l data-plane replay nodes _1/_3/_5 ship UNFIXED (no CDC self-heal)
+    title: "a2l data-plane replay nodes _1/_3/_5 CDC self-heal — LANDED and SHIPPING"
     severity: high
     area: rtl/wlink
-    status: root_caused
+    status: closed
+    closed_2026_08_23: >
+      CLOSED, and the title/summary below were INVERTED for ten days. They asserted
+      that _1/_3/_5 "are the pristine (unfixed) deps/ copies in BOTH flists". They are
+      not. Measured on the freeze (5e8bdb5a / v0.90), source ship flist
+      flists/tidelink_top_full_asic_v2.flist:
+
+        _1  _3  _5   -> src/rtl/local_overrides/   HARDENED (self-heal present)
+        _12 _13      -> src/rtl/local_overrides/   HARDENED
+        _7  _9       -> deps/...                   RAW, NO self-heal
+
+      Confirmed at the RTL, not just the path: local_overrides _1/_3/_5 each carry
+      `assign link_addr_to_app_clk_w_inc = 1'b1;` (TL-027 continuous resend), while
+      deps _7/_9 carry the edge-triggered `= a2l_link_addr != a2l_link_addr_in`, which
+      is the original latch-forever form.
+
+      So the AW/W/B write path IS fixed and shipping. The real gap is AR/R, which was
+      tracked NOWHERE -- now opened as TL-043-ARR below.
+
+      This was not a fresh discovery: imp/hw_gate/SIGNOFF_LEDGER_2026_08_13.md:105
+      flagged the registry as understating it on 2026-08-13 and the entry was never
+      corrected. Ten days of anyone planning off this entry being sent to the wrong
+      nodes. The `fix:` block below is retained verbatim as historical record; its
+      `commit: null` is what made the entry look open.
+
+      Corroborating evidence that the write path is fixed and the read path is not:
+      silicon sysval on this exact freeze measured writes 6/6 runs 128/128 byte-exact
+      versus cross-die reads 2 PASS / 4 FAIL.
     summary: >
       The AW/W/B app-to-link replay nodes WlinkGenericFCReplayV2_{1,3,5} are the
       pristine (unfixed) deps/ copies in BOTH tidelink_fpga_v2.flist and
@@ -1153,6 +1180,61 @@ bugs:
       evidence: ["A2L_CDC handover", "roadmap §3b 'propose TL-018' id-collision", "docs/TL027_BCHANNEL_OBS_INSTRUMENT_SPEC.md", "B-node instantiation trace AXI4ToWlink.v:605/FCSM_2.v:505,629"]
       approved: false
     related: [TL-009, TL-001, TL-023]
+
+  - id: TL-043-ARR
+    title: "AR/R replay nodes _7/_9 ship WITHOUT the a2l CDC self-heal (read-path gap)"
+    severity: high
+    area: rtl/wlink
+    status: root_caused
+    opened: 2026-08-23
+    summary: >
+      The AR (_7) and R (_9) app-to-link replay nodes ship RAW from deps/ in the
+      tapeout flist and have NO local_overrides copy at all -- the file does not
+      exist. Their sibling write-path nodes _1/_3/_5 and the sideband _12/_13 all
+      carry the TL-027 CDC self-heal. This asymmetry was untracked until now:
+      TL-027 asserted the opposite (see its closure note), and
+      ESCAPE_VS_SAFETY_AUDIT_2026_08_13.md:211 audits _1/_3/_5/_12/_13 and omits
+      AR/R entirely.
+
+      MECHANISM. deps _7/_9 drive the ACK-pointer CDC edge-triggered:
+        assign link_addr_to_app_clk_w_inc = a2l_link_addr != a2l_link_addr_in;
+      A torn value delivered through WavMultibitSync that is not followed by a
+      further change never re-fires the edge, so the synced ACK pointer latches
+      forever -> a2l_full sticks -> app_ready=0 -> that node stops transmitting.
+      The hardened form (local_overrides _1) drives it continuously:
+        assign link_addr_to_app_clk_w_inc = 1'b1;   // TL-027 continuous resend
+      which self-heals within one mailbox round trip.
+
+      SILICON CORRELATE (not proof of cause): on freeze 5e8bdb5a, writes measured
+      6/6 runs 128/128 byte-exact while cross-die reads measured 2 PASS / 4 FAIL
+      with three distinct failure signatures. The pass/fail split follows the
+      hardened/raw split exactly. Three signatures suggests more than one
+      contributor, so this explains a CLASS of read failure, not necessarily all
+      of it -- read intermittency is also eye-sensitive.
+    fix:
+      approach: "transplant the _1 form to new src/rtl/local_overrides/WlinkGenericFCReplayV2_{7,9}.v with per-node width re-derivation, then re-point the ship + FPGA flists. Functional delta ~15 lines (ACK-window guard + continuous w_inc + TL-032 revert-aware rewind); the raw diff is ~53 lines, most of it the SPDX/attribution header."
+      files: [src/rtl/local_overrides/WlinkGenericFCReplayV2_7.v, src/rtl/local_overrides/WlinkGenericFCReplayV2_9.v, flists/tidelink_top_full_asic_v2.flist, flists/tidelink_fpga_v2.flist]
+      commit: null
+      branch: rev2/ar-r-selfheal
+      netlist_affecting: true
+    hazard_reviewed_2026_08_23: >
+      The _1 form's TL-032 revert-aware rewind is UNCONDITIONAL, and a CONDITIONAL
+      ACK-rewind was withdrawn from _13 by 1c1173e7 as "REFUTED on silicon --
+      rewinding the ACK pointer can discard a legitimate in-flight ACK". Checked
+      before porting: TL-032 answers that hazard structurally, and the citation
+      verifies. link_revert and a2l_ack_valid are decoded from the SAME 3-bit field
+      against DIFFERENT constants --
+        isAckPacket  = ack_nack_fifo_io_rdata[18:16] == 3'h2 & ack_nack_fifo_valid
+        isNackPacket = ack_nack_fifo_io_rdata[18:16] == 3'h3 & ack_nack_fifo_valid
+      (local_overrides/WlinkGenericFCSM_4.v:239-240; the in-source comment cites
+      :670/672, which has drifted -- content exact, line numbers stale). A 3-bit
+      field cannot equal 2 and 3 at once, so a revert can never coincide with a
+      legitimate ACK and prioritising it cannot discard one. Porting therefore does
+      NOT widen the refuted exposure. 1c1173e7 also withdrew its version partly
+      because it did not fix the real defect (peer-side fe_tx_credit_max), which is
+      a separate matter.
+    verification: {sim_test: "NONE -- cocotb/tidelink_a2l_replay_cdc has NODE=1/3/5/13 and no _7/_9 equivalent. Extend the bench FIRST and demonstrate the defect RED on the unpatched deps nodes before writing the patch.", in_sim_gate: false, hw_tested: false}
+    related: [TL-027, TL-009, TL-032]
 
   - id: TL-028
     title: Unconstrained D2D RX word clock (missing create_generated_clock / no CTS)

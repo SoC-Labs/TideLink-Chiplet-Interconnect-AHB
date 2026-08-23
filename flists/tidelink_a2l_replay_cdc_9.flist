@@ -1,0 +1,52 @@
+// ---------------------------------------------------------------------------
+// tidelink_a2l_replay_cdc_9.flist
+//
+// Compiles the R (read-data, data_id 0x84) channel a2l replay node
+// WlinkGenericFCReplayV2_9 standalone, for the cocotb/tidelink_a2l_replay_cdc
+// unit env with NODE=9.
+//
+// WHY THIS EXISTS (TL-043-ARR): _1/_3/_5 (AW/W/B) and _12/_13 (sideband) all
+// ship the TL-027 CDC self-heal from src/rtl/local_overrides/. _7 and _9 (AR/R)
+// have NO override file at all and ship RAW from deps/ in the tapeout flist.
+// That gap was untracked until 2026-08-23 and has NO test coverage: this env
+// had NODE=1/3/5/13 and nothing for the read path. Silicon on freeze 5e8bdb5a
+// measured writes 6/6 runs 128/128 byte-exact vs cross-die reads 2 PASS/4 FAIL.
+//
+// Geometry: _7 is 47-bit data / 6-bit ptr / depth-32 -- pointers as _3, so the
+// same false-FULL stimulus and lap-ahead ACK (33) apply unchanged. Only the RAM
+// instance differs (rFC, 47x32).
+//
+// Module closure:
+//   WlinkGenericFCReplayV2_9
+//     +- WavDemetReset
+//     +- WavFIFO_14                          (replay async FIFO, depth-8)
+//     |    +- WavDemetReset_27
+//     |    +- wlink_WavFIFOPtrLogic
+//     |    +- wlink_WavReplayFIFOPtrLogic
+//     |    +- wlink_wlink_axi_rFC_a2l_47x32 (47x32 behavioural RAM)
+//     +- WlinkGenericFCReplayAddrSync_3
+//          +- WavMultibitSync_3
+//               +- WavDemetReset
+// ---------------------------------------------------------------------------
+
++define+RANDOMIZE_REG_INIT
++define+RANDOMIZE_MEM_INIT
++define+RANDOMIZE_GARBAGE_ASSIGN
++define+RANDOMIZE_INVALID_ASSIGN
+
++incdir+${TIDELINK_HOME}/src/rtl/local_overrides
++incdir+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink
+
+// DUT (prefer local override if present, else deps) — written by the Makefile.
+// Today there is NO override for _7, so this resolves to the raw deps node.
+-f ${TIDELINK_HOME}/cocotb/tidelink_a2l_replay_cdc/dut_src_9.f
+
+// Leaf dependencies (unmodified vendor/Chisel-generated IP)
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset_27.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavFIFOPtrLogic.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_WavReplayFIFOPtrLogic.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/wlink_wlink_axi_rFC_a2l_47x32.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_14.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavMultibitSync_3.v
+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_3.v

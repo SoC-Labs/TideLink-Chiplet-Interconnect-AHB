@@ -8,8 +8,26 @@ export TIDELINK_HOME
 # NODE=13 (default): the TideLink sideband a2l node (48/5/depth-16).
 # NODE=5           : the B (write-response 0x82) data-plane a2l node
 #                    (14/4/depth-8) — TL-027 reproduce-first (lap-ahead ACK = 9).
+# NODE=7  : the AR (read-address 0x83) node (101/4/depth-8) — TL-043-ARR.
+# NODE=9  : the R  (read-data    0x84) node (47/6/depth-32) — TL-043-ARR.
+#           Neither has a local_overrides copy, so the DUT selection below
+#           resolves them to the RAW deps source. That is the point: these two
+#           are what SHIPS, and they are expected to FAIL the self-heal test
+#           until an override is written.
 NODE ?= 13
-ifeq ($(NODE),5)
+ifeq ($(NODE),7)
+  TB_FILE   := tb_top_7.sv
+  NODE_MOD  := WlinkGenericFCReplayV2_7
+  A2L_FLIST := tidelink_a2l_replay_cdc_7.flist
+  DUT_SRC_F := $(CURDIR)/dut_src_7.f
+  MODULE   ?= test_a2l_replay_cdc_7
+else ifeq ($(NODE),9)
+  TB_FILE   := tb_top_9.sv
+  NODE_MOD  := WlinkGenericFCReplayV2_9
+  A2L_FLIST := tidelink_a2l_replay_cdc_9.flist
+  DUT_SRC_F := $(CURDIR)/dut_src_9.f
+  MODULE   ?= test_a2l_replay_cdc_9
+else ifeq ($(NODE),5)
   TB_FILE   := tb_top_5.sv
   NODE_MOD  := WlinkGenericFCReplayV2_5
   A2L_FLIST := tidelink_a2l_replay_cdc_5.flist

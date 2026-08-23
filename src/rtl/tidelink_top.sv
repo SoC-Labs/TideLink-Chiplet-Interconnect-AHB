@@ -1835,6 +1835,180 @@ module tidelink_top #(
         end
     end
 
+    // ── TL-042 instance 1 FIX (2026-08-23): HEAD-OF-LINE WRITE-AGE WATCHDOG ──
+    //
+    // THE DEFECT (measured on silicon; obs word 0x8403_21F8 below, during a D2D
+    // peer-write wedge: healthy 0xB5000001 -> wedged 0xB5000498).
+    //     bit[3:1] sub_wr_os_ctr          = 4   four writes outstanding
+    //     bit[4]   pipe_hprot_r[2]        = 1   bufferable / early-write-response
+    //     bit[8]   sub_wr_stuck_sticky    = 0   <<< the backstop NEVER FIRED
+    //     bit[10]  xhb_stall_stuck_sticky = 1   hreadyout_raw low >= 2^12 hclk
+    // sub_wr_stuck_sticky is SET-ONLY (its only two assignments are `<= 1'b0`
+    // under reset and `<= 1'b1` on the fire condition), so bit[8]==0 proves the
+    // EXPIRY ITSELF never happened. The synth-B backstop is not masked and not
+    // mis-gated: it is STARVED.
+    //
+    // WHY. Both existing timers are AGGREGATE-PROGRESS timers with no
+    // transaction identity, so ANY unrelated completion re-arms a transaction
+    // that is going nowhere:
+    //     sub_axi_progress = sub_r_done | sub_b_done;      // any channel, any txn
+    //     if (!sub_axi_outstanding || sub_axi_progress) sub_osr_ctr_r  <= '0;
+    //     if (!sub_ext_stalled)                         sub_stall_ctr_r <= '0;
+    // A cross-page READ is NOT hazarded behind a posted write (hazard_list.sv
+    // match_addr_i compares chk_addr[31:12], a 4KB page), and pause_addr_submit's
+    // write arm keys on hazard_full only -- so on a port carrying ordinary mixed
+    // traffic every read completion re-zeroes the stuck WRITE's age, and every
+    // raw-hreadyout blip re-zeroes the per-beat timer. Post-onset ILA: 2035 low
+    // / 2 high in 2036 samples -- one 2-cycle pulse is enough to re-zero a
+    // counter that needs 65536 CONTINUOUS cycles.
+    // RAISING SUB_*_TIMEOUT_LOG2 PROVABLY CANNOT HELP: the counters never reach
+    // ANY threshold. Sim-reproduced 2026-08-23,
+    // cocotb/tidelink_axi_datanode_recovery/test_tl044_hol_write_age.py.
+    //
+    // THE FIX: give the OLDEST OUTSTANDING WRITE an IDENTITY and age THAT.
+    // Two wrapping sequence numbers -- issue (incremented by an accepted AW) and
+    // retire (incremented by a returning B) -- name the head-of-line write. The
+    // age counter is re-zeroed ONLY when the head-of-line write itself retires
+    // (sub_b_done advances the retire pointer, i.e. a NEW write becomes oldest)
+    // or when nothing is outstanding. sub_r_done, an hreadyout blip, and every
+    // other unrelated event CANNOT touch it. AXI requires same-ID write
+    // responses to return in order and this bridge ties AWID = hmaster = 12'd0
+    // (core_addr.sv:250 + .hmaster(12'd0) on u_xhb_sub), so "a B returned" IS
+    // "the head-of-line write retired": the retire pointer is exactly the
+    // head-of-line identity, with no per-entry timestamp array needed.
+    //
+    // WHAT IT DRIVES -- A DEDICATED PATH, DELIBERATELY NOT synth_b_pending.
+    // The 2026-08-13 TL-042 candidate asserted synth_b_pending as its escape.
+    // synth_b_pending was a LEVEL term of wr_hold_clr, so asserting it disabled
+    // the TL-002 peer-write data-phase hold, and that build was REJECTED on
+    // hardware (16/16 byte-exact -> 0/16). Nothing below is a term of
+    // wr_hold_set / wr_hold_clr / wr_hold_r, sub_err{1,2}_r, sub_rd_os_r,
+    // sub_wr_os_ctr, sub_stall_ctr_r, sub_osr_ctr_r, sub_mst_dphase_r,
+    // synth_b_pending or pipe_valid_r, and it reads none of them. The only
+    // pre-existing state it READS is sub_wr_awid_r (the captured, constant AWID)
+    // for the Fix-K bid mux; the only nets it JOINS are s_axi_bvalid/bresp/bid,
+    // as one additional OR term beside the existing synth-B.
+    //
+    // BOUNDED DRAIN. On expiry the ISSUE pointer is snapshot into
+    // sub_wr_hol_drain_tgt_r and the drain injects exactly one OKAY B per write
+    // that was outstanding AT THAT MOMENT -- never for a write accepted later,
+    // and never one beat too many (the B is driven off sub_wr_hol_b_drive, which
+    // deasserts on the beat that reaches the target). A real B arriving mid-drain
+    // simply advances the same retire pointer, so it shortens the drain rather
+    // than colliding with it. OKAY, not SLVERR, for the same reason the existing
+    // synth-B uses OKAY: SLVERR triggered a PS write-retry LOOP on silicon
+    // (ILA-proven) and turned a lost response into a total wedge.
+    //
+    // TIMEOUT 2^17 -- ONE BINADE ABOVE the two 2^16 aggregate timers, so this
+    // watchdog is always LAST to fire and can never pre-empt a backstop that
+    // would have fired on its own. It is an AGE, not a no-progress timer, but
+    // because B is in-order any retirement re-zeroes it, so a legitimately busy
+    // port never accumulates: reaching 2^17 means NO write retired for ~5.2 ms
+    // at 25 MHz with writes outstanding, which is unambiguously a wedge.
+    //
+    // NOT COVERED (disclosed): (a) a stuck write that is never ACCEPTED onto
+    // s_axi at all (sub_aw_accept never pulses) is invisible to this watchdog by
+    // construction -- that is TL-037's terminal-timeout path, not this one;
+    // (b) the symmetric READ-side starvation (a stuck read whose age timer is
+    // re-zeroed by write completions) is NOT fixed here: its only escape is the
+    // sub_err1_r ERROR path, and re-gating that would modify an existing
+    // protection, which this change deliberately does not do.
+    //
+    // NO COMB LOOP (the load-bearing wrapper invariant, cb33c9f): every term
+    // below is a register or derives ONLY from the XHB500 s_axi_* handshakes
+    // (driven by the bridge FSM off xhb_sub_hready) -- never from
+    // ahb_sub_hready, and never from ahb_sub_hreadyout. It feeds only
+    // s_axi_bvalid/bresp/bid, exactly as synth_b_pending already does, so
+    // ahb_sub_hreadyout gains no new combinational dependence.
+`ifdef TIDELINK_SUB_WR_HOL_TIMEOUT_LOG2
+    // Sim override (cocotb/tidelink_axi_datanode_recovery/test_tl044_hol_write_age.py
+    // drives it to 2^14, one binade above the 2^13 aggregate timers that test
+    // uses, preserving the shipping ordering in a sim-length window).
+    localparam int SUB_WR_HOL_TIMEOUT_LOG2 = `TIDELINK_SUB_WR_HOL_TIMEOUT_LOG2;
+`else
+    localparam int SUB_WR_HOL_TIMEOUT_LOG2 = 17;
+`endif
+    // 4-bit sequence numbers: the XHB500 hazard list is 4 deep
+    // (HAZARD_LIST_SIZE=4) so at most 4 writes are ever outstanding on s_axi;
+    // mod-16 pointers carry 4x margin and, unlike the saturating sub_wr_os_ctr,
+    // cannot desync by clipping.
+    logic [3:0]                        sub_wr_hol_seq_issue_r;
+    logic [3:0]                        sub_wr_hol_seq_retire_r;
+    logic [3:0]                        sub_wr_hol_drain_tgt_r;
+    logic [SUB_WR_HOL_TIMEOUT_LOG2:0]  sub_wr_hol_age_r;
+    logic                              sub_wr_hol_b_pending;
+    logic                              sub_wr_hol_stuck_sticky;  // obs 0x21F8 bit[12]
+
+    // A write is outstanding iff the two pointers differ; the OLDEST one is
+    // named by the retire pointer.
+    wire sub_wr_hol_valid      = (sub_wr_hol_seq_issue_r  != sub_wr_hol_seq_retire_r);
+    wire sub_wr_hol_expired    = sub_wr_hol_age_r[SUB_WR_HOL_TIMEOUT_LOG2];
+    wire sub_wr_hol_drain_busy = (sub_wr_hol_seq_retire_r != sub_wr_hol_drain_tgt_r);
+    // The synthetic B is driven only while the bounded drain still owes a beat.
+    wire sub_wr_hol_b_drive    = sub_wr_hol_b_pending & sub_wr_hol_drain_busy;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            sub_wr_hol_seq_issue_r  <= 4'd0;
+            sub_wr_hol_seq_retire_r <= 4'd0;
+            sub_wr_hol_drain_tgt_r  <= 4'd0;
+            sub_wr_hol_age_r        <= '0;
+            sub_wr_hol_b_pending    <= 1'b0;
+            sub_wr_hol_stuck_sticky <= 1'b0;
+        end else begin
+            if (sub_aw_accept) sub_wr_hol_seq_issue_r  <= sub_wr_hol_seq_issue_r  + 4'd1;
+            // The retire pointer may NEVER OVERTAKE the issue pointer. Guarding
+            // it with sub_wr_hol_valid is the exact analogue of the saturating
+            // `if (sub_wr_os_ctr != 3'd0)` on the Fix-H decrement, and it is
+            // load-bearing, not defensive: once this drain (or the synth-B one)
+            // force-completes a write, the far side's REAL B can still arrive
+            // afterwards -- the link was only wedged, not dead. An unguarded
+            // increment lets that late B push retire PAST issue, which makes
+            // sub_wr_hol_valid read TRUE with nothing outstanding; the watchdog
+            // then re-expires and drains until the 4-bit pointer WRAPS ALL THE
+            // WAY ROUND. Measured before the guard, in
+            // test_tl044_escape_is_clean_and_normal_path_survives: aw_accept=1
+            // but b_done=17 and hol_b_rises=2 -- 15 spurious synthetic B beats.
+            if (sub_b_done && sub_wr_hol_valid)
+                sub_wr_hol_seq_retire_r <= sub_wr_hol_seq_retire_r + 4'd1;
+
+            // AGE THE OLDEST OUTSTANDING WRITE. Re-zeroed ONLY by that write's
+            // own retirement, or by the port going write-idle. SATURATES at the
+            // expiry bit (does not wrap, does not self-clear) so the fire
+            // condition is a LEVEL that survives until the drain has actually
+            // retired something.
+            if (!sub_wr_hol_valid || sub_b_done)
+                sub_wr_hol_age_r <= '0;
+            else if (!sub_wr_hol_expired)
+                sub_wr_hol_age_r <= sub_wr_hol_age_r + (SUB_WR_HOL_TIMEOUT_LOG2+1)'(1'b1);
+
+            // Observability (obs 0x21F8 bit[12]): SET-ONLY witness that the
+            // head-of-line age expired, recorded independently of the drain so a
+            // disabled-drain build still shows the expiry. Same contract as
+            // sub_wr_stuck_sticky at bit[8], and a real FLOP -- a netlist grep
+            // for it is meaningful where a grep for a `wire` is not.
+            if (sub_wr_hol_expired) sub_wr_hol_stuck_sticky <= 1'b1;
+
+`ifdef TIDELINK_DISABLE_SUB_WR_HOL
+            // Reproduce-first ISOLATION build (throwaway): hold the drain off to
+            // recover the pre-fix behaviour and prove the new tests FAIL without
+            // the fix. Never set in the shipping flow.
+            sub_wr_hol_b_pending   <= 1'b0;
+            sub_wr_hol_drain_tgt_r <= sub_wr_hol_drain_tgt_r;
+`else
+            if (!sub_wr_hol_b_pending) begin
+                if (sub_wr_hol_expired) begin
+                    sub_wr_hol_b_pending   <= 1'b1;
+                    // snapshot: drain exactly what is outstanding right now
+                    sub_wr_hol_drain_tgt_r <= sub_wr_hol_seq_issue_r;
+                end
+            end else if (!sub_wr_hol_drain_busy) begin
+                sub_wr_hol_b_pending   <= 1'b0;
+            end
+`endif
+        end
+    end
+
     // ── TL-009 LEAK WITNESS (2026-08-07) ──────────────────────────────────────
     // The die_a PS wedge after ~10-20 cross-die writes is INVISIBLE to Region F
     // (FC nodes read healthy) and the kernel (silent hang). Capture the XHB500
@@ -1848,6 +2022,8 @@ module tidelink_top #(
     //   [9]    sub_err_sticky                  2-cycle ERROR backstop fired (read)
     //   [10]   xhb_stall_stuck_sticky          bridge hreadyout stuck LOW >= 2^12 hclk
     //                                          == XHB500 hazard-list-full / deadlock witness
+    //   [12]   sub_wr_hol_stuck_sticky         TL-042: head-of-line WRITE age expired
+    //                                          (the starvation-immune watchdog fired)
     //   [31:24] 0xB5 presence marker
     reg [11:0] xhb_stall_ctr_w;
     reg        xhb_stall_stuck_sticky;
@@ -1871,7 +2047,8 @@ module tidelink_top #(
             if (sub_err1_r)                         sub_err_sticky <= 1'b1;
         end
     end
-    wire [31:0] xhb_sub_obs_word = { 8'hB5, 12'h0,
+    wire [31:0] xhb_sub_obs_word = { 8'hB5, 11'h0,
+                                     sub_wr_hol_stuck_sticky,  // [12] TL-042: head-of-line write-age watchdog EXPIRED (was spare 0; additive)
                                      ext_stall_err_q,          // [11] TL-021: bounded-ext-stall sticky (was spare 0; additive, V2-only via 0x21F8)
                                      xhb_stall_stuck_sticky,   // [10]
                                      sub_err_sticky,           // [9]
@@ -2053,8 +2230,10 @@ module tidelink_top #(
             else if (synth_b_pending & s_axi_bready & (sub_wr_os_ctr <= 3'd1)) synth_b_pending <= 1'b0;
         end
     end
-    assign s_axi_bvalid = s_axi_bvalid_ctrl | synth_b_pending;
-    assign s_axi_bresp  = synth_b_pending ? 2'b00 : s_axi_bresp_ctrl;   // OKAY: a corrupted-B-RESPONSE write LANDED (only the response was lost); SLVERR triggered a PS write-retry LOOP (ILA-proven) -> total wedge
+    // TL-042: the head-of-line watchdog's bounded drain is an ADDITIONAL,
+    // independent OR term -- it neither reads nor asserts synth_b_pending.
+    assign s_axi_bvalid = s_axi_bvalid_ctrl | synth_b_pending | sub_wr_hol_b_drive;
+    assign s_axi_bresp  = (synth_b_pending | sub_wr_hol_b_drive) ? 2'b00 : s_axi_bresp_ctrl;   // OKAY: a corrupted-B-RESPONSE write LANDED (only the response was lost); SLVERR triggered a PS write-retry LOOP (ILA-proven) -> total wedge
     // ── Fix K (2026-08-05): XHB500 hazard-list BID-CORRECTION ─────────────────
     // XHB500 frees a BUFFERABLE (EWR) write from its hazard list ONLY when the
     // returning B's bid matches the stored AWID:
@@ -2075,8 +2254,9 @@ module tidelink_top #(
     // cover BOTH the corrupted-bid and the lost-B faults. No-op for a clean B
     // (bid already == awid) and for non-EWR writes (never in the hazard list). The
     // else-arm keeps s_axi_bid_ctrl referenced (bid is don't-care when bvalid=0).
-    assign s_axi_bid    = (s_axi_bvalid_ctrl | synth_b_pending) ? sub_wr_awid_r
-                                                                : s_axi_bid_ctrl;
+    assign s_axi_bid    = (s_axi_bvalid_ctrl | synth_b_pending
+                                              | sub_wr_hol_b_drive) ? sub_wr_awid_r
+                                                                    : s_axi_bid_ctrl;
 
     assign ahb_sub_hreadyout = (sub_err1_r & ~synth_b_pending) ? 1'b0 :
                                (sub_err2_r & ~synth_b_pending) ? 1'b1 :

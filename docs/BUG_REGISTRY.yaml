@@ -1885,7 +1885,18 @@ bugs:
     caveats:
       - "DO NOT build the previously-proposed head-of-line write-age timer: it ages
          writes counted in sub_wr_os_ctr, and the stuck write is never counted.
-         It would review as correct and do nothing. Killed by the 08-13 ILA."
+         It would review as correct and do nothing. Killed by the 08-13 ILA.
+         ** AMENDED 2026-08-23 — THIS KILL RESTS ON EVIDENCE THAT IS NOW
+         CONTRADICTED. A later Region-F obs capture of a D2D peer-write wedge
+         (0x8403_21F8 = 0xB5000498) reads sub_wr_os_ctr = 4 and sub_wr_os_hwm = 4,
+         i.e. the stuck writes ARE counted, which is the exact opposite of the
+         08-13 ILA reading (sub_aw_accept=0, sub_wr_os_ctr=0) this kill was based
+         on. The two captures disagree about the same field; NEITHER has been
+         re-taken to adjudicate. A head-of-line watchdog is therefore live again
+         for the 0xB5000498 shape and DEAD for the 08-13 shape, and both remain
+         possible. See hol_write_age_watchdog_2026_08_23 — implemented and
+         sim-proven for the 0xB5000498 shape ONLY, explicitly NOT covering an
+         uncounted write. **"
       - "DO NOT reuse synth_b_pending as a hold-release lever. It is a TERM OF
          wr_hold_clr, so asserting it disables the TL-002 hold wholesale. This is
          the measured cause of the 16/16 -> 0/16 regression above."
@@ -1912,6 +1923,82 @@ bugs:
         instance 2 MEASURED (imp/hw_gate/ila_tl035_run/); instances 1 and 3 read
         from RTL. 2026-08-13: a candidate fix for instance 3 was HW-tested and
         REJECTED (baseline 16/16 -> fixed 0/16 at n=2). No fix is in the tree.
+        2026-08-23: instance 1 (the shared aggregate age timer) now has a
+        sim-proven wrapper fix on branch rev2/tl042-backstop -- SIM ONLY, NOT
+        hardware-tested. See hol_write_age_watchdog_2026_08_23.
+    hol_write_age_watchdog_2026_08_23:
+      status: SIM-PROVEN ON BRANCH rev2/tl042-backstop. NOT hw-tested. NOT on main.
+      scope: >
+        Fixes INSTANCE 1 only -- the shared aggregate age timer
+        (`sub_axi_progress = sub_r_done | sub_b_done` re-zeroing sub_osr_ctr_r,
+        and any hreadyout-raw blip re-zeroing sub_stall_ctr_r). It does NOT fix
+        instance 2 as the 08-13 ILA describes it (a write never accepted onto
+        s_axi is invisible to any counted-write watchdog, by construction), and
+        it does NOT touch instance 3 (wr_hold_r).
+      evidence_it_addresses: >
+        Region-F obs word 0x8403_21F8 during a D2D peer-write wedge:
+        healthy 0xB5000001 -> wedged 0xB5000498, i.e. sub_wr_os_ctr=4, hwm=4,
+        pipe_hprot_r[2]=1 (bufferable/EWR), xhb_stall_stuck_sticky=1, and
+        sub_wr_stuck_sticky=0. That last bit is SET-ONLY, so it proves the expiry
+        NEVER HAPPENED -- starvation, not masking. CONTRADICTS the 08-13 ILA
+        reading of sub_wr_os_ctr=0; see the amended caveat above.
+      design: >
+        Head-of-line WRITE age watchdog in the wrapper. Two 4-bit wrapping
+        sequence numbers -- issue (incremented by an accepted AW) and retire
+        (incremented by a returning B, GUARDED so it can never overtake issue) --
+        name the oldest outstanding write. Its age counter is re-zeroed ONLY by
+        that write's own retirement or by the port going write-idle, so
+        sub_r_done and hreadyout blips cannot touch it. Timeout 2^17, ONE BINADE
+        ABOVE the two 2^16 aggregate timers, so it is always last to fire and
+        never pre-empts a backstop that would have fired on its own (measured:
+        in the no-traffic control the aggregate backstop fires at 8192 and the
+        watchdog does not arm).
+      constraint_compliance: >
+        Deliberately does NOT reuse or couple to wr_hold_r or synth_b_pending --
+        the exact reuse that made the 08-13 candidate HARMFUL. It has its own
+        pending register and its own BOUNDED drain (issue pointer snapshot at
+        fire; exactly one OKAY B per write outstanding at that moment, never for
+        a write accepted later). It writes nothing that any existing protection
+        reads. Its only joins are additional OR terms on s_axi_bvalid/bresp/bid,
+        beside the existing synth-B, and obs bit[12] (previously a constant 0).
+        No new combinational dependence on ahb_sub_hready: every term is a
+        register or an s_axi_* handshake.
+      self_found_defect: >
+        The FIRST implementation had an unguarded retire pointer. When the link
+        recovered after a drain, the far side's late REAL B pushed retire PAST
+        issue, so sub_wr_hol_valid read TRUE with nothing outstanding and the
+        watchdog re-expired and drained until the 4-bit pointer WRAPPED --
+        measured aw_accept=1 but b_done=17, hol_b_rises=2, in
+        test_tl044_escape_is_clean_and_normal_path_survives. The escape assertions
+        still PASSED; only the drain-bound number exposed it. Guard added
+        (`if (sub_b_done && sub_wr_hol_valid)`, the analogue of the saturating
+        Fix-H decrement) plus a permanent SYNTHETIC-B RUNAWAY assertion. Post-fix
+        b_done=2 for aw_accept=1 (the synthetic beat plus the late real B).
+      files: [src/rtl/tidelink_top.sv, "cocotb/tidelink_axi_datanode_recovery/test_tl044_hol_write_age.py", "cocotb/tidelink_axi_datanode_recovery/Makefile"]
+      netlist_affecting: true
+      not_proven:
+        - "NO HARDWARE TEST. Nothing here has been near a KR260 or any silicon. The 08-13 lesson is that this path's sim A/Bs can pass and the build still regress the data plane."
+        - "The symmetric READ-side starvation (a stuck read whose age is re-zeroed by write completions) is NOT fixed -- its only escape is sub_err1_r, and re-gating that would modify an existing protection."
+        - "Not proven on the ASIC flist config (deps FCSMs, recovery-stripped); the tests run the FPGA-V2 local_overrides config. The wrapper logic is flist-independent but that is an argument, not a measurement."
+        - "The two silicon captures disagree about sub_wr_os_ctr at the wedge and neither was re-taken. If the 08-13 shape is the operative one, this watchdog is correct and INERT."
+      verification:
+        make_targets: ["make -C cocotb/tidelink_axi_datanode_recovery tl044", "make -C cocotb/tidelink_axi_datanode_recovery tl044_prefix"]
+        tests:
+          - "test_tl044_control_aggregate_backstop_fires_without_traffic  CONTROL: same stuck write, no unrelated traffic -> the EXISTING backstop fires (osr expiry at 8192, synthb_rises=1, sticky bit[8]=1). Proves the short-timeout build is reachable, so a non-expiry in the primary test is caused by re-zeroing, not by a long timeout."
+          - "test_tl044_starvation_defeats_the_aggregate_backstop         PRIMARY A/B."
+          - "test_tl044_escape_is_clean_and_normal_path_survives          escape fires + own state clears + clean write/read-back byte-exact + drain is BOUNDED."
+          - "test_tl044_healthy_traffic_never_trips_the_watchdog          false-fire guard: 24 write/read/bufferable-write rounds, zero arms."
+        red_green: >
+          PRE-FIX (pristine RTL, before the change existed): FAIL --
+          wr_outstanding_cycles=52044, r_done=38, osr_max=2098 of 8192,
+          osr_expiries=0, stall_expiries=0, sub_wr_stuck_sticky=0, synthb_rises=0.
+          POST-FIX (identical stimulus): PASS -- hol_age_max=16384, hol_b_rises=1,
+          sticky bit[12]=1, write retired at 16386 cycles, aggregate timers STILL
+          starved (osr_max=1311, osr_expiries=0, sub_wr_stuck_sticky=0) which
+          proves the new path acted independently of the old one.
+          MUTANT (+define+TIDELINK_DISABLE_SUB_WR_HOL, same source tree): FAIL on
+          both the primary and the safety test, with hol_age_max=16384 and
+          sticky bit[12]=1 -- detection proven separable from action.
     signoff:
       claude_verdict: >
         The most reusable result of the 2026-08-13 campaign, and now doubly so.

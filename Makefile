@@ -289,7 +289,7 @@ endef
 	sim_gate_force_recal sim_gate_dftelab \
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen sim_gate_txgen_ext_hijack \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
-	sim_gate_axi_datanode_recovery sim_gate_axi_datanode_gaps \
+	sim_gate_axi_datanode_recovery sim_gate_axi_datanode_gaps sim_gate_tl044_hol_write_age \
 	sim_gate_n1_read_backstop \
 	sim_gate_axinode_obs \
 	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write \
@@ -905,6 +905,24 @@ sim_gate_axi_datanode_gaps:
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_ecc && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_crc && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_tl037)
+
+# ── TL-042 instance 1 (2026-08-23) — the ahb_sub write backstop STARVES ──────
+# Both existing ahb_sub backstops are AGGREGATE-PROGRESS timers: sub_osr_ctr_r
+# re-zeroes on `sub_axi_progress = sub_r_done | sub_b_done` (any channel, any
+# transaction) and sub_stall_ctr_r re-zeroes on any xhb_sub_hreadyout_raw blip.
+# On a port carrying ordinary mixed traffic a cross-page READ is NOT hazarded
+# behind a posted write, so every read completion re-arms the age of a WRITE
+# that is going nowhere. Silicon: obs 0x8403_21F8 = 0xB5000498 -> sub_wr_os_ctr=4
+# with sub_wr_stuck_sticky (bit[8], SET-ONLY) still 0 = the expiry NEVER
+# happened. Fix = head-of-line write-age watchdog in tidelink_top.sv, dedicated
+# path (NOT synth_b_pending, NOT wr_hold_r -- the reuse that made the 2026-08-13
+# candidate harmful on hardware).
+# Wired into the gate on landing so these four do not join the list of
+# regression tests that exist but never run.
+sim_gate_tl044_hol_write_age:
+	$(call sim_gate_run,tl044_hol_write_age,\
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_tl044 && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery tl044)
 
 # ── N1 (TAPEOUT BLOCKER, fixed @e008c58, 2026-08-14) regression ─────────────
 # Both ahb_sub backstops shared ONE age timer (sub_osr_ctr_r) and ONE
@@ -1600,7 +1618,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
-	axi_datanode_recovery axi_datanode_gaps n1_read_backstop \
+	axi_datanode_recovery axi_datanode_gaps tl044_hol_write_age n1_read_backstop \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
 	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \

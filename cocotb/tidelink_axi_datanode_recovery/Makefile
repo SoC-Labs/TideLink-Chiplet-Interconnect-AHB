@@ -194,10 +194,46 @@ $(TL042V2_TESTS):
 	        TESTCASE=$@
 tl042v2: ; @for t in $(TL042V2_TESTS); do $(MAKE) $$t || exit 1; done
 
+# TL-042 instance 1 — the ahb_sub write backstop STARVES (head-of-line write-age
+# watchdog, test_tl044_hol_write_age.py). The two AGGREGATE timers are set SHORT
+# (2^13) so they are reachable in a sim at all, and the head-of-line watchdog one
+# binade ABOVE them (2^14) so it keeps its shipping relationship to them: it must
+# never pre-empt a backstop that would have fired. TL044_AGG_LOG2/TL044_HOL_LOG2
+# must match the defines (the tests read them to know where each expiry bit is).
+# Own sim_build; ONE TEST PER SIM (a second run_bringup_full does not re-POR).
+TL044_AGG_LOG2 ?= 13
+TL044_HOL_LOG2 ?= 14
+TL044_TESTS := test_tl044_control_aggregate_backstop_fires_without_traffic \
+               test_tl044_starvation_defeats_the_aggregate_backstop \
+               test_tl044_escape_is_clean_and_normal_path_survives \
+               test_tl044_healthy_traffic_never_trips_the_watchdog
+.PHONY: tl044 tl044_prefix $(TL044_TESTS)
+$(TL044_TESTS):
+	TL044_AGG_LOG2=$(TL044_AGG_LOG2) TL044_HOL_LOG2=$(TL044_HOL_LOG2) \
+	$(MAKE) SIM_BUILD=sim_build_tl044 MODULE=test_tl044_hol_write_age \
+	        EXTRA_DEFINES="+define+TIDELINK_SUB_STALL_TIMEOUT_LOG2=$(TL044_AGG_LOG2) \
+	                       +define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=$(TL044_AGG_LOG2) \
+	                       +define+TIDELINK_SUB_WR_HOL_TIMEOUT_LOG2=$(TL044_HOL_LOG2)" \
+	        TESTCASE=$@
+tl044: ; @for t in $(TL044_TESTS); do $(MAKE) $$t || exit 1; done
+
+# Reproduce-first ISOLATION build (throwaway): +define+TIDELINK_DISABLE_SUB_WR_HOL
+# ties the head-of-line watchdog off = the pre-fix RTL. The PRIMARY test must FAIL
+# here (starvation confirmed, nothing recovers). Pick a case with T=...
+TL044_T ?= test_tl044_starvation_defeats_the_aggregate_backstop
+tl044_prefix:
+	TL044_AGG_LOG2=$(TL044_AGG_LOG2) TL044_HOL_LOG2=$(TL044_HOL_LOG2) \
+	$(MAKE) SIM_BUILD=sim_build_tl044_prefix MODULE=test_tl044_hol_write_age \
+	        EXTRA_DEFINES="+define+TIDELINK_SUB_STALL_TIMEOUT_LOG2=$(TL044_AGG_LOG2) \
+	                       +define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=$(TL044_AGG_LOG2) \
+	                       +define+TIDELINK_SUB_WR_HOL_TIMEOUT_LOG2=$(TL044_HOL_LOG2) \
+	                       +define+TIDELINK_DISABLE_SUB_WR_HOL" \
+	        TESTCASE=$(TL044_T)
+
 clean_builds:
 	rm -rf sim_build_axirec sim_build_axirec_* sim_build_bidfix sim_build_gaps* \
 	       sim_build_writehold* sim_build_tl042v2* sim_build_tl037* \
-	       sim_build_wrhold_drain_guard* $(LOCAL_FLIST)
+	       sim_build_wrhold_drain_guard* sim_build_tl044* $(LOCAL_FLIST)
 
 # =============================================================================
 # COVERAGE-GAP suite (test_axi_datanode_gaps.py) — 2026-08-02 verification

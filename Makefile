@@ -1728,6 +1728,12 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@# regression — the write backstop must no longer permanently mask the
 	@# read backstop's AHB ERROR.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_n1_read_backstop
+	@# TL-042: HEAD-OF-LINE WRITE-AGE WATCHDOG — the aggregate ahb_sub backstops
+	@# are STARVED by unrelated completions, so the oldest outstanding write is
+	@# aged by its own identity instead. (Registered in SIM_GATE_ALL_SUITES by
+	@# 71dde385 but never INVOKED here — the gate reported it MISS. Wired
+	@# 2026-08-24 during the rev2/consolidated integration.)
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_tl044_hol_write_age
 	@# TL-044: READ DEAD-GATE CONTAINMENT — after the read backstop has fired,
 	@# the port must not fall through to the known-wedged xhb_sub_hreadyout_raw
 	@# and hold HREADYOUT low on an IDLE bus (whole-bus PS wedge, JTAG-POR only).

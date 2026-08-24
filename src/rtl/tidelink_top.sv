@@ -1846,9 +1846,43 @@ module tidelink_top #(
     //   [7:5]  sub_wr_os_hwm                   outstanding-write HIGH-WATER-MARK
     //   [8]    sub_wr_stuck_sticky             synth-B backstop fired (write)
     //   [9]    sub_err_sticky                  2-cycle ERROR backstop fired (read)
-    //   [10]   xhb_stall_stuck_sticky          bridge hreadyout stuck LOW >= 2^12 hclk
-    //                                          == XHB500 hazard-list-full / deadlock witness
+    //   [10]   xhb_stall_stuck_sticky          hreadyout low >= 2^12 consecutive hclk
+    //                                          -- HAZARD-LIST PRESSURE, *NOT* A DEADLOCK
     //   [31:24] 0xB5 presence marker
+    //
+    // ── READ [10] AS PRESSURE, NOT AS A WEDGE  (corrected 2026-08-24) ─────────
+    // This bit was previously commented "XHB500 hazard-list-full / deadlock
+    // witness" and has been read that way in at least one silicon investigation.
+    // That reading is WRONG and the correction is measured, not argued:
+    //
+    //   kr260-pair-onchip, 2026-08-24, TWO different bitstreams (arms BASELINE
+    //   and FIX), BOTH dies: 0x21F8 went 0xB5000001 -> 0xB5000421 across the
+    //   run -- i.e. [10] SET -- while all 24/24 cross-die reads returned 256/256
+    //   words BYTE-EXACT and [9] stayed 0 throughout. Evidence:
+    //   td-bisect/kr260-integ-2026-08-24-results/AB_SUMMARY.json. The same
+    //   behaviour was noted but left unexplained on 2026-08-08 (a 2576-write
+    //   clean session latched it once) -- see
+    //   docs/HANDOVER_RELIABILITY_EYE_GATED_2026-08-08.md:77.
+    //
+    // WHY IT FIRES WHEN NOTHING IS WRONG. The counter below clears ONLY on
+    // hreadyout high and latches at a FIXED 4096-hclk threshold, so it measures
+    // "one AHB transaction stayed unready for 4096 consecutive hclk". A cross-die
+    // access legitimately holds hreadyout low for its whole D2D round trip, and
+    // that round trip is not bounded below 4096 hclk on this vehicle. The bit is
+    // sticky and clears only on hresetn, so the FIRST such transaction latches it
+    // for the rest of the session. Set therefore means "the bridge was made to
+    // wait a long time at least once", which healthy cross-die traffic does.
+    //
+    // WHAT ACTUALLY DISCRIMINATES A WEDGE (use these, not [10]):
+    //   [9]  sub_err_sticky        HIGH  -- the read ERROR backstop genuinely fired
+    //   [0]  xhb_sub_hreadyout_raw LOW *and STUCK* across repeated polls of this
+    //                              register -- the bridge is unready NOW, not
+    //                              merely once in the past. [0] is live, not
+    //                              sticky: one sample proves nothing, a stuck
+    //                              sequence of samples is the wedge signature.
+    // [8] sub_wr_stuck_sticky is a genuine fire indicator too, but for the WRITE
+    // path (synth-B backstop). In the 2026-08-24 healthy capture [8] and [9] were
+    // both 0 and [0] was 1 -- the correct healthy reading even with [10] set.
     reg [11:0] xhb_stall_ctr_w;
     reg        xhb_stall_stuck_sticky;
     reg [2:0]  sub_wr_os_hwm;

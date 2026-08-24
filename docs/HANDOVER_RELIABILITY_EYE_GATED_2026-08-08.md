@@ -73,11 +73,25 @@ margin** (e.g., a short built-in B-return loopback or a lane-error counter sampl
 the end of bring-up) so the turnkey orchestrator can reject a marginal eye and re-winscan before
 handing the link to the app. This makes the demo/product reliable even while the eye stays marginal.
 
-**(4) Explain the transient stall-stuck (bit10) on good runs.**
+**(4) Explain the transient stall-stuck (bit10) on good runs.** — **ANSWERED 2026-08-24: HARMLESS.**
 Even the 2576-write clean session latched `xhb_stall_stuck_sticky` once. Worth understanding: is it
 a single startup transient (harmless) or evidence the B-return occasionally stalls ≥2¹² and recovers
 (a reliability margin eater under temperature/aging)? A non-sticky *count* (how many ≥2¹² stalls per
 run) instead of a sticky bit would quantify the margin. Cheap obs change, high diagnostic value.
+
+> **Answer (measured 2026-08-24).** It is the harmless case. On kr260-pair-onchip, across TWO
+> bitstreams and BOTH dies, `0x21F8` moved `0xB5000001 -> 0xB5000421` — bit[10] SET — while all
+> 24/24 cross-die reads returned 256/256 words BYTE-EXACT, bit[9] stayed 0 and bit[0] stayed 1.
+> Evidence: `td-bisect/kr260-integ-2026-08-24-results/AB_SUMMARY.json`. The bit latches on 4096
+> *consecutive* unready hclk, and an ordinary cross-die round trip exceeds that; being sticky, the
+> first such transaction latches it for the session. So it is not a margin signal at all — it is
+> saturated by design on any vehicle whose D2D round trip exceeds 4096 hclk.
+>
+> **This makes the per-run COUNT ask above stronger, not weaker**: as a sticky, bit[10] carries
+> exactly one bit of information and spends it on the first transaction. It also makes the bit
+> actively dangerous to read as a deadlock witness — see
+> `docs/BUG_REGISTRY.yaml` → TL-009 → `stall_bit10_is_pressure_not_deadlock_2026_08_24`. Wedge
+> discriminators are **bit[9] high** and **bit[0] low-and-stuck across repeated polls**.
 
 ## 3. Observability asks (small, high-value)
 - A **per-run stall COUNT** (not just the sticky bit) at `0x21F8` or a sibling word.

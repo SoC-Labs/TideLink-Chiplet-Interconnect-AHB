@@ -578,8 +578,10 @@ bugs:
       The leak-witness register 0x21F8 (obs commit 235d758, branch
       fix/tl001-calibrator-terminal-latch) made the wedge VISIBLE from APB — NO ILA
       needed. On a bad-framing bring-up the FIRST cross-die write reads
-      0x21F8=0xb5000521: stall=1 (XHB500 AHB bridge hreadyout stuck-low >=2^12 =>
-      far-B never returned), wr_stuck=1 (synth-B backstop fired), HWM=1, buf=0
+      0x21F8=0xb5000521: stall=1 (SEE stall_bit10_is_pressure_not_deadlock_2026_08_24
+      BELOW -- the ">= 2^12 => far-B never returned" gloss on this bit is RETRACTED;
+      bit10 carries no wedge information), wr_stuck=1 (synth-B backstop fired
+      -- THIS is the load-bearing bit in this decode), HWM=1, buf=0
       (non-bufferable => NOT the EWR/hazard-list path, Fix K N/A). die_b 0x2D001000=0
       (drop), die_a wedged at w4. => the wedge is a WRITE-STALL CASCADE: bad framing
       drops the W/B round-trip -> no far-B -> ~2^16 stall -> synth-B -> repeated
@@ -587,6 +589,37 @@ bugs:
       bring-up, ~17 mostly-good). SAME framing root as the data-drop; a good
       bring-up lands 16/16 with no stall/wedge. OVERTURNS 'below-obs SmartConnect leak'.
     needs: "No ILA — root-caused via the 0x21F8 witness. Fix path in fix.approach."
+    stall_bit10_is_pressure_not_deadlock_2026_08_24: >
+      DIAGNOSTIC CORRECTION, measured 2026-08-24. Obs register 0x21F8 bit[10]
+      (xhb_stall_stuck_sticky) was commented in RTL as the "XHB500 hazard-list-full /
+      deadlock witness" and has been read that way in this entry's own
+      LOCALIZED_2026_08_07 decode. THAT READING IS WRONG. Bit[10] indicates
+      HAZARD-LIST PRESSURE -- "the bridge was made to wait a long time at least
+      once" -- and NOT a deadlock. It fires during entirely healthy traffic.
+      EVIDENCE (not inference): kr260-pair-onchip, TWO different bitstreams (arms
+      BASELINE and FIX), BOTH dies -- 0x21F8 went 0xB5000001 -> 0xB5000421 across
+      the run, i.e. bit[10] SET, while ALL 24/24 cross-die reads returned 256/256
+      words BYTE-EXACT, bit[9] stayed 0 and bit[0] stayed 1. Artefact:
+      td-bisect/kr260-integ-2026-08-24-results/AB_SUMMARY.json (obs_0x21F8_pre /
+      obs_0x21F8_post, both arms, both dies).
+      MECHANISM: the counter clears only on hreadyout high and latches at a FIXED
+      4096-hclk threshold, so it measures one transaction staying unready for 4096
+      CONSECUTIVE hclk. A cross-die access legitimately holds hreadyout low for its
+      whole D2D round trip, which is not bounded below 4096 hclk on this vehicle.
+      The bit is sticky and clears only on hresetn, so the first such transaction
+      latches it for the session. This is the same behaviour flagged-but-unexplained
+      on 2026-08-08 (docs/HANDOVER_RELIABILITY_EYE_GATED_2026-08-08.md:76-80, "a
+      2576-write clean session latched it once") -- now explained, not a mystery.
+      WHAT ACTUALLY DISCRIMINATES A WEDGE, and what any future investigation must
+      use instead: bit[9] (sub_err_sticky) HIGH -- the read ERROR backstop genuinely
+      fired; AND bit[0] (xhb_sub_hreadyout_raw) LOW *AND STUCK* across REPEATED
+      polls of 0x21F8 -- bit[0] is live, not sticky, so one sample proves nothing
+      and a stuck sequence of samples is the wedge signature. Bit[8]
+      (sub_wr_stuck_sticky) remains a genuine fire indicator for the WRITE path.
+      DO NOT open, escalate, or close a wedge investigation on bit[10] alone.
+      Corrected at source: src/rtl/tidelink_top.sv (xhb_sub_obs_word declaration),
+      docs/TL021_FIRST_SILICON_OBS_SPEC.md, and
+      docs/HANDOVER_HW_RESULTS_FRAMING_WEDGE_2026-08-07.md.
     physical_eye_claims_retracted_2026_08_13: >
       RETRACTION NOTICE. This entry's signoff verdict (written 2026-08-07) closes on
       "PHYSICAL DIRECTIONAL EYE ASYMMETRY ... residual PHYSICAL/OPEN", and TL-005's
@@ -1238,7 +1271,11 @@ bugs:
       eth-chiplet bench (the kr260-pair-ONCHIP vehicle does NOT exhibit it: onchip_landrate.log
       = 4/4 PORs x 500/500 byte-exact). Lever 4 (replace the transient stall-STICKY 0x21F8
       bit10 with a per-run stall COUNT) is an obs sub-task best FOLDED INTO the TL-027 obs
-      instrument to avoid a second rebuild.
+      instrument to avoid a second rebuild. UPGRADED 2026-08-24 from "nice to have" to
+      "the sticky bit is actively misleading": bit10 is now MEASURED to set under healthy
+      traffic (TL-009.stall_bit10_is_pressure_not_deadlock_2026_08_24), so as a sticky it
+      saturates on the first cross-die transaction and carries no information for the rest
+      of the session. A per-run COUNT is what would make this observability point useful.
     fix: {approach: "add a per-lane eye/BER margin readable over APB at end of winscan; fold the stall-count obs into the TL-027 B-channel obs instrument (single rebuild). Instrument-first, same as TL-027.", files: [src/rtl/local_overrides/axi_chiplet_controller.sv, deps/tidelink-phy/rtl], commit: null, branch: null, netlist_affecting: true}
     verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
     signoff:

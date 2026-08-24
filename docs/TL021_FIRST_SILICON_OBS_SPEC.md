@@ -66,6 +66,13 @@ Bit-identical when the bit=0 (`role_is_master & ~0 == role_is_master`). Master w
 // tidelink_top.sv:1724
 wire [31:0] xhb_sub_obs_word = { 8'hB5, 12'h0, ext_stall_err_q /*[11]*/, xhb_stall_stuck_sticky /*[10]*/, ... };
 ```
+
+> **[10] is a PRESSURE bit, not a deadlock bit (corrected 2026-08-24).** See
+> `src/rtl/tidelink_top.sv` at the `xhb_sub_obs_word` declaration for the measured
+> correction. Summary: on kr260-pair-onchip, two different bitstreams, both dies,
+> `0x21F8` went `0xB5000001 -> 0xB5000421` (i.e. [10] SET) while 24/24 cross-die
+> reads returned 256/256 words BYTE-EXACT and [9] stayed 0. Discriminate a wedge
+> with **[9] high** and **[0] low-and-stuck across repeated polls** — never with [10].
 Path: ext_stall_err_q → xhb_sub_obs_word[11] → `.xhb_sub_obs_word_i` (:3086) → regionF slot 3'h6 (:3036) → SoC 0x4403_21F8 bit[11]. V2-only (0x21F8 is `ifdef TIDELINK_PHY_V2`); for V1 visibility a different (controller-internal) slot + a new port would be needed — out of scope for a V2 first-silicon debug build.
 
 ## Sim-proof plan (before David lands)

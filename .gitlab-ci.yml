@@ -78,6 +78,9 @@ variables:
   #
   #   VCS_HOME VERDI_HOME VIP_HOME   simulator, waveform viewer, VIP
   #   RTLA_HOME SPYGLASS_HOME        RTL Architect, SpyGlass (CDC lint)
+  #   XHB500_IP_DIR                  Arm XHB-500 bridge IP root (holds
+  #                                  logical/generate); set_env.sh generates
+  #                                  deps/xhb500/generated from it
   #   DC_HOME                        Design Compiler (synthesis stage)
   #   XCELIUM_HOME                   Cadence Xcelium (provides the HAL linter)
   #   CMSDK_DIR                      Arm Cortex-M System Design Kit package
@@ -186,6 +189,15 @@ preflight:
       check_dir "CMSDK_DIR"                    "$CMSDK_DIR"
       check_dir "CMSDK cmsdk_ahb_to_sram"      "$CMSDK_DIR/logical/cmsdk_ahb_to_sram"
       check_dir "CMSDK fpga_sram model"         "$CMSDK_DIR/logical/models/memories"
+      # XHB500 is the GENERATOR input for deps/xhb500/generated, the gitignored
+      # tree four flists compile 32 files from -- including the tapeout selector.
+      # It was not checked here, so a runner missing it produced a confusing
+      # downstream failure instead of a named one. The generated tree itself is
+      # NOT checked at this stage: it does not exist until set_env.sh runs. Its
+      # content is pinned by deps/xhb500/TREE.sha256 and verified by
+      # `make xhb500-check`, which sim_gate_env_check depends on.
+      check_dir "XHB500_IP_DIR"                "$XHB500_IP_DIR"
+      check_dir "XHB500 generator"             "$XHB500_IP_DIR/logical/generate"
 
       echo ""
       echo "-- Workspace ----------------------------"

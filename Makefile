@@ -298,11 +298,30 @@ endef
 	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5 \
 	sim_gate_v2_auto_anchor
 
-sim_gate_env_check:
+## Provenance gate for deps/xhb500/generated — the gitignored vendor tree that
+## four flists (including the TAPEOUT selector) hard-depend on. `git status` and
+## therefore `git_dirty` are structurally blind to it, so nothing else in the
+## flow can tell a divergent copy from the recorded one. See the script header.
+.PHONY: xhb500-check xhb500-update
+xhb500-check:
+	@bash scripts/xhb500_tree_digest.sh
+
+## Deliberate re-pin after an intended vendor-release change. Own commit, please.
+xhb500-update:
+	@bash scripts/xhb500_tree_digest.sh --update
+
+sim_gate_env_check: xhb500-check
 	@command -v vcs >/dev/null 2>&1 || \
 	  { echo "sim_gate: vcs not in PATH — run 'source ./set_env.sh' first"; exit 1; }
 	@command -v cocotb-config >/dev/null 2>&1 || \
 	  { echo "sim_gate: cocotb-config not in PATH — run 'source ./set_env.sh' first"; exit 1; }
+	@# xhb500-check is a prerequisite HERE, unlike the sibling checkouts noted
+	@# below, and the difference is deliberate. A missing sibling repo affects
+	@# only its own suites. deps/xhb500/generated is compiled by the tapeout
+	@# flists themselves, so a divergent copy silently changes what EVERY
+	@# gate result is a statement about — including the elaboration gates that
+	@# read flists/tidelink_top_full_asic_v2.flist directly. There is no
+	@# per-suite scope to fail it into.
 	@# NOTE: the weekend-2026-07-18 suites additionally need three SIBLING repo
 	@# checkouts (tidechart, nanosoc-ethernet-chiplet, ethernet-subsystem-ahb).
 	@# Those are checked PER-SUITE (SIM_GATE_REQUIRE below), NOT here: a missing

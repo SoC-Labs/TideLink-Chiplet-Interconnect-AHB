@@ -118,7 +118,7 @@ manifest_mechanism:
     - "IP parameters — no CONFIG.* value set on the tidelink_0/_1 BD cells"
     - "build-time env — TL_TRAIN_ENTRY_FALLBACK, TL_EPOCH_ANCHOR_EN, TIDELINK_FPGA_PTP, TD_AUTO_LANE_MASK_E4, FPGA_ALLOW_CRITICAL_WARNINGS (only TIDELINK_PHY_V2 survives, indirectly, as phy_marker)"
     - "tool version — no Vivado version anywhere in build_design.tcl or build_provenance.tcl"
-    - "deps/axi-chiplet-controller pin (declared in .gitmodules) and deps/xhb500 (not a submodule; versioned by nothing)"
+    - "deps/axi-chiplet-controller pin (declared in .gitmodules). deps/xhb500 is NOT a submodule and was 'versioned by nothing' until 2026-08-24; it is now pinned by content digest in deps/xhb500/TREE.sha256, verified by `make xhb500-check`, and recorded per-build in the manifest as xhb500_tree / xhb500_digest. Builds registered BELOW this date predate that pin and their XHB500 RTL is unverifiable after the fact."
     - "the dirty diff — a `-dirty` build records only those six characters"
     - "any test result"
   traps:
@@ -128,6 +128,12 @@ manifest_mechanism:
       stamped into the bitstream (build_design.tcl:637-643 only exports
       TIDELINK_GIT_USR_ACCESS on a clean tree). Presence of usr_access proves
       nothing; only git_dirty:false does.
+      CORRECTION 2026-08-24: git_dirty:false is necessary and NOT sufficient. It is
+      `git status --porcelain` non-empty (build_provenance.tcl, proc tl_git_sha),
+      so it is structurally blind to deps/xhb500/generated -- a gitignored,
+      untracked, non-submodule tree that four flists compile 32 files from,
+      including the tapeout selector. Read git_dirty TOGETHER WITH the
+      xhb500_tree field, which must read "match".
     deploy_sidecar_drops_dirty: >
       imp/fpga/output/pynq-z2-pair-all/tidelink_manifest.json records
       "9eaafb7152f...-dirty"; the sibling tidelink.bin.manifest.json that

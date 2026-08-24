@@ -53,6 +53,10 @@
 ###   Tier-0.c sv_anti_pattern (ms)  first-party latch / incomplete-case lint,
 ###                                  RATCHETED vs fpga/farm_gate_sv_baseline.txt.
 ###                                  (skip: FARM_GATE_SKIP_SV=1)
+###   Both ratchets key on CONTENT, not line numbers (see `extract_keys`): a
+###   finding is identified by its linter-emitted `[key=...]` discriminator, so
+###   inserting lines above it is not a new finding and changing WHAT is flagged
+###   is. Baselines carry no line numbers.
 ###   Tier-1   SIM         (minutes) the V2 pair sim, in two named tiers:
 ###       FUNCTIONAL (always, blocking): zero-epoch bring-up + reduced-lane +
 ###           XHB bridge BFM. Must be green on ANY sound V2 branch.
@@ -149,17 +153,83 @@ say "mode=$([ "${FARM_GATE_FAST:-0}" = 1 ] && echo FAST-lint-only || echo full-l
 hr
 
 # ---------------------------------------------------------------------------
-# Generic RATCHET: run a lint, reduce findings to stable "path:line: CODE" keys,
-# and fail ONLY on keys not already in the accepted baseline. This keeps the
-# gate green on today's known/accepted debt yet red on any NEW finding.
+# Generic RATCHET: run a lint, reduce findings to stable keys, and fail ONLY on
+# keys not already in the accepted baseline. Green on today's accepted debt, red
+# on any NEW finding.
 #
-#   Finding lines : <path>:<line>: <CODE> <message...>
-#   Baseline lines: <path>:<line>: <CODE>            (message dropped)
+# CONTENT KEYS, NOT LINE NUMBERS  (2026-08-24) --------------------------------
+# The key used to be "<path>:<line>: <CODE>". The line number made it a POSITION
+# key, and that was wrong twice over:
+#
+#   1. FALSE RED. Inserting anything above a finding changed its key, so the
+#      gate reported "NEW finding(s)" for a block nobody had touched. This
+#      happened SIX times: the axi_chiplet_controller.sv APB read mux drifted
+#      941 -> 985 -> 1021 -> 1089 -> 1102 -> 1166 without one edit to the
+#      always_comb itself, and each drift was answered by re-ratcheting.
+#
+#   2. FALSE GREEN, which is the reason this is a defect and not an annoyance.
+#      The re-ratchet reflex is "paste the current lint output over the
+#      baseline", which ACCEPTS anything new that arrived in the same window
+#      without anybody reading it -- the baseline's own "independently
+#      read-verified" claim is unenforced. And because sv_anti_pattern_lint
+#      stamps EVERY unguarded signal in a block with the same always_comb header
+#      line, a second latched signal inside an ALREADY-BASELINED block produced a
+#      byte-identical key and passed silently. That is precisely the class this
+#      gate exists to catch (it is what shipped the XHB combinational loop to
+#      silicon, cb33c9f).
+#
+# So the key is now "<path>: <CODE> [key=<discriminator>]", where the linter
+# emits the discriminator itself -- the signal name for COMB_NO_DEFAULT, the
+# case selector for CASE_NO_DEFAULT, the constraint text for the XDC rules. It
+# is immune to line drift and it SEPARATES findings the old key merged.
+#
+# FALLBACK, deliberately conservative: a finding with no `[key=...]` keeps the
+# old line-based key. A future rule that ships without a discriminator therefore
+# behaves exactly as before rather than silently becoming coarser.
+#
+# MULTISET, not set. `sort -u` would re-open hole (2) whenever two findings
+# legitimately share a key -- tidelink_lane_deskew_v2.sv really does have two
+# separate `di` loop iterators. Each occurrence is numbered (`#1`, `#2`), so a
+# THIRD `di` is a new key and fails. The baseline therefore lists such a finding
+# once per occurrence.
+#
+#   Finding lines : <path>:<line>: <CODE> <message...>  [key=<disc>]
+#   Baseline lines: <path>: <CODE> [key=<disc>]         (line + message dropped)
+#   Legacy form   : <path>:<line>: <CODE>               (still accepted)
 # ---------------------------------------------------------------------------
 extract_keys() {
-    # $1 = file of raw lint/baseline text -> stdout: sorted-uniq "path:line: CODE"
-    sed -nE 's#^([^:[:space:]]+:[0-9]+):[[:space:]]+([A-Z_]+).*$#\1: \2#p' "$1" \
-        | sort -u
+    # $1 = file of raw lint/baseline text -> stdout: sorted multiset of keys
+    awk '
+        # Trailing [key=...] wins: position-independent.
+        /\[key=.*\]$/ {
+            k = $0
+            sub(/^.*\[key=/, "", k); sub(/\]$/, "", k)
+            hdr = $0
+            if (match(hdr, /^[^: \t]+:[0-9]+:[ \t]+[A-Z_]+/) ||
+                match(hdr, /^[^: \t]+:[ \t]+[A-Z_]+/)) {
+                h = substr(hdr, RSTART, RLENGTH)
+                code = h; sub(/^.*[ \t]/, "", code)
+                # Strip the CODE, then the ":<line>:" (raw lint) or the bare
+                # trailing ":" (baseline, which carries no line number).
+                path = h
+                sub(/[ \t]+[A-Z_]+$/, "", path)
+                sub(/:[0-9]+:$/, "", path)
+                sub(/:$/, "", path)
+                print path ": " code " [key=" k "]"
+            }
+            next
+        }
+        # Legacy / no-discriminator: keep the original line-based key.
+        match($0, /^[^: \t]+:[0-9]+:[ \t]+[A-Z_]+/) {
+            h = substr($0, RSTART, RLENGTH)
+            code = h; sub(/^.*[ \t]/, "", code)
+            loc  = h; sub(/:[ \t]+[A-Z_]+$/, "", loc)
+            print loc ": " code
+        }
+    ' "$1" \
+        | sort \
+        | awk '{ c[$0]++; print $0 "  #" c[$0] }' \
+        | sort
 }
 
 # ratchet_lint <label> <raw-output-log> <baseline-file>

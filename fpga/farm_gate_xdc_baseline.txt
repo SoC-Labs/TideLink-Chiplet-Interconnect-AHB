@@ -5,7 +5,11 @@
 # listed here (i.e. a NEW droppable/anti-pattern constraint), so it is green
 # today yet still catches a genuinely dropped XDC.
 #
-# Format: "<relpath-from-TIDELINK_HOME>:<line>: <CODE>" (message text dropped).
+# Format: "<relpath-from-TIDELINK_HOME>: <CODE> [key=<constraint text>]"
+#         — CONTENT-KEYED (2026-08-24). No line number: see the rationale in
+#         fpga/farm_gate_sv_baseline.txt and fpga/farm_gate.sh `extract_keys`.
+#         The discriminator is the offending constraint itself, so moving it
+#         within the file is not a new finding and CHANGING it is.
 # To retire a baseline entry, fix the XDC and delete the line.
 #
 # Current accepted findings (2026-07-06):
@@ -18,8 +22,8 @@
 #     proven builds (cb33c9f et al.) apply it correctly. Tracked here as accepted
 #     debt so the ratchet still catches a NEW nested-proc-Tcl constraint that
 #     WOULD be silently dropped.
-fpga/targets/pynq-z2-pair/pynq_z2_tidelink_timing.xdc:18: XDC_NESTED_PROC_TCL
-fpga/targets/pynq-z2-pair-flip/pynq_z2_tidelink_timing.xdc:18: XDC_NESTED_PROC_TCL
-fpga/targets/pynq-z2-pair-flip-slow/pynq_z2_tidelink_timing.xdc:18: XDC_NESTED_PROC_TCL
-fpga/targets/pynq-z2-pair-slow/pynq_z2_tidelink_timing.xdc:18: XDC_NESTED_PROC_TCL
-fpga/targets/pynq-z2-single/pynq_z2_tidelink_timing.xdc:18: XDC_NESTED_PROC_TCL
+fpga/targets/pynq-z2-pair/pynq_z2_tidelink_timing.xdc: XDC_NESTED_PROC_TCL [key=set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]]
+fpga/targets/pynq-z2-pair-flip/pynq_z2_tidelink_timing.xdc: XDC_NESTED_PROC_TCL [key=set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]]
+fpga/targets/pynq-z2-pair-flip-slow/pynq_z2_tidelink_timing.xdc: XDC_NESTED_PROC_TCL [key=set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]]
+fpga/targets/pynq-z2-pair-slow/pynq_z2_tidelink_timing.xdc: XDC_NESTED_PROC_TCL [key=set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]]
+fpga/targets/pynq-z2-single/pynq_z2_tidelink_timing.xdc: XDC_NESTED_PROC_TCL [key=set_property USED_IN_SYNTHESIS false [get_files [file normalize [info script]]]]

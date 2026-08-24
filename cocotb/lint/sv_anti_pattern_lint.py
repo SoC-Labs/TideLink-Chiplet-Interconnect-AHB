@@ -144,13 +144,50 @@ class Finding:
     line: int
     code: str
     message: str
+    # STABLE CONTENT KEY (2026-08-24). A short, position-independent identifier
+    # for *which* thing was flagged -- the signal name for COMB_NO_DEFAULT, the
+    # case selector for CASE_NO_DEFAULT. It is what fpga/farm_gate.sh ratchets
+    # on, INSTEAD of the line number, so that inserting lines above a finding
+    # does not present it as new. Emitted as a trailing `[key=...]` token, which
+    # is purely additive: any consumer matching `<path>:<line>: <CODE> <text>`
+    # is unaffected. Empty means "no stable discriminator available" and the
+    # ratchet falls back to the old line-based key for that finding.
+    key: str = ""
 
     def __str__(self) -> str:
-        return f"{self.path}:{self.line}: {self.code} {self.message}"
+        base = f"{self.path}:{self.line}: {self.code} {self.message}"
+        return f"{base}  [key={self.key}]" if self.key else base
 
 
 def _line_of(src: str, idx: int) -> int:
     return src.count("\n", 0, idx) + 1
+
+
+def _case_selector(src: str, after_kw: int, limit: int = 120) -> str:
+    """Whitespace-collapsed text of the case selector starting at `after_kw`.
+
+    `after_kw` is the index just past the `case`/`casex`/`casez` keyword, so the
+    text runs `( expr )`. Returns the parenthesised expression with runs of
+    whitespace collapsed to single spaces, truncated to `limit` chars. Falls back
+    to the remainder of the line when the selector is unparenthesised, and to ""
+    when nothing usable is found (the ratchet then keeps its line-based key).
+    """
+    depth = 0
+    start = None
+    for i in range(after_kw, min(len(src), after_kw + 4096)):
+        c = src[i]
+        if c == "(":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0 and start is not None:
+                return re.sub(r"\s+", " ", src[start : i + 1]).strip()[:limit]
+        elif c == "\n" and depth == 0:
+            # Unparenthesised selector: take what preceded the newline.
+            return re.sub(r"\s+", " ", src[after_kw:i]).strip()[:limit]
+    return ""
 
 
 def _find_matching_end(
@@ -209,6 +246,10 @@ def scan_case_no_default(path: Path, src: str) -> List[Finding]:
             findings.append(
                 Finding(
                     path=path,
+                    # Discriminator = the case SELECTOR expression, whitespace-
+                    # collapsed. Two default-less cases in one file are then two
+                    # distinct keys, so baselining one does not waive the other.
+                    key=_case_selector(src, m.end()),
                     line=_line_of(src, start_kw),
                     code=CODE_CASE_NO_DEFAULT,
                     message=(
@@ -611,6 +652,7 @@ def scan_comb_no_default(path: Path, src: str) -> List[Finding]:
             findings.append(
                 Finding(
                     path=path,
+                    key=sig,
                     line=_line_of(src, m.start()),
                     code=CODE_COMB_NO_DEFAULT,
                     message=(

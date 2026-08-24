@@ -82,7 +82,20 @@ class Finding:
     text: str
 
     def __str__(self) -> str:
-        return f"{self.path}:{self.line}: {self.code} {self.text}"
+        # STABLE CONTENT KEY (2026-08-24) -- see the same field on
+        # sv_anti_pattern_lint.Finding. For XDC the discriminator is the
+        # offending constraint itself, whitespace-collapsed, which is already
+        # carried in `text`. fpga/farm_gate.sh ratchets on this instead of the
+        # line number. Additive trailing token; existing parsers are unaffected.
+        base = f"{self.path}:{self.line}: {self.code} {self.text}"
+        return f"{base}  [key={self.key}]" if self.key else base
+
+    @property
+    def key(self) -> str:
+        """The quoted constraint at the tail of `text`, else the whole message."""
+        m = re.search(r"'([^']*)'\s*$", self.text)
+        raw = m.group(1) if m else self.text
+        return re.sub(r"\s+", " ", raw).strip()[:120]
 
 
 def scan_xdc(path: Path, allow_patterns: List[re.Pattern]) -> List[Finding]:

@@ -69,11 +69,25 @@ proc tl_sha256 {path} {
 # uncommitted changes. "-dirty" is the single most useful provenance flag: a
 # dirty bitstream can never be reproduced from a commit, so it must be visible.
 proc tl_git_sha {root} {
+    # FAIL-CLOSED PROVENANCE (2026-08-24). Any failure to EVALUATE the working
+    # tree must record DIRTY, never clean. The previous form scored "could not
+    # tell" as clean two different ways, and both fired on real builds:
+    #   1. `![catch {...}] && ...` short-circuits when git exits non-zero -- e.g.
+    #      rc=128 "expected submodule path 'deps/...' not to be a symbolic link"
+    #      -- leaving dirty unset. Builds with symlinked deps/ were stamped
+    #      git_dirty:false while carrying uncommitted RTL.
+    #   2. rev-parse failure returned "unknown" and skipped the dirty check
+    #      entirely, producing source_commit:"unknown" WITH git_dirty:false --
+    #      a build whose commit git could not determine, recorded as clean.
+    # A bitstream that cannot be reproduced from a commit must never be
+    # indistinguishable from one that can.
     if { [catch { exec git -C $root rev-parse HEAD } sha] } {
-        return "unknown"
+        return "unknown-dirty"
     }
     set dirty ""
-    if { ![catch { exec git -C $root status --porcelain } st] && [string trim $st] ne "" } {
+    if { [catch { exec git -C $root status --porcelain } st] } {
+        set dirty "-dirty"
+    } elseif { [string trim $st] ne "" } {
         set dirty "-dirty"
     }
     return "${sha}${dirty}"

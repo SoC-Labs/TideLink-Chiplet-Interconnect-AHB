@@ -11,7 +11,7 @@
 #      (hold_ctr already expired) -> VAL_TIMEOUT_TO_DONE=1 -> S_DONE -> cal_done.
 #   4. poll both for cal_done=1 & fcsm=4.
 set -u
-PW=${KR260_PASSWORD:-soclabs2026}
+PW="${KR260_PASSWORD:?KR260_PASSWORD is not set. Export the board ssh password before running this script; it is deliberately not hardcoded (this repository is public).}"
 A=${DIE_A:-ubuntu@10.22.24.159}; B=${DIE_B:-ubuntu@10.22.24.153}
 STEP="scripts/tl_pair_step.py"
 S(){ local host=$1; shift; sshpass -p "$PW" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$host" \

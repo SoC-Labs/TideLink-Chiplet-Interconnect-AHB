@@ -270,6 +270,21 @@ vendor-collateral:
     - cd "$WORK_DIR" && make vendor-check
   allow_failure: false
 
+# Credentials, as opposed to vendor collateral. Separate job because it is a
+# separate question and a separate scanner: this one is in-repo
+# (scripts/ci/check-secrets.sh), needs no ASIC_TOOLKIT_DIR, and takes seconds.
+#
+# GREEN as of 2026-08-24 and BLOCKING from the start, which vendor-collateral
+# above could not be. Every rule arms itself against an invented specimen AND
+# against a lookalike before it scans, so a red here is a finding and not a
+# broken regex — and a green is measured, not assumed.
+secrets:
+  stage: lint
+  needs: [clone, preflight]
+  script:
+    - cd "$WORK_DIR" && make secrets-check
+  allow_failure: false
+
 # Pre-build gate, Tier-0 (fast, pure-Python — no EDA license). Ratcheted
 # xdc_lint + sv_anti_pattern: a NEW dropped-XDC / latch / incomplete-case fails
 # the pipeline. This is a REAL gate (no allow_failure) — it is the class that

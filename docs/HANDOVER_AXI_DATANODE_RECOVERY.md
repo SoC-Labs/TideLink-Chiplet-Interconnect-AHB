@@ -45,7 +45,7 @@ too late — that is the thing to diagnose.
 
 ## HOW TO RECREATE THE BUG (step by step, ~10 min, JTAG-POR staged)
 Boards: die_a `ubuntu@10.22.24.159` = fpgahub `kr260_01`; die_b `ubuntu@10.22.24.153` =
-`kr260_02`. Board pw `soclabs2026`. PS access = eth_ss_0 backdoor (PS phys 0x4_0000_0000 +
+`kr260_02`. Board pw: `$KR260_PASSWORD` (not recorded in this repo). PS access = eth_ss_0 backdoor (PS phys 0x4_0000_0000 +
 SoC_addr; TideLink APB SoC 0x2E03_0000). NEVER touch bare-link 0x8403/0xA400/0x8000.
 
 ```bash
@@ -56,7 +56,7 @@ for b in kr260_01 kr260_02; do ssh mapstone-dev "curl -s --unix-socket /run/fpga
   -d '{\"method\":\"default\",\"confirm\":true}'"; done
 
 # 1. deploy the SELF_ARM build to both (auto-skips AFI canaries for eth-chiplet)
-export KR260_PASSWORD=soclabs2026
+export KR260_PASSWORD=<board-password>
 make -C tidelink/fpga deploy_kr260 TARGET=kr260-eth-chiplet      KR260_HOST=ubuntu@10.22.24.159
 make -C tidelink/fpga deploy_kr260 TARGET=kr260-eth-chiplet-flip KR260_HOST=ubuntu@10.22.24.153
 

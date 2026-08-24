@@ -27,7 +27,7 @@ LOG="$OUT/run.log"; SUM="$OUT/summary.txt"; DONE="$OUT/done"
 : > "$LOG"; : > "$SUM"; rm -f "$DONE"
 A=ubuntu@10.22.24.159; B=ubuntu@10.22.24.153
 DEP="$SC/kr260_deploy.sh"
-PW="${KR260_PASSWORD:-soclabs2026}"
+PW="${KR260_PASSWORD:?KR260_PASSWORD is not set. Export the board ssh password before running this script; it is deliberately not hardcoded (this repository is public).}"
 mask(){ sed "s/${PW}/***/g" | grep -vaE 'password for|\[sudo\]'; }
 MAX_TRIES="${MAX_TRIES:-6}"; LEASE_TTL="${LEASE_TTL:-5400}"
 up(){ ping -c1 -W2 "${1#*@}" >/dev/null 2>&1 && timeout 12 ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=6 "$1" true 2>/dev/null && echo up; }

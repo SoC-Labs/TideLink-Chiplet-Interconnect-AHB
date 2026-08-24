@@ -15,7 +15,11 @@ OUT="$SCR/ila_capture_run"; mkdir -p "$OUT"; LOG="$OUT/run.log"; SUM="$OUT/summa
 : > "$LOG"; : > "$SUM"; rm -f "$DONE"
 A=ubuntu@10.22.24.159; B=ubuntu@10.22.24.153
 DEP="$SC/kr260_deploy.sh"
-PW=$(sed -n 's/.*KR260_PASSWORD:-\([^}]*\)}.*/\1/p' "$SC/kr260_eth_bringup_pair.sh" | head -1)
+# Board password from the environment. This USED TO scrape the literal out of
+# kr260_eth_bringup_pair.sh's "${KR260_PASSWORD:-<literal>}" default, which is
+# both a way of depending on a hardcoded credential at a distance and a silent
+# no-op the moment that default goes away (PW="" and mask() stops masking).
+PW="${KR260_PASSWORD:?KR260_PASSWORD is not set. Export the board ssh password before running this script; it is deliberately not hardcoded (this repository is public).}"
 mask(){ if [ -n "$PW" ]; then sed "s/${PW}/***/g" | grep -vaE 'password for|\[sudo\]'; else grep -vaE 'password for|\[sudo\]'; fi; }
 MAX_TRIES="${MAX_TRIES:-8}"; LEASE_TTL="${LEASE_TTL:-5400}"
 up(){ ping -c1 -W2 "${1#*@}" >/dev/null 2>&1 && timeout 12 ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=6 "$1" true 2>/dev/null && echo up; }

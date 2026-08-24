@@ -296,6 +296,7 @@ endef
 	sim_gate_v2_mbox_writeprotect \
 	sim_gate_calibrator_wrap \
 	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5 \
+	sim_gate_a2l_wready_tear \
 	sim_gate_v2_auto_anchor
 
 sim_gate_env_check:
@@ -608,6 +609,53 @@ sim_gate_a2l_replay_cdc_5:
 	$(call sim_gate_run,a2l_replay_cdc_5,\
 	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=5 \
 	    SIM_BUILD=sim_build_a2l_5 COCOTB_RESULTS_FILE=sim_build_a2l_5/res_a2l_5.xml)
+
+# TL-027 `w_inc` CONTINUOUS-RESEND self-heal — the CDC-TEARING regression
+# (2026-08-24). THIS IS A DIFFERENT DEFECT FROM sim_gate_a2l_replay_cdc_* ABOVE.
+#
+# WHY IT EXISTS: the a2l_replay_cdc_* suites fire a lap-ahead ACK (9 / 33) which
+# the override's `a2l_ack_valid` WINDOW GUARD rejects outright — a2l_link_addr
+# never moves, so their pass is explained ENTIRELY by the guard. The other half
+# of TL-027, `assign link_addr_to_app_clk_w_inc = 1'b1;`, was never exercised by
+# any sim, because an idle single-clock bench never tears. The override files say
+# so themselves ("Idle single-clock sim never tears -> silicon is the verifier
+# for the w_inc half"). That gap covered EVERY node, _1/_3/_5 included — which
+# ship in the ASIC today. This suite closes it.
+#
+# MECHANISM (WavMultibitSync.v:31 `we = w_inc & w_ready`, :44 `w_ready =
+# ~(rptr_wclk_demet_io_out ^ wptr)`): an ACK presented while the AddrSync mailbox
+# is mid-transfer computes we=0 and is DROPPED. The deps edge-form w_inc
+# (a2l_link_addr != a2l_link_addr_in) has already fallen back to 0 by then, so it
+# is NEVER retried — the app clock domain keeps a permanently stale ACK ptr and
+# computes a2l_full against it. w_inc=1'b1 re-pushes on the next w_ready.
+#
+# The bench uses genuinely asynchronous clocks (20 ns app / 317 ns link, gcd 1)
+# and sweeps injection offset d=1..5 link cycles x phi=0/7/13/19 ns, MEASURING
+# w_ready at the exact edge that samples each ACK. Three anti-vacuity guards fail
+# the test rather than skip: (A1) some injection must have measured w_ready=0,
+# (A2) a must-be-present control — some w_ready=1 injection must DELIVER, proving
+# the stimulus and probe are live, (A3) the ACK must have latched into the
+# link-clk a2l_link_addr, so the window guard cannot be what is being measured.
+#
+# A/B PROVEN NON-VACUOUS 2026-08-24 on all five data-plane nodes, both arms
+# (clean SIM_BUILD each, DUT provenance read back from VCS's own "Parsing design
+# file" lines):
+#   override (default, w_inc=1'b1) : PASS x5 — 16/20 injections torn, all healed
+#                                    within <=35 app_clk (2.2 link cycles)
+#   USE_DEPS_DUT=1 (w_inc=edge)    : FAIL x5 — 8/20 torn, 8/8 NEVER arrive;
+#                                    link-clk a2l_link_addr=2 while the app-clk
+#                                    synced ptr stays 1 forever. Control 12/12 OK.
+# Reproduce the red arm for any node N in {1,3,5,7,9}:
+#   make -C cocotb/tidelink_a2l_replay_cdc NODE=N USE_DEPS_DUT=1 MODULE=test_a2l_wready_tear SIM_BUILD=sim_build_tear_deps_N
+sim_gate_a2l_wready_tear:
+	$(call sim_gate_run,a2l_wready_tear,\
+	  cd cocotb/tidelink_a2l_replay_cdc && \
+	  for n in 1 3 5 7 9; do \
+	    rm -rf sim_build_tear_$$n || exit 1; \
+	    $(MAKE) NODE=$$n MODULE=test_a2l_wready_tear \
+	      SIM_BUILD=sim_build_tear_$$n \
+	      COCOTB_RESULTS_FILE=sim_build_tear_$$n/res_tear_$$n.xml || exit 1; \
+	  done)
 
 # ---------------------------------------------------------------------------
 # Rescued from the link-survey line (analysis/link-survey-2026-08-01, folded
@@ -1556,6 +1604,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
 	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \
+	a2l_wready_tear \
 	v2_auto_anchor
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
@@ -1648,6 +1697,8 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_1
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_3
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_5
+	@# TL-027 w_inc continuous-resend CDC-tearing regression (all 5 data-plane nodes).
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_wready_tear
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_perf
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_reduced_lane
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_epoch_silicon

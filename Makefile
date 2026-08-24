@@ -296,6 +296,7 @@ endef
 	sim_gate_v2_mbox_writeprotect \
 	sim_gate_calibrator_wrap \
 	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5 \
+	sim_gate_a2l_replay_cdc_7 sim_gate_a2l_replay_cdc_9 \
 	sim_gate_a2l_wready_tear \
 	sim_gate_v2_auto_anchor
 
@@ -609,6 +610,22 @@ sim_gate_a2l_replay_cdc_5:
 	$(call sim_gate_run,a2l_replay_cdc_5,\
 	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=5 \
 	    SIM_BUILD=sim_build_a2l_5 COCOTB_RESULTS_FILE=sim_build_a2l_5/res_a2l_5.xml)
+
+# TL-043-ARR (2026-08-23/24): the SHIPPING READ-path nodes. b1c9c9b4 added the
+# NODE=7 (AR) / NODE=9 (R) benches, flists and tb_tops and 3630b610 added their
+# WlinkGenericFCReplayV2_{7,9}.v self-heal overrides, but NO gate target was ever
+# created for them — so the ARR fix's own regressions never ran in `make sim_gate`
+# (not even as MISS: they were never registered). Wired 2026-08-24 during the
+# rev2/consolidated integration; both pass 2/2.
+sim_gate_a2l_replay_cdc_7:
+	$(call sim_gate_run,a2l_replay_cdc_7,\
+	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=7 \
+	    SIM_BUILD=sim_build_a2l_7 COCOTB_RESULTS_FILE=sim_build_a2l_7/res_a2l_7.xml)
+
+sim_gate_a2l_replay_cdc_9:
+	$(call sim_gate_run,a2l_replay_cdc_9,\
+	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=9 \
+	    SIM_BUILD=sim_build_a2l_9 COCOTB_RESULTS_FILE=sim_build_a2l_9/res_a2l_9.xml)
 
 # TL-027 `w_inc` CONTINUOUS-RESEND self-heal — the CDC-TEARING regression
 # (2026-08-24). THIS IS A DIFFERENT DEFECT FROM sim_gate_a2l_replay_cdc_* ABOVE.
@@ -1759,6 +1776,8 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_1
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_3
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_5
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_7
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_9
 	@# TL-027 w_inc continuous-resend CDC-tearing regression (all 5 data-plane nodes).
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_wready_tear
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_perf

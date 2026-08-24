@@ -1982,7 +1982,7 @@ bugs:
         - "Not proven on the ASIC flist config (deps FCSMs, recovery-stripped); the tests run the FPGA-V2 local_overrides config. The wrapper logic is flist-independent but that is an argument, not a measurement."
         - "The two silicon captures disagree about sub_wr_os_ctr at the wedge and neither was re-taken. If the 08-13 shape is the operative one, this watchdog is correct and INERT."
       verification:
-        make_targets: ["make -C cocotb/tidelink_axi_datanode_recovery tl044", "make -C cocotb/tidelink_axi_datanode_recovery tl044_prefix"]
+        make_targets: ["make -C cocotb/tidelink_axi_datanode_recovery tl044_hol", "make -C cocotb/tidelink_axi_datanode_recovery tl044_hol_prefix"]
         tests:
           - "test_tl044_control_aggregate_backstop_fires_without_traffic  CONTROL: same stuck write, no unrelated traffic -> the EXISTING backstop fires (osr expiry at 8192, synthb_rises=1, sticky bit[8]=1). Proves the short-timeout build is reachable, so a non-expiry in the primary test is caused by re-zeroing, not by a long timeout."
           - "test_tl044_starvation_defeats_the_aggregate_backstop         PRIMARY A/B."

@@ -1573,6 +1573,65 @@ module tidelink_top #(
 `else
     localparam int SUB_OUTSTANDING_TIMEOUT_LOG2 = 16;
 `endif
+    // ── TL-044 (2026-08-24): READ DEAD-GATE CONTAINMENT parameters ───────────
+    // See the "XHB500 DEAD-BRIDGE CONTAINMENT" block below the
+    // ahb_sub_hreadyout assign for the full rationale. Three named knobs, all
+    // overridable from a `+define+` so a sim can reach them and so the
+    // thresholds can be retuned when the on-silicon measurement lands:
+    //
+    //   XHB_DEAD_ARM_LOG2       consecutive hclk of "XHB500 not ready AND zero
+    //                           s_axi progress", AFTER a 2-cycle ERROR has
+    //                           fired on this port, before the bridge is
+    //                           declared DEAD. Default 12 (4096 hclk, ~164 us
+    //                           @25 MHz): the SAME threshold the existing
+    //                           xhb_stall_stuck_sticky deadlock witness uses
+    //                           (:1865, 12'hFFF), so containment engages on the
+    //                           same evidence the obs word already calls a
+    //                           deadlock — and 16x SHORTER than the 2^16 stall
+    //                           timeout, so containment is in place before the
+    //                           next transfer would have to pay another full
+    //                           stall window.
+    //   XHB_DEAD_RECOVER_LOG2   consecutive hclk of xhb_sub_hreadyout_raw HIGH
+    //                           required to DEBOUNCE the sticky clear. Default
+    //                           12 — deliberately EQUAL to the arm threshold:
+    //                           the evidence bar for declaring the bridge alive
+    //                           again must be at least as strong as the bar
+    //                           used to declare it dead, or a single ready blip
+    //                           drops the port straight back onto the unbounded
+    //                           fall-through this fix exists to remove. A
+    //                           one-cycle (or one-sample) observation of raw
+    //                           going high is explicitly NOT sufficient.
+    //   XHB_DEAD_RELAPSE_MAX    how many times the sticky may clear and re-arm
+    //                           before it latches PERMANENTLY (reset-only).
+    //                           Default 2. See the INTERMITTENT branch note.
+`ifdef TIDELINK_XHB_DEAD_ARM_LOG2
+    localparam int XHB_DEAD_ARM_LOG2     = `TIDELINK_XHB_DEAD_ARM_LOG2;
+`else
+    localparam int XHB_DEAD_ARM_LOG2     = 12;
+`endif
+`ifdef TIDELINK_XHB_DEAD_RECOVER_LOG2
+    localparam int XHB_DEAD_RECOVER_LOG2 = `TIDELINK_XHB_DEAD_RECOVER_LOG2;
+`else
+    localparam int XHB_DEAD_RECOVER_LOG2 = 12;
+`endif
+`ifdef TIDELINK_XHB_DEAD_RELAPSE_MAX
+    localparam int XHB_DEAD_RELAPSE_MAX  = `TIDELINK_XHB_DEAD_RELAPSE_MAX;
+`else
+    localparam int XHB_DEAD_RELAPSE_MAX  = 2;
+`endif
+    // TL-044 containment state. Declared HERE because `default_nettype none`
+    // forbids the forward reference from the address-pipeline always_ff (:1660)
+    // that consumes dg_act_abort; DRIVEN in its own always_ff below the
+    // ahb_sub_hreadyout assign (it reads sub_mst_dphase_r, which is itself
+    // driven there).
+    logic                                  xhb_dead_r;        // sticky: bridge declared DEAD
+    logic                                  xhb_dead_perm_r;   // anti-oscillation permanent latch
+    logic                                  dg_armed_r;        // an ERROR fired and nothing has moved since
+    logic [XHB_DEAD_ARM_LOG2:0]            dg_dead_ctr_r;     // raw-low + no-progress age
+    logic [XHB_DEAD_RECOVER_LOG2:0]        dg_alive_ctr_r;    // raw-HIGH debounce age
+    logic [3:0]                            dg_relapse_ctr_r;  // saturating clear/re-arm count
+    logic                                  dg_err1_r, dg_err2_r; // containment 2-cycle AHB ERROR
+
     logic [SUB_STALL_TIMEOUT_LOG2:0]       sub_stall_ctr_r;
     logic [SUB_OUTSTANDING_TIMEOUT_LOG2:0] sub_osr_ctr_r;
     logic                                  sub_rd_os_r;
@@ -1648,6 +1707,34 @@ module tidelink_top #(
     wire sub_axi_progress    = sub_r_done | sub_b_done;
     wire sub_osr_expired     = sub_osr_ctr_r[SUB_OUTSTANDING_TIMEOUT_LOG2];
 
+    // ── TL-044 ACTION taps (2026-08-24) ──────────────────────────────────────
+    // The containment's DETECTION (xhb_dead_r and its counters, driven below)
+    // is kept strictly separate from its ACTION (these four taps). The
+    // TIDELINK_XHB_DEAD_NO_ACTION mutant build zeroes ONLY the taps, so
+    // detection still latches and still reports through the obs word while the
+    // port behaves exactly as pristine RTL — which is what makes the
+    // detection/action split a testable property rather than a claim
+    // (cocotb/tidelink_axi_datanode_recovery/test_tl044_read_deadgate.py
+    //  ::test_tl044_mutant_detection_without_action_still_hangs).
+    //
+    // dg_act_ready is qualified `& ~sub_mst_dphase_r` — "only when the master
+    // has already been answered". That is the invariant that makes this
+    // containment safe: it can free an IDLE bus, but it can NEVER complete a
+    // master's transfer with HREADYOUT=1/HRESP=OKAY, because whenever a master
+    // is waiting the tap is 0 and the bounded ERROR (dg_err1_r/dg_err2_r) is
+    // what retires it. Erroring is legal; inventing read data is not.
+`ifdef TIDELINK_XHB_DEAD_NO_ACTION
+    wire dg_act_err1  = 1'b0;
+    wire dg_act_err2  = 1'b0;
+    wire dg_act_ready = 1'b0;
+    wire dg_act_abort = 1'b0;
+`else
+    wire dg_act_err1  = dg_err1_r;
+    wire dg_act_err2  = dg_err2_r;
+    wire dg_act_ready = xhb_dead_r & ~sub_mst_dphase_r;
+    wire dg_act_abort = dg_err1_r | (xhb_dead_r & ~sub_mst_dphase_r);
+`endif
+
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             pipe_haddr_r   <= '0;
@@ -1678,6 +1765,36 @@ module tidelink_top #(
                 // Stall-timeout abort: abandon the in-flight (wedged) transfer so
                 // it cannot re-trigger the backstop or hold hsel into XHB500.
                 // (Skipped while synth_b_pending: XHB500 is completing the write.)
+                pipe_valid_r   <= 1'b0;
+                pipe_hsel_r    <= 1'b0;
+                pipe_htrans_r  <= 2'b00;
+            end else if (dg_act_abort) begin
+                // ── TL-044 (2026-08-24): DEAD-BRIDGE pipeline abort ───────────
+                // Same abandon as the stall-timeout arm above, for the two
+                // containment cases. It is REQUIRED for correctness, not a
+                // tidy-up:
+                //   dg_err1_r  — retire the transfer the containment ERROR is
+                //                terminating, so it cannot hold pipe_hsel_r
+                //                into a bridge that will never accept it.
+                //   xhb_dead_r & ~sub_mst_dphase_r — a transfer whose master
+                //                has ALREADY been answered but whose pipe entry
+                //                is stranded (raw never rose, so the
+                //                `pipe_valid_r && xhb_sub_hreadyout_raw` clear
+                //                at :1672 can never fire). Leaving it set is a
+                //                SECOND dead gate: the next NONSEQ would not
+                //                satisfy `ext_is_nonseq && !pipe_valid_r`, so
+                //                sub_mst_dphase_r would never re-arm, the
+                //                containment ERROR would never fire for it, and
+                //                the fill/rd_pipe/wr_hold terms would all be 0 —
+                //                the transfer would fall straight through to
+                //                dg_act_ready and complete with OKAY and stale
+                //                HRDATA. That is inventing read data, which this
+                //                design must never do. Clearing the stranded
+                //                entry is what keeps the ERROR path reachable
+                //                for every subsequent transfer.
+                // GATED ENTIRELY on xhb_dead_r (via dg_act_abort): when the
+                // containment is not engaged this arm is dead code and the
+                // pipeline is bit-identical to pristine.
                 pipe_valid_r   <= 1'b0;
                 pipe_hsel_r    <= 1'b0;
                 pipe_htrans_r  <= 2'b00;
@@ -2024,6 +2141,17 @@ module tidelink_top #(
     //                                          == XHB500 hazard-list-full / deadlock witness
     //   [12]   sub_wr_hol_stuck_sticky         TL-042: head-of-line WRITE age expired
     //                                          (the starvation-immune watchdog fired)
+    //   [13]   xhb_dead_r                      TL-044: XHB500 declared DEAD; the port is
+    //                                          in BOUNDED-ERROR containment (live, not sticky)
+    //   [14]   xhb_dead_perm_r                 TL-044: containment latched PERMANENTLY after
+    //                                          XHB_DEAD_RELAPSE_MAX clear/re-arm cycles
+    //   CONSOLIDATION NOTE (2026-08-24, rev2/consolidated): TL-042 and TL-044 were
+    //   developed independently against the same spare-bit pool and BOTH claimed
+    //   bit[12]. Allocated here by landing order on this branch: TL-042 keeps [12]
+    //   (as committed), TL-044 shifts up one to [13]/[14], keeping its two bits
+    //   adjacent and in their original relative order. Bits [23:15] remain spare.
+    //   Neither suite reads the packed word -- both probe the RTL signals by name
+    //   -- so this reallocation is a SILICON/APB contract change only.
     //   [31:24] 0xB5 presence marker
     reg [11:0] xhb_stall_ctr_w;
     reg        xhb_stall_stuck_sticky;
@@ -2047,7 +2175,9 @@ module tidelink_top #(
             if (sub_err1_r)                         sub_err_sticky <= 1'b1;
         end
     end
-    wire [31:0] xhb_sub_obs_word = { 8'hB5, 11'h0,
+    wire [31:0] xhb_sub_obs_word = { 8'hB5, 9'h0,
+                                     xhb_dead_perm_r,          // [14] TL-044: containment latched PERMANENTLY (intermittent port)
+                                     xhb_dead_r,               // [13] TL-044: XHB500 declared DEAD, bounded-error containment engaged
                                      sub_wr_hol_stuck_sticky,  // [12] TL-042: head-of-line write-age watchdog EXPIRED (was spare 0; additive)
                                      ext_stall_err_q,          // [11] TL-021: bounded-ext-stall sticky (was spare 0; additive, V2-only via 0x21F8)
                                      xhb_stall_stuck_sticky,   // [10]
@@ -2260,13 +2390,18 @@ module tidelink_top #(
 
     assign ahb_sub_hreadyout = (sub_err1_r & ~synth_b_pending) ? 1'b0 :
                                (sub_err2_r & ~synth_b_pending) ? 1'b1 :
+                               dg_act_err1                      ? 1'b0 :   // TL-044 containment ERROR cy1
+                               dg_act_err2                      ? 1'b1 :   // TL-044 containment ERROR cy2
                                (ext_is_nonseq && !pipe_valid_r) ? 1'b0 :
                                rd_pipe_r                        ? 1'b0 :
+                               dg_act_ready                     ? 1'b1 :   // TL-044: free an IDLE bus (master already answered)
                                wr_hold_r                        ? 1'b0 :   // Rank 1: hold write completion until the W beat lands
-                               xhb_sub_hreadyout_raw;
+                               xhb_sub_hreadyout_raw;             // terminal fallback (TL-044: unreachable while xhb_dead_r)
     // External hresp: XHB500's own hresp, overridden to ERROR for the two-cycle
     // backstop response. (XHB500 normally holds hresp=OKAY on the window path.)
-    assign ahb_sub_hresp     = ((sub_err1_r | sub_err2_r) & ~synth_b_pending) ? 1'b1 : xhb_sub_hresp_raw;
+    assign ahb_sub_hresp     = ((sub_err1_r | sub_err2_r) & ~synth_b_pending) ? 1'b1 :
+                               (dg_act_err1 | dg_act_err2)                    ? 1'b1 :
+                               xhb_sub_hresp_raw;
 
     // ── TL-037 FIX (2026-08-14): driver for sub_mst_dphase_r ─────────────────
     // "The master has been given a transfer and has not been answered yet."
@@ -2290,6 +2425,182 @@ module tidelink_top #(
         if (!hresetn)                            sub_mst_dphase_r <= 1'b0;
         else if (ext_is_nonseq && !pipe_valid_r) sub_mst_dphase_r <= 1'b1;
         else if (ahb_sub_hreadyout)              sub_mst_dphase_r <= 1'b0;
+    end
+
+    // =========================================================================
+    // TL-044 (2026-08-24) — XHB500 DEAD-BRIDGE CONTAINMENT (the READ dead gate)
+    // =========================================================================
+    // THE DEFECT (measured on KR260 silicon 0x21F8 bit[9]=1, reproduced in sim
+    // by test_tl044_read_deadgate.py).
+    //
+    // A cross-die READ whose R is permanently lost is retired correctly: the
+    // read backstop fires its 2-cycle AHB ERROR and the master is answered.
+    // But XHB500's own read_counter is decremented ONLY by r_done
+    // (core_resp.sv:115-123), so it is parked non-zero FOREVER, ready_for_read
+    // (core_resp.sv:233) stays 0, and xhb_sub_hreadyout_raw goes 0 and STAYS 0.
+    // Measured, not assumed: in the TL-037 vehicle raw is high for 0 of 8093
+    // cycles after the backstop ERROR.
+    //
+    // Nothing in this wrapper can un-wedge XHB500 — and this fix does not try.
+    // What it fixes is the TERMINAL FALLBACK of the ahb_sub_hreadyout mux. Once
+    // the one-shot sub_err{1,2}_r have retired the master, EVERY term of that
+    // mux is 0 on an idle bus, so the port falls through to
+    // xhb_sub_hreadyout_raw == 0 and drives HREADYOUT LOW WHILE IDLE, forever.
+    // That is an AHB-Lite protocol violation with a whole-bus blast radius: the
+    // AHB mux feeding this port keeps presenting this slave's HREADYOUT to the
+    // manager between transfers, so the manager cannot start a transfer to ANY
+    // slave. "The next transaction of any kind hangs the PS with no bus
+    // timeout" — JTAG-POR only. TL-037's terminal timeout does NOT cover this:
+    // it needs sub_mst_dphase_r, i.e. a master actually waiting in a data
+    // phase, and on an idle bus that is 0 by construction. TL-037 additionally
+    // makes every subsequent transfer pay a full SUB_STALL_TIMEOUT window
+    // (2^16 hclk ~ 2.6 ms @25 MHz) before it is errored.
+    //
+    // WHY READS AND NOT WRITES. Both error arms carry `& ~synth_b_pending`
+    // because the write path can FABRICATE a response: a synthetic B completes
+    // the write through XHB500's own response path, independent of the wedge.
+    // There is no synthetic-R equivalent, because you cannot fabricate read
+    // DATA. So writes have a recovery that does not need XHB500 to un-wedge;
+    // reads have none.
+    //
+    // WHAT THIS IS: CONTAINMENT, NOT REPAIR. It converts an UNBOUNDED host hang
+    // into BOUNDED AHB errors plus a protocol-legal idle bus. It never invents
+    // read data and never reports OKAY for a transfer XHB500 did not complete.
+    //
+    // DETECTION. Arm on a 2-cycle ERROR having fired on this port (sub_err1_r —
+    // a register, read-only here), then require XHB_DEAD_ARM_LOG2 CONSECUTIVE
+    // cycles in which the bridge shows no sign of life at all:
+    // xhb_sub_hreadyout_raw low AND zero s_axi progress. Any single cycle of
+    // either re-zeroes the age and disarms, so a slow-but-progressing bridge
+    // can never be declared dead. dg_axi_progress deliberately uses
+    // s_axi_bvalid_ctrl (XHB500's OWN B valid) and NOT s_axi_bvalid, so a
+    // synthetic B beat is not mistaken for the bridge being alive and so this
+    // block has no dependence on synth_b_pending whatsoever.
+    //
+    // EXIT — the three real post-park behaviours, each with a stated outcome:
+    //   NEVER        raw stays low. xhb_dead_r holds. The port stays in
+    //                bounded-error mode INDEFINITELY: every transfer gets a
+    //                legal 2-cycle ERROR in ~4 hclk and the idle bus is
+    //                released. It never hangs, and it never needs raw to
+    //                recover. Cleared by hresetn.
+    //   RECOVERED    raw returns and stays high for XHB_DEAD_RECOVER_LOG2
+    //                CONSECUTIVE cycles (dg_alive_ctr_r is re-zeroed by ANY low
+    //                cycle, so this is a true debounce, not a sample). Only
+    //                then does xhb_dead_r clear and normal pass-through resume.
+    //                A single-cycle ready blip clears NOTHING — clearing on a
+    //                blip would drop the port straight back onto the unbounded
+    //                fall-through this fix exists to remove.
+    //   INTERMITTENT raw returns, debounces, then dips again. Each such relapse
+    //                increments dg_relapse_ctr_r; after XHB_DEAD_RELAPSE_MAX
+    //                clear/re-arm cycles the NEXT arm sets xhb_dead_perm_r and
+    //                the sticky latches permanently (reset-only). CHOSEN over
+    //                "just require a longer stable window each time" because a
+    //                port that oscillates between pass-through and bounded-error
+    //                mode is UNPREDICTABLE to software — a driver cannot tell
+    //                whether an ERROR means "retry, the link blipped" or "this
+    //                port is gone" — and unpredictable is worse than either
+    //                stable state. A longer window only slows the oscillation
+    //                down; latching ends it. The cost is availability on a port
+    //                that has already proven itself unreliable three times,
+    //                which is the right trade for a bus that wedges a host.
+    //
+    // NO COMB LOOP (the load-bearing wrapper invariant, cb33c9f). Every term
+    // read here is either a REGISTER (sub_err1_r, sub_mst_dphase_r, the dg_*
+    // state) or an s_axi_* handshake / XHB500's own xhb_sub_hreadyout_raw.
+    // ahb_sub_hready is NEVER read. ahb_sub_hreadyout therefore gains only
+    // register fan-in (dg_err1_r, dg_err2_r, xhb_dead_r, sub_mst_dphase_r) and
+    // remains free of any combinational dependence on ahb_sub_hready.
+    //
+    // NO COUPLING TO THE EXISTING PROTECTIONS. Nothing in this block reads or
+    // drives wr_hold_r / wr_hold_set / wr_hold_clr / synth_b_pending /
+    // sub_wr_stuck_fire, and none of those signals' logic is modified. The ONE
+    // place TL-044 interacts with an existing protection is mux PRIORITY:
+    // dg_act_err{1,2} and dg_act_ready sit above wr_hold_r in the
+    // ahb_sub_hreadyout mux. That is deliberate and bounded:
+    //   * dg_act_err{1,2} above wr_hold_r is the SAME relationship
+    //     sub_err{1,2}_r already have in pristine RTL (both already outrank
+    //     wr_hold_r there). Without it a WRITE issued after the bridge died
+    //     would latch wr_hold_r, whose only clear terms need a live bridge, and
+    //     hang unbounded — the exact defect being contained, in the write
+    //     direction. The master is EXPLICITLY errored, so there is no silent
+    //     data drop: the Rank-1 hazard wr_hold_r exists to prevent is "master
+    //     released while XHB500 still has to sample HWDATA", and a dead bridge
+    //     will never sample it.
+    //   * dg_act_ready above wr_hold_r can NEVER release a waiting master,
+    //     because it is qualified `& ~sub_mst_dphase_r` — it is reachable only
+    //     once the master has already been answered. It frees an IDLE bus that
+    //     a stranded wr_hold_r would otherwise hold low forever.
+    // Both are gated entirely on xhb_dead_r, so with the containment disengaged
+    // ahb_sub_hreadyout is BIT-IDENTICAL to pristine RTL — asserted by
+    // test_tl044_false_fire_guard_zero_arms.
+    // =========================================================================
+    wire dg_axi_progress  = (s_axi_arvalid     & s_axi_arready)
+                          | (s_axi_awvalid     & s_axi_awready)
+                          | (s_axi_rvalid      & s_axi_rready)
+                          | (s_axi_bvalid_ctrl & s_axi_bready);
+    wire dg_bridge_alive  = xhb_sub_hreadyout_raw | dg_axi_progress;
+    wire dg_dead_expired  = dg_dead_ctr_r [XHB_DEAD_ARM_LOG2];
+    wire dg_alive_stable  = dg_alive_ctr_r[XHB_DEAD_RECOVER_LOG2];
+    // Fire the containment ERROR only while a master is genuinely waiting
+    // (sub_mst_dphase_r) so it lands in a data phase and is AHB-LEGAL, and only
+    // when the existing backstop sequencer is idle so the two can never
+    // double-drive the port.
+    wire dg_fire          = xhb_dead_r & sub_mst_dphase_r
+                          & ~dg_err1_r & ~dg_err2_r
+                          & ~sub_err1_r & ~sub_err2_r;
+
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            dg_armed_r       <= 1'b0;
+            dg_dead_ctr_r    <= '0;
+            dg_alive_ctr_r   <= '0;
+            dg_relapse_ctr_r <= 4'd0;
+            xhb_dead_r       <= 1'b0;
+            xhb_dead_perm_r  <= 1'b0;
+            dg_err1_r        <= 1'b0;
+            dg_err2_r        <= 1'b0;
+        end else begin
+            // ── ARM: a backstop ERROR fired, and nothing has moved since ─────
+            if (dg_bridge_alive)  dg_armed_r <= 1'b0;
+            else if (sub_err1_r)  dg_armed_r <= 1'b1;
+
+            if (!dg_armed_r || dg_bridge_alive)
+                dg_dead_ctr_r <= '0;
+            else if (!dg_dead_expired)
+                dg_dead_ctr_r <= dg_dead_ctr_r + (XHB_DEAD_ARM_LOG2+1)'(1'b1);
+
+            // ── RECOVERY DEBOUNCE: raw must be CONTINUOUSLY high ─────────────
+            // Any low cycle re-zeroes this, so a blip contributes nothing.
+            if (!xhb_sub_hreadyout_raw)
+                dg_alive_ctr_r <= '0;
+            else if (!dg_alive_stable)
+                dg_alive_ctr_r <= dg_alive_ctr_r + (XHB_DEAD_RECOVER_LOG2+1)'(1'b1);
+
+            // ── STICKY + anti-oscillation latch ──────────────────────────────
+            // dg_dead_expired and dg_alive_stable are mutually exclusive by
+            // construction: dg_alive_stable requires raw high, which asserts
+            // dg_bridge_alive, which zeroes dg_dead_ctr_r (and dg_armed_r) —
+            // so no arbitration between the two arms is needed.
+            if (dg_dead_expired) begin
+                if (!xhb_dead_r) begin
+                    xhb_dead_r <= 1'b1;
+                    if (dg_relapse_ctr_r != 4'd15)
+                        dg_relapse_ctr_r <= dg_relapse_ctr_r + 4'd1;
+                    // This arm is the (dg_relapse_ctr_r+1)-th. Latch permanently
+                    // once the allowance of clear/re-arm cycles is spent.
+                    if (dg_relapse_ctr_r >= 4'(XHB_DEAD_RELAPSE_MAX))
+                        xhb_dead_perm_r <= 1'b1;
+                end
+            end else if (xhb_dead_r & dg_alive_stable & ~xhb_dead_perm_r) begin
+                xhb_dead_r <= 1'b0;   // RECOVERED (debounced)
+            end
+
+            // ── Containment 2-cycle AHB ERROR sequencer (own, independent of
+            //    sub_err{1,2}_r so the existing backstop is untouched) ─────────
+            dg_err2_r <= dg_err1_r;   // ERROR cycle 2 follows cycle 1
+            dg_err1_r <= 1'b0;        // default: one-shot
+            if (dg_fire) dg_err1_r <= 1'b1;
+        end
     end
 
     // =========================================================================

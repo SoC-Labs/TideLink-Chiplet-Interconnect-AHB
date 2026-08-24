@@ -290,7 +290,7 @@ endef
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen sim_gate_txgen_ext_hijack \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
 	sim_gate_axi_datanode_recovery sim_gate_axi_datanode_gaps sim_gate_tl044_hol_write_age \
-	sim_gate_n1_read_backstop \
+	sim_gate_n1_read_backstop sim_gate_tl044_read_deadgate \
 	sim_gate_axinode_obs \
 	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write \
 	sim_gate_v2_mbox_writeprotect \
@@ -921,8 +921,8 @@ sim_gate_axi_datanode_gaps:
 # regression tests that exist but never run.
 sim_gate_tl044_hol_write_age:
 	$(call sim_gate_run,tl044_hol_write_age,\
-	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_tl044 && \
-	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery tl044)
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_tl044_hol && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery tl044_hol)
 
 # ── N1 (TAPEOUT BLOCKER, fixed @e008c58, 2026-08-14) regression ─────────────
 # Both ahb_sub backstops shared ONE age timer (sub_osr_ctr_r) and ONE
@@ -983,6 +983,39 @@ sim_gate_n1_read_backstop:
 	    EXTRA_DEFINES=+define+TIDELINK_SUB_OUTSTANDING_TIMEOUT_LOG2=13 \
 	    MODULE=test_n1_fix_recovery_dam \
 	    TESTCASE=test_n1_coincident_deferred_recovery)
+
+# ── TL-044 (2026-08-24) READ DEAD-GATE CONTAINMENT ──────────────────────────
+# What TL-037 left open. The read backstop retires a stuck read correctly and
+# TL-037 bounds the next transfer addressed to this port, but sub_err{1,2}_r are
+# ONE-SHOTS: two cycles later every term of the ahb_sub_hreadyout mux is 0 on an
+# IDLE bus and the port falls through to its terminal fallback
+# xhb_sub_hreadyout_raw — which XHB500 holds LOW forever, because a lost R parks
+# read_counter non-zero (core_resp.sv:115-123) and only r_done decrements it
+# (MEASURED: 0 raw-high cycles in 8093 on pristine 5e8bdb5a). The port therefore
+# drives HREADYOUT LOW WHILE IDLE, which is an AHB-Lite violation whose blast
+# radius is the WHOLE BUS: the AHB mux keeps presenting this slave's HREADYOUT
+# to the manager between transfers, so the next transaction of ANY kind — to
+# this port or to any other slave — never starts, with no bus timeout. TL-037's
+# terminal-timeout arm cannot cover it: that arm needs sub_mst_dphase_r (a
+# master waiting in a data phase), which on an idle bus is 0 by construction.
+#
+# The fix is CONTAINMENT, not repair (XHB500 cannot be un-wedged from here): a
+# sticky xhb_dead_r, armed only after a 2-cycle ERROR has fired AND the bridge
+# has shown no sign of life for XHB_DEAD_ARM_LOG2 consecutive cycles, that
+# releases an IDLE bus and retires every subsequent transfer with a bounded
+# 2-cycle AHB ERROR. It never fabricates read data.
+#
+# SIX blocking arms (RED / GREEN / SAFETY / INTERMITTENT / FALSE-FIRE, plus the
+# two-armed MUTANT). The mutant define disables the ACTION while leaving
+# DETECTION intact, and its negative arm REQUIRES the GREEN test to fail — so
+# "the fix did it" is proven, not assumed. Own sim_builds; one test per sim.
+sim_gate_tl044_read_deadgate:
+	$(call sim_gate_run,tl044_read_deadgate,\
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_tl044 \
+	         cocotb/tidelink_axi_datanode_recovery/sim_build_tl044_mutant && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery tl044_deadgate && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery tl044_mutant)
+
 
 # F-1 (KNOWN DEFECT, 2026-08-02): I5's AHB ERROR is driven with NO transfer in
 # its data phase on the POSTED-write path. I5 is deliberately HREADYOUT-blind so
@@ -1619,6 +1652,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
 	axi_datanode_recovery axi_datanode_gaps tl044_hol_write_age n1_read_backstop \
+	tl044_read_deadgate \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
 	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \
@@ -1694,6 +1728,10 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@# regression — the write backstop must no longer permanently mask the
 	@# read backstop's AHB ERROR.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_n1_read_backstop
+	@# TL-044: READ DEAD-GATE CONTAINMENT — after the read backstop has fired,
+	@# the port must not fall through to the known-wedged xhb_sub_hreadyout_raw
+	@# and hold HREADYOUT low on an IDLE bus (whole-bus PS wedge, JTAG-POR only).
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_tl044_read_deadgate
 	@# I1 eth-chiplet bring-up regressions (SELF_ARM + FIX-E + isolated-write).
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_i1_selfarm
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_i1_fixe_training_release

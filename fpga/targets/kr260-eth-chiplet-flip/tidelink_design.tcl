@@ -75,6 +75,14 @@ proc create_root_design { parentCell } {
     # UART console + status LEDs
     create_bd_port -dir I           uart_rxd
     create_bd_port -dir O           uart_txd
+
+    # HOSTIO4 EXTIO host port (M3) — raw tristate trio; the SYNTH-TOP board
+    # wrapper (tidelink_design_wrapper.v) owns the 7 IOBUFs. Exported on BOTH
+    # die targets so the debug host can be moved to either board without a
+    # re-package; only the board that has a host attached needs the header wired.
+    create_bd_port -dir I -from 6 -to 0 hostio4_p1_i
+    create_bd_port -dir O -from 6 -to 0 hostio4_p1_o
+    create_bd_port -dir O -from 6 -to 0 hostio4_p1_oe
     create_bd_port -dir O           led0
     create_bd_port -dir O           led1
 
@@ -227,6 +235,9 @@ proc create_root_design { parentCell } {
     connect_bd_net [get_bd_pins $soc/md_padoe_o] [get_bd_ports md_padoe_o]
     connect_bd_net [get_bd_ports uart_rxd]      [get_bd_pins $soc/uart_rxd]
     connect_bd_net [get_bd_pins $soc/uart_txd]  [get_bd_ports uart_txd]
+    connect_bd_net [get_bd_ports hostio4_p1_i]      [get_bd_pins $soc/hostio4_p1_i]
+    connect_bd_net [get_bd_pins $soc/hostio4_p1_o]  [get_bd_ports hostio4_p1_o]
+    connect_bd_net [get_bd_pins $soc/hostio4_p1_oe] [get_bd_ports hostio4_p1_oe]
     connect_bd_net [get_bd_pins $soc/link_active]    [get_bd_ports led0]
     connect_bd_net [get_bd_pins $soc/role_is_master] [get_bd_ports led1]
 

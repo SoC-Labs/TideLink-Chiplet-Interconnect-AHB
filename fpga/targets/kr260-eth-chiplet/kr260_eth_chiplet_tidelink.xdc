@@ -43,8 +43,29 @@ set_property -dict { PACKAGE_PIN W12  IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [g
 set_property -dict { PACKAGE_PIN W11  IOSTANDARD LVCMOS33 }                    [get_ports uart_rxd] ;# BCM21
 
 #-- Status LEDs on PMOD3 (moved off PMOD1 — the LAN8720 module takes it) -----
-set_property -dict { PACKAGE_PIN AG10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [get_ports led0] ;# PMOD3.3 — link_active (moved off PMOD1: PHY)
-set_property -dict { PACKAGE_PIN AH10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [get_ports led1] ;# PMOD3.4 — role_is_master (moved off PMOD1: PHY)
+# LEDs: BOTH parked on PMOD2, and PMOD3.10 DELIBERATELY LEFT UNASSIGNED.
+#
+# WHY PMOD3.10 IS NOW EMPTY. The RP2350 HOSTIO debugger drives an EIGHTH signal
+# the chiplet does not have: extio.py declares `XIOT_MODE = Pin(7, Pin.OUT)`,
+# the FT1248-vs-EXTIO select. Our FT1248MODE is hardwired 1'b0 inside the SoC
+# (nanosoc_multicore_soc.sv:1594) and is not a pad, so P1 is only [6:0].
+# The operator's ribbon carries all 8 conductors (8 series resistors fitted), so
+# GPIO7/MODE lands on PMOD3.10. Driving led0 there would put TWO push-pull
+# outputs on one wire. Leaving the ball unassigned makes the FPGA hold it
+# high-Z, so the RP2350 may drive MODE harmlessly into nothing -- which is
+# exactly right, because the mode it selects is the only mode this chip has.
+#
+# WE LOSE NOTHING AS A CONTROL. led0 was placed on PMOD3 to give a plain
+# always-driven bank-43 output to scope if HOSTIO looked dead. ioreq1/ioreq2 on
+# PMOD3.1/3.2 already are that: P1_OUTEN[0]/[1] are constant 1, so the FPGA
+# drives them unconditionally. Scope PMOD3.1.
+#
+# led0/led1 are pure observability (link_active / role_is_master, also readable
+# over the eth_ss_0 backdoor). They are constrained rather than deleted only
+# because an unconstrained port fails DRC UCIO-1. PMOD2 is bank 45, where
+# nothing has ever worked -- so do NOT read anything into whether they light.
+set_property -dict { PACKAGE_PIN H11 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [get_ports led0] ;# PMOD2.7 — link_active (parked, bank 45)
+set_property -dict { PACKAGE_PIN G10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 4 } [get_ports led1] ;# PMOD2.8 — role_is_master (parked, bank 45)
 
 #-----------------------------------------------------------------------------
 # CoreSight SWD on PMOD2 (3.3V HD bank, off the bank-44 ribbon).
@@ -93,3 +114,74 @@ set_property -dict { PACKAGE_PIN K12 IOSTANDARD LVCMOS33 SLEW FAST DRIVE 16 } [g
 set_property -dict { PACKAGE_PIN B11 IOSTANDARD LVCMOS33 } [get_ports rmii_ref_clk]     ;# PMOD1.10
 create_clock -period 20.000 -name rmii_ref_clk -waveform {0.000 10.000} -add [get_ports rmii_ref_clk]
 set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of_objects [get_ports rmii_ref_clk]]
+
+#-----------------------------------------------------------------------------
+# HOSTIO4 EXTIO host port — 7 bidirectional pads (M3).
+#
+# The SoC hardwires FT1248MODE = 1'b0 (nanosoc_multicore_soc.sv:1594), so the
+# EXTIO personality is always active and the pin roles are fixed:
+#   P1[0] ioreq1  OUT (permanent drive, P1_OUTEN[0] = 1'b1)
+#   P1[1] ioreq2  OUT (permanent drive, P1_OUTEN[1] = 1'b1)
+#   P1[2] ioack   IN  (permanent input,  P1_OUTEN[2] = 1'b0)
+#   P1[6:3] iodata[3:0] BIDIR, common nibble OE
+#
+# Placement: the 4 iodata bits are kept together on PMOD2 pins 7-10 so a single
+# ribbon carries the data nibble; the 3 handshake bits go to PMOD3. Balls are
+# from docs/bringup/KR260_BOARD_WIRING.md (PMOD2 = som240_1, PMOD3 = som240_2;
+# both are 3.3 V HD banks). PMOD3 pins 7/8 (AF11/AG11) are deliberately LEFT
+# FREE — KR260_BOARD_WIRING.md "Option B" reserves them for a USB-UART dongle.
+# PMOD4 is unusable here: HP bank 64/65 at 1.8 V, LVCMOS33 fails DRC BIVB-1.
+#
+# PULLUP on every bit MIRRORS THE ASIC, where all 7 pads are PDDW16DGZ_G with
+# REN tied high (on-die pull-ups enabled). This matters functionally on P1[2]:
+# ioack idles HIGH, and the controller's start condition is
+# `start_xfer = cmd_req & !ioack_s` (hostio4_controller_fsm.v:313), so a pulled-
+# up (or unattached) ioack holds the FSM idle. A floating ioack read as 0 could
+# let it start transfers into a host that is not there.
+#
+# NOTE: these are the SAME balls on die_a and die_b — HOSTIO4 is off-ribbon, so
+# unlike pad_tx/pad_rx it is NOT mirrored in the flip target.
+#-----------------------------------------------------------------------------
+# PLACEMENT: ALL SEVEN ON PMOD3, DELIBERATELY.
+#   PMOD3 balls are MEASURED bank 43 (all eight, Vivado package DB, part
+#   xck26-sfvc784-2LV-c; fourteen control balls on PMOD1/PMOD2/J21 reproduced
+#   their known banks 45/45/44, so the method is validated, not asserted).
+#   PMOD1 and PMOD2 are bank 45, where NOTHING has ever worked -- the fitted,
+#   powered LAN8720's MDIO returns rotating garbage from all 32 addresses and
+#   SWD has never returned a DPIDR. J21 (bank 44) works. Splitting the nibble
+#   onto PMOD2 would put the data path on the suspect bank, need two ribbons
+#   for a one-connector debugger, and make the result uninterpretable.
+#   Keeping it whole on bank 43 also makes this a bank-45 DISCRIMINATOR: the
+#   protocol is interlocked, so ONE transferred byte proves all seven pins
+#   bidirectionally. It cannot half-work.
+#
+# PULLUP on ioack is FUNCTIONAL, not hygiene: the ioack synchroniser presets to
+#   1 (hostio4_controller.v:55-57) and start_xfer = cmd_req & !ioack_s
+#   (hostio4_controller_fsm.v:313), so ioack idling HIGH holds the FSM idle. A
+#   floating ioack read as 0 could start transfers into a host that is not there.
+#   RESOLVED 2026-08-24: the RP2350 board carries 330 ohm series resistors on all
+#   8 PMOD signal lines (operator-measured). Against the FPGA weak pull-up that
+#   gives an ioack low level of 204 mV worst case (5k pull-up), 105 mV typical
+#   (10k) -- all well under the LVCMOS33 VIL of ~0.8 V, so the PULLUP STAYS.
+#   For the record, the threshold this was checked against: at 4.7k or more the
+#   pull-up would win the divider, ioack would never read low, and the FSM would
+#   never start -- which looks exactly like dead wiring. 330R is nowhere near it.
+#   Those resistors also cap ESD-diode current at ~10 mA during power sequencing,
+#   which matters because the RP2350 PMOD has GROUND ONLY (3V3 not soldered), so
+#   the two boards are independently powered with no shared rail.
+#
+# DRIVE 8 / SLEW SLOW, not the Z2's implicit 12: HOSTIO4 is a fully interlocked
+#   4-phase handshake with no source-synchronous clock, so edge rate buys zero
+#   timing margin and costs ringing on flying leads. Matches SWD and MDC/MDIO
+#   here; FAST/16 is reserved for RMII TX, the one genuinely source-synchronous
+#   port. No IOB TRUE: inputs land in 2-flop synchronisers and packing the first
+#   stage into a pad site would defeat ASYNC_REG placement -- the RMII IOB
+#   omission was a defect because RMII IS source-synchronous; copying it here
+#   would be the same cargo-culting in reverse.
+set_property -dict { PACKAGE_PIN AE12 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 }             [get_ports hostio4_ioreq1]       ;# PMOD3.1  ioreq1  SoC drives (OE const 1)
+set_property -dict { PACKAGE_PIN AF12 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 }             [get_ports hostio4_ioreq2]       ;# PMOD3.2  ioreq2  SoC drives (OE const 1)
+set_property -dict { PACKAGE_PIN AG10 IOSTANDARD LVCMOS33 PULLUP true }                   [get_ports hostio4_ioack]        ;# PMOD3.3  ioack   host drives (OE const 0)
+set_property -dict { PACKAGE_PIN AH10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLUP true } [get_ports {hostio4_iodata4[0]}] ;# PMOD3.4  iodata0 bidir
+set_property -dict { PACKAGE_PIN AF11 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLUP true } [get_ports {hostio4_iodata4[1]}] ;# PMOD3.7  iodata1 bidir
+set_property -dict { PACKAGE_PIN AG11 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLUP true } [get_ports {hostio4_iodata4[2]}] ;# PMOD3.8  iodata2 bidir
+set_property -dict { PACKAGE_PIN AH12 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 8 PULLUP true } [get_ports {hostio4_iodata4[3]}] ;# PMOD3.9  iodata3 bidir

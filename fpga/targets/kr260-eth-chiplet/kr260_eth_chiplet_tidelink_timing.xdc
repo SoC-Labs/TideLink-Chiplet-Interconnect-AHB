@@ -377,6 +377,22 @@ set_clock_groups -asynchronous \
 # Board LEDs are human-visible; no functional timing path needed.
 set_false_path -to [get_ports {led0 led1 led2 led3}]
 
+# HOSTIO4 EXTIO host port (M3). Asynchronous 4-bit handshake to an off-board
+# host — there is no board clock to reference, so a source-synchronous
+# constraint would be meaningless. false_path is CORRECT here rather than
+# merely convenient: every HOSTIO4 input is explicitly re-synchronised inside
+# the controller by a 2-FF hostio4_controller_sync instance before use
+# (hostio4_controller.v:55-106 — ioack_a and iodata4_a[3:0]), so the pad-to-
+# first-flop path carries no setup/hold requirement. The outputs (ioreq1/2 and
+# the iodata drive) are flop-driven with no receiving clock in this design.
+# This matches how uart_*/md_pad_*/swd* are already treated: unconstrained.
+#
+# get_ports is non-empty by construction (the hostio4_* pads are synth-top ports), so
+# this does NOT hit the empty-object silent-drop class that Vivado 12-1411 is
+# promoted to a hard ERROR for — see the IDELAYE2 note below.
+set_false_path -from [get_ports {hostio4_ioreq1 hostio4_ioreq2 hostio4_ioack hostio4_iodata4[*]}]
+set_false_path -to   [get_ports {hostio4_ioreq1 hostio4_ioreq2 hostio4_ioack hostio4_iodata4[*]}]
+
 # KR260: no IDELAYE2 CNTVALUEIN false_path. These targets build with USE_IDELAY=0
 # (no per-lane delay lines), and on UltraScale+ the 7-series IDELAYE2 primitive
 # does not exist anyway (it would be IDELAYE3). The Z2 version's

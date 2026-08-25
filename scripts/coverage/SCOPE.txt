@@ -1,0 +1,62 @@
+# SCOPE.txt -- what a TideLink coverage number is ABOUT.
+#
+#   <class> | <glob against the source path urg recorded> | <reason>
+#
+# First matching rule wins, so specific rules go first. AN UNMATCHED PATH IS
+# CLASSED `own`: the default is IN scope. A classifier that silently drops what
+# it does not recognise is a classifier that hides new code.
+#
+# CLASSES
+#   own              TideLink RTL. A zero here is a verification gap and blocks.
+#   shipping-vendor  Not written here, but it goes in the chip. A zero here is
+#                    a verification gap TOO -- it is merely one we cannot fix by
+#                    editing the RTL. Reported separately so it cannot be
+#                    quietly folded into a vendor exemption.
+#   harness          Testbench, VIP, BFMs, interfaces. Coverage of the harness
+#                    measures the harness, not the design. Excluded from the
+#                    score, still listed.
+#   out-of-scope     Genuinely not ours and genuinely not shipping in TideLink.
+#
+# WHY `shipping-vendor` IS A CLASS OF ITS OWN, and the only thing that matters
+# in this file:
+#
+#   The XHB500 AHB-to-AXI bridge's `singles_burst` term is gated on hprot[3]
+#   rather than hburst, with the consequence that the non-singles arm of the
+#   bridge has never executed in any test at any commit. That RTL lives under
+#   deps/xhb500/generated -- a VENDOR-GENERATED path. Any ordinary "exclude
+#   third-party code from coverage" rule would have hidden it, permanently, and
+#   the reason it stayed hidden for the life of the project is that nobody ever
+#   had to write down why it was excluded.
+#
+#   So: this file has no `# vendor` catch-all. Every exclusion names a reason,
+#   the reason shows up in `git diff`, and code that ships is in scope whoever
+#   generated it.
+#
+# The reason field is MANDATORY -- cov_report.py refuses to load a rule without
+# one.
+
+# --- shipping vendor RTL: in the chip, therefore in scope --------------------
+shipping-vendor | */deps/xhb500/generated/* | XHB500 AHB-to-AXI bridge. Vendor-GENERATED but it ships. The singles_burst arm shipped unexercised at every commit; this line is why that is now visible.
+shipping-vendor | */deps/tidelink-phy/* | TideLink PHY submodule. Ours, in a separate repo, ships.
+shipping-vendor | */deps/tidelink-gpio-phy/* | GPIO PHY training-pattern subsystem. Ships in V2 builds.
+shipping-vendor | */deps/axi-chiplet-controller/* | Wlink AXI chiplet controller. Ships; the FC nodes and FCSM live here.
+shipping-vendor | */syn/asic/*/outputs/*.v | Synthesised/placed netlist of our own RTL. Gate-level coverage of the shipped implementation.
+
+# --- our RTL ----------------------------------------------------------------
+own | */src/rtl/* | TideLink RTL proper.
+own | */src/*.sv | TideLink RTL outside src/rtl.
+
+# --- harness ----------------------------------------------------------------
+harness | */uvm/*/tb/* | UVM testbench top and interfaces. Measures the harness.
+harness | */uvm/*/agents/* | UVM agents, drivers, monitors, BFM interfaces.
+harness | */uvm/* | Any other UVM harness code.
+harness | */cocotb/* | cocotb harness and generated wrappers.
+harness | */verif/* | Standalone verification harnesses (g2_soc_pair etc).
+harness | */tb/* | Any other testbench directory.
+
+# --- out of scope -----------------------------------------------------------
+out-of-scope | /eda/* | Synopsys VC VIP and simulator-supplied models. Not our code and not in the chip; a VIP interface's toggle count is noise.
+out-of-scope | */vip/svt/* | Synopsys AMBA SVT VIP.
+out-of-scope | /research/AAA/ip_library/* | Shared lab vendor IP collateral, read-only by policy, not TideLink-owned. NOTE: anything from here that is INSTANTIATED IN THE SHIPPING CHIP should be reclassified shipping-vendor -- this rule covers the library, not a decision that its contents are untested.
+out-of-scope | /research/AAA/phys_ip_library/* | Physical IP (memories, pads). Characterised by the vendor, not by simulation.
+out-of-scope | */cmsdk*/* | Arm CMSDK models used to stand the harness up.

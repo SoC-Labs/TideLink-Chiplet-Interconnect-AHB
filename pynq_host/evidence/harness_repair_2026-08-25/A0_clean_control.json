@@ -1,0 +1,42 @@
+{
+  "counts": {
+    "FAIL": 0,
+    "INCONCLUSIVE": 0,
+    "PASS": 1,
+    "SKIPPED": 0
+  },
+  "duration_s": 1.2,
+  "ended_utc": "2026-08-25T08:59:27Z",
+  "exit_code": 0,
+  "overall": "PASS",
+  "provenance": {
+    "die_a": "ubuntu@10.22.24.159",
+    "die_b": "ubuntu@10.22.24.153",
+    "host": "srv03335",
+    "params": {
+      "endur_beats": 2000,
+      "read_chunk": 50,
+      "read_n": 128,
+      "soak_n": 128
+    },
+    "tidelink_branch": "rev2/harness-repair",
+    "tidelink_dirty": false,
+    "tidelink_sha": "575e352897ebde50d0d0c50cd83ad9add0c61173"
+  },
+  "schema": "kr260_sysval/2",
+  "started_utc": "2026-08-25T08:59:26Z",
+  "tests": [
+    {
+      "detail": "128/128 cross-die reads byte-exact, no wedge",
+      "info": {},
+      "name": "T10_read_soak",
+      "verdict": "PASS"
+    }
+  ],
+  "transport": {
+    "control_master": true,
+    "ssh_retries_configured": 3,
+    "transport_errors": 0,
+    "transport_retries_recorded": 0
+  }
+}

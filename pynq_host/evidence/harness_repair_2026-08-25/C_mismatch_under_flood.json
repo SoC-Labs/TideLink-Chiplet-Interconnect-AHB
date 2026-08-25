@@ -1,0 +1,52 @@
+{
+  "counts": {
+    "FAIL": 1,
+    "INCONCLUSIVE": 0,
+    "PASS": 0,
+    "SKIPPED": 0
+  },
+  "duration_s": 1.7,
+  "ended_utc": "2026-08-25T09:03:17Z",
+  "exit_code": 1,
+  "overall": "FAIL",
+  "provenance": {
+    "die_a": "ubuntu@10.22.24.159",
+    "die_b": "ubuntu@10.22.24.153",
+    "host": "srv03335",
+    "params": {
+      "endur_beats": 2000,
+      "read_chunk": 50,
+      "read_n": 128,
+      "soak_n": 128
+    },
+    "tidelink_branch": "rev2/harness-repair",
+    "tidelink_dirty": false,
+    "tidelink_sha": "575e352897ebde50d0d0c50cd83ad9add0c61173"
+  },
+  "schema": "kr260_sysval/2",
+  "started_utc": "2026-08-25T09:03:15Z",
+  "tests": [
+    {
+      "detail": "DATA_MISMATCH: die_a read wrong data from die_b in chunk @100 \u2014 READCHUNK 27/28 start=100  firstbad idx100 got0xdeadbeef exp0xb6b60064",
+      "info": {
+        "attempts": 1,
+        "cmd": "cd td && echo '***' | sudo -S python3 ~/td/scripts/eth_sysval_board.py read_chunk 100 28 0xB6B60000",
+        "host": "ubuntu@10.22.24.159",
+        "kind": "DATA_MISMATCH",
+        "rc": 1,
+        "reached_dut": true,
+        "retries": 0,
+        "stderr": "",
+        "stdout": "READCHUNK 27/28 start=100  firstbad idx100 got0xdeadbeef exp0xb6b60064"
+      },
+      "name": "T10_read_soak",
+      "verdict": "FAIL"
+    }
+  ],
+  "transport": {
+    "control_master": true,
+    "ssh_retries_configured": 3,
+    "transport_errors": 0,
+    "transport_retries_recorded": 0
+  }
+}

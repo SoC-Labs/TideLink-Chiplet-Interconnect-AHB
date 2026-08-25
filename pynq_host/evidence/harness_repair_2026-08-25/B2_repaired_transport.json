@@ -1,0 +1,52 @@
+{
+  "counts": {
+    "FAIL": 0,
+    "INCONCLUSIVE": 1,
+    "PASS": 0,
+    "SKIPPED": 0
+  },
+  "duration_s": 4.4,
+  "ended_utc": "2026-08-25T09:01:59Z",
+  "exit_code": 3,
+  "overall": "INCOMPLETE",
+  "provenance": {
+    "die_a": "ubuntu@10.22.24.159",
+    "die_b": "ubuntu@10.22.24.153",
+    "host": "srv03335",
+    "params": {
+      "endur_beats": 2000,
+      "read_chunk": 50,
+      "read_n": 128,
+      "soak_n": 128
+    },
+    "tidelink_branch": "rev2/harness-repair",
+    "tidelink_dirty": false,
+    "tidelink_sha": "575e352897ebde50d0d0c50cd83ad9add0c61173"
+  },
+  "schema": "kr260_sysval/2",
+  "started_utc": "2026-08-25T09:01:55Z",
+  "tests": [
+    {
+      "detail": "TRANSPORT_ERROR: could not reach die_a for chunk @0 after 3 attempt(s) \u2014 the read never ran, so NO conclusion about the data: TRANSPORT_ERROR rc=255 after 2 transport retries stderr='ssh: connect to host 10.22.24.159 port 22: Connection reset by peer'",
+      "info": {
+        "attempts": 3,
+        "cmd": "cd td && echo '***' | sudo -S python3 ~/td/scripts/eth_sysval_board.py read_chunk 0 50 0xB6B60000",
+        "host": "ubuntu@10.22.24.159",
+        "kind": "TRANSPORT_ERROR",
+        "rc": 255,
+        "reached_dut": false,
+        "retries": 2,
+        "stderr": "ssh: connect to host 10.22.24.159 port 22: Connection reset by peer",
+        "stdout": ""
+      },
+      "name": "T10_read_soak",
+      "verdict": "INCONCLUSIVE"
+    }
+  ],
+  "transport": {
+    "control_master": false,
+    "ssh_retries_configured": 3,
+    "transport_errors": 1,
+    "transport_retries_recorded": 2
+  }
+}

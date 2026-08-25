@@ -89,6 +89,7 @@ def _safe_cmd(cmd):
     braces: the password goes to sudo on stdin, never in argv, but a recorded
     command string would still carry it to disk."""
     c = re.sub(r"echo\s+'.*?'\s*\|\s*sudo -S", "echo '***' | sudo -S", cmd or "")
+    c = re.sub(r'echo\s+".*?"\s*\|\s*sudo -S', 'echo "***" | sudo -S', c)
     return _mask(c)
 
 # ---- ssh transport -----------------------------------------------------------
@@ -228,7 +229,13 @@ def board(host, args, timeout=40, marker=None):
     # NOTE the absent `2>/dev/null`: the board's stderr -- a python traceback, a
     # sudo failure, a /dev/mem EPERM -- used to be discarded and then surfaced as
     # an empty "mismatch" detail. It is now captured and recorded.
-    cmd = "cd td && echo %r | sudo -S python3 %s %s" % (PW, BOARD, args)
+    # -p '': suppress sudo's password PROMPT. Without it sudo writes "[sudo]
+    # password for ubuntu: " to the stream and corrupts the FIRST LINE of the
+    # board's stdout -- which this repo has been bitten by before. The marker
+    # requirement below now makes that fail safe (a corrupted first line reads
+    # as TRANSPORT_ERROR, not as a phantom data mismatch) but the corruption
+    # should not happen at all.
+    cmd = "cd td && echo %r | sudo -S -p '' python3 %s %s" % (PW, BOARD, args)
     return ssh_run(host, cmd, timeout, marker)
 
 def obs(host):

@@ -1673,6 +1673,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
 	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \
+	a2l_replay_cdc_7 a2l_replay_cdc_9 \
 	a2l_wready_tear \
 	v2_auto_anchor
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
@@ -1714,7 +1715,26 @@ sim_gate_clean_builds:
 	        cocotb/eth_tidelink_pair_shape_a/sim_build_gate* \
 	        cocotb/tidelink_error_injection/sim_build_gate*
 
-sim_gate: sim_gate_env_check sim_gate_clean_builds
+# GATE-INTEGRITY (false-green B6, 2026-08-26): the set of suites `make sim_gate`
+# RUNS and the set `sim_gate_summary` SCORES are two hand-maintained lists, and
+# they have diverged in both directions:
+#   - a2l_replay_cdc_7/_9 were invoked but absent from SIM_GATE_ALL_SUITES, so
+#     the gate ran 63 suites and reported on 61. An AR/R-node TL-043-ARR
+#     regression — the shipping read path — could not have failed the gate.
+#     The commit that added them said in its message that it had registered them
+#     in SIM_GATE_ALL_SUITES. It added them to .PHONY and the invoke list only.
+#   - tl044_hol_write_age was the mirror image: registered by 71dde385, never
+#     invoked, reported MISS for weeks.
+# Neither is visible in a green summary, so it is now checked mechanically and
+# BLOCKS the gate. The check derives both sets from this Makefile, so it cannot
+# drift. Deliberate exclusions need an entry in ALLOWED_INVOKED_UNSCORED in the
+# script, with a rationale — a blanket rule is what let this through.
+.PHONY: sim_gate_integrity
+sim_gate_integrity:
+	@python3 $(TIDELINK_HOME)/scripts/ci/sim_gate_integrity.py \
+	  --makefile $(TIDELINK_HOME)/Makefile
+
+sim_gate: sim_gate_integrity sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
 	@echo " sim_gate — full aggregate sim gate"
@@ -1824,7 +1844,7 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	  SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)" \
 	  SIM_GATE_SENTINELS="$(SIM_GATE_SENTINELS)"
 
-sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
+sim_gate_quick: sim_gate_integrity sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
 	@echo " sim_gate_quick — smoke gate (skips t31/t32)"

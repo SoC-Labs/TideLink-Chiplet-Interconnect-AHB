@@ -1918,6 +1918,24 @@ sim_gate_summary:
 	fi; \
 	exit $$fail
 
+# ── controls for the checkers themselves (false-green register, 2026-08-26) ──
+# Every checker fixed under the false-green register ships with a control that
+# FAILS without the fix. These are pure Python — no simulator, no board, a few
+# seconds — so there is no excuse for them not to run. A checker whose own
+# control is never executed is back to being decoration.
+#
+#   make selfcheck_gates      run them all; first failure aborts
+.PHONY: selfcheck_gates
+selfcheck_gates:
+	@rc=0; \
+	for t in $(TIDELINK_HOME)/scripts/ci/tests/test_*.py; do \
+	  echo "=== $$(basename $$t)"; \
+	  if python3 "$$t"; then :; else rc=1; echo "  ^ CONTROL FAILED"; fi; \
+	done; \
+	if [ $$rc -eq 0 ]; then echo "selfcheck_gates: ALL CONTROLS PASS"; \
+	else echo "selfcheck_gates: FAILURES — a checker cannot produce its failing verdict"; fi; \
+	exit $$rc
+
 # ── registry-driven regression harness (durable, "run for all bugs") ─────────
 .PHONY: sim_gate_registry_coverage sim_gate_regressions sim_gate_one
 

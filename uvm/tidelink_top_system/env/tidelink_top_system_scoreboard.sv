@@ -66,6 +66,15 @@ class tidelink_top_system_scoreboard extends uvm_scoreboard;
   int unsigned a2b_match_count, a2b_mismatch_count;
   int unsigned b2a_match_count, b2a_mismatch_count;
 
+  // Word-count mismatches (words lost or duplicated), and the number of words
+  // left over on each side. These are COUNTERS, accumulated inside the compare
+  // functions BEFORE they delete() their queues. report_phase must read these
+  // and never the queues themselves — see the backstop note at the bottom of
+  // this file.
+  int unsigned a2b_count_mismatches, b2a_count_mismatches;
+  int unsigned a_tx_unmatched,  b_fifo_unmatched;
+  int unsigned b_tx_unmatched,  a_fifo_unmatched;
+
   function new(string name = "tidelink_top_system_scoreboard", uvm_component parent = null);
     super.new(name, parent);
   endfunction
@@ -214,9 +223,19 @@ class tidelink_top_system_scoreboard extends uvm_scoreboard;
   function void compare_a2b_data();
     int unsigned min_size;
     if (a_tx_write_data.size() == 0 && b_fifo_read_data.size() == 0) return;
-    if (a_tx_write_data.size() != b_fifo_read_data.size())
-      `uvm_warning("SB_A2B", $sformatf("A->B count mismatch: %0d TX, %0d FIFO",
+    // Count mismatch means words were lost or duplicated A->B. Record the
+    // surplus into counters HERE, because the queues are delete()d below.
+    // (Same defect and same fix as the sibling scoreboards, false-green B1.)
+    if (a_tx_write_data.size() != b_fifo_read_data.size()) begin
+      a2b_count_mismatches++;
+      if (a_tx_write_data.size() > b_fifo_read_data.size())
+        a_tx_unmatched   += (a_tx_write_data.size() - b_fifo_read_data.size());
+      else
+        b_fifo_unmatched += (b_fifo_read_data.size() - a_tx_write_data.size());
+      `uvm_error("SB_A2B", $sformatf(
+        "A->B word-count mismatch: %0d TX, %0d FIFO (words lost or duplicated)",
         a_tx_write_data.size(), b_fifo_read_data.size()))
+    end
     min_size = (a_tx_write_data.size() < b_fifo_read_data.size()) ?
                a_tx_write_data.size() : b_fifo_read_data.size();
     for (int i = 0; i < min_size; i++) begin
@@ -238,9 +257,17 @@ class tidelink_top_system_scoreboard extends uvm_scoreboard;
   function void compare_b2a_data();
     int unsigned min_size;
     if (b_tx_write_data.size() == 0 && a_fifo_read_data.size() == 0) return;
-    if (b_tx_write_data.size() != a_fifo_read_data.size())
-      `uvm_warning("SB_B2A", $sformatf("B->A count mismatch: %0d TX, %0d FIFO",
+    // See compare_a2b_data() above: counters, not queues.
+    if (b_tx_write_data.size() != a_fifo_read_data.size()) begin
+      b2a_count_mismatches++;
+      if (b_tx_write_data.size() > a_fifo_read_data.size())
+        b_tx_unmatched   += (b_tx_write_data.size() - a_fifo_read_data.size());
+      else
+        a_fifo_unmatched += (a_fifo_read_data.size() - b_tx_write_data.size());
+      `uvm_error("SB_B2A", $sformatf(
+        "B->A word-count mismatch: %0d TX, %0d FIFO (words lost or duplicated)",
         b_tx_write_data.size(), a_fifo_read_data.size()))
+    end
     min_size = (b_tx_write_data.size() < a_fifo_read_data.size()) ?
                b_tx_write_data.size() : a_fifo_read_data.size();
     for (int i = 0; i < min_size; i++) begin
@@ -274,6 +301,8 @@ class tidelink_top_system_scoreboard extends uvm_scoreboard;
       "  B SUB writes/reads:     %0d/%0d\n" +
       "  A->B matches/mismatches: %0d/%0d\n" +
       "  B->A matches/mismatches: %0d/%0d\n" +
+      "  A->B/B->A count mismatches: %0d/%0d\n" +
+      "  Unmatched A TX / B FIFO / B TX / A FIFO: %0d/%0d/%0d/%0d\n" +
       "----------------------------------------------------",
       a_tx_write_count, a_fifo_read_count,
       a_cfg_write_count, a_cfg_read_count,
@@ -282,16 +311,37 @@ class tidelink_top_system_scoreboard extends uvm_scoreboard;
       b_cfg_write_count, b_cfg_read_count,
       b_sub_write_count, b_sub_read_count,
       a2b_match_count, a2b_mismatch_count,
-      b2a_match_count, b2a_mismatch_count), UVM_LOW)
+      b2a_match_count, b2a_mismatch_count,
+      a2b_count_mismatches, b2a_count_mismatches,
+      a_tx_unmatched, b_fifo_unmatched,
+      b_tx_unmatched, a_fifo_unmatched), UVM_LOW)
 
     if (a2b_mismatch_count > 0)
       `uvm_error("SB_REPORT", $sformatf("%0d A->B mismatches", a2b_mismatch_count))
     if (b2a_mismatch_count > 0)
       `uvm_error("SB_REPORT", $sformatf("%0d B->A mismatches", b2a_mismatch_count))
-    if (a_tx_write_data.size() > 0)
-      `uvm_error("SB_REPORT", $sformatf("%0d A TX writes unmatched", a_tx_write_data.size()))
-    if (b_tx_write_data.size() > 0)
-      `uvm_error("SB_REPORT", $sformatf("%0d B TX writes unmatched", b_tx_write_data.size()))
+    // FALSE-GREEN B2, fixed 2026-08-26. These two backstops used to read
+    //     if (a_tx_write_data.size() > 0)
+    // which is ALWAYS false at this point: report_phase calls
+    // compare_a2b_data()/compare_b2a_data() four lines above, and both
+    // delete() every queue before returning. Their only other exit is an early
+    // return taken when the queue is already empty. The backstop that exists
+    // to report lost packets could therefore never fire under any stimulus.
+    // They now read counters accumulated inside the compare functions, before
+    // the delete().
+    // Control: selftest/tl_top_sb_selftest.sv
+    if (a_tx_unmatched > 0)
+      `uvm_error("SB_REPORT", $sformatf(
+        "%0d A TX writes unmatched (lost A->B)", a_tx_unmatched))
+    if (b_fifo_unmatched > 0)
+      `uvm_error("SB_REPORT", $sformatf(
+        "%0d B FIFO reads unmatched (spurious/duplicated A->B)", b_fifo_unmatched))
+    if (b_tx_unmatched > 0)
+      `uvm_error("SB_REPORT", $sformatf(
+        "%0d B TX writes unmatched (lost B->A)", b_tx_unmatched))
+    if (a_fifo_unmatched > 0)
+      `uvm_error("SB_REPORT", $sformatf(
+        "%0d A FIFO reads unmatched (spurious/duplicated B->A)", a_fifo_unmatched))
   endfunction
 
 endclass

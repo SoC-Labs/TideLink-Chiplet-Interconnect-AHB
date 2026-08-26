@@ -469,3 +469,61 @@ coverage:
 
 clean:
 	rm -rf $(SIM_DIR) $(COV_DIR) csrc *.log ucli.key vc_hdrs.h
+
+# ===========================================================================
+# Scoreboard self-test (false-green register B1/B2 control)
+# ---------------------------------------------------------------------------
+# The env above is QUARANTINED — it does not elaborate, because of DUT/TB port
+# rot. The SCOREBOARD, however, is a pure UVM component with no RTL
+# dependency: it only needs UVM and the AMBA VIP transaction types. This
+# target compiles the production scoreboard SOURCE FILE (no copy) with no
+# design under test and drives its verdict path directly, so the checker stays
+# executable while the env is quarantined.
+#
+#   make sb_selftest    - compile and run; nonzero exit on any UVM_ERROR
+# ===========================================================================
+SELFTEST_DIR = $(CURDIR)/selftest
+SELFTEST_SIM = sim_build_sb_selftest
+
+VCS_SELFTEST  = -full64 -sverilog -ntb_opts uvm-1.2 -timescale=1ns/1ps
+VCS_SELFTEST += +define+DESIGNWARE_INCDIR=$(VIP_HOME)
+VCS_SELFTEST += +define+UVM_DISABLE_AUTO_ITEM_RECORDING
+VCS_SELFTEST += +define+SVT_AHB_DISABLE_IMPLICIT_BUS_CONNECTION
+VCS_SELFTEST += +incdir+$(VCS_HOME)/etc/uvm-1.2
+VCS_SELFTEST += +incdir+$(SVT_HOME)/sverilog/include
+VCS_SELFTEST += +incdir+$(AMBA_HOME)/sverilog/include
+VCS_SELFTEST += +incdir+$(ENV_DIR) +incdir+$(SELFTEST_DIR)
+VCS_SELFTEST += -y $(SVT_HOME)/sverilog/src/vcs -y $(SVT_HOME)/sverilog/src/com
+VCS_SELFTEST += -y $(AMBA_HOME)/sverilog/src/vcs -y $(AMBA_HOME)/sverilog/src/com
+VCS_SELFTEST += +libext+.svp+.sv+.svi+.svh
+VCS_SELFTEST += $(SELFTEST_DIR)/tl_top_sb_selftest_top.sv
+VCS_SELFTEST += -l $(SELFTEST_SIM)/compile.log -o $(SELFTEST_SIM)/simv
+
+.PHONY: sb_selftest clean_sb_selftest
+
+sb_selftest:
+	@rm -rf $(SELFTEST_SIM)
+	@mkdir -p $(SELFTEST_SIM)
+	@DESIGNWARE_HOME=$(VIP_HOME) $(VCS_HOME)/bin/vcs $(VCS_SELFTEST)
+	@DESIGNWARE_HOME=$(VIP_HOME) ./$(SELFTEST_SIM)/simv \
+	    +UVM_TESTNAME=tl_top_sb_selftest +UVM_VERBOSITY=UVM_LOW \
+	    -l $(SELFTEST_SIM)/sb_selftest.log > /dev/null
+	@# simv exits 0 even with UVM_ERROR > 0. Decide on the log, not the
+	@# exit code, and treat a missing/unparseable log as FAIL, not PASS.
+	@if [ ! -s $(SELFTEST_SIM)/sb_selftest.log ]; then \
+	    echo "SB_SELFTEST: COULD-NOT-EVALUATE (no log)"; exit 2; \
+	fi
+	@if ! grep -q '^UVM_ERROR *:' $(SELFTEST_SIM)/sb_selftest.log; then \
+	    echo "SB_SELFTEST: COULD-NOT-EVALUATE (no UVM report summary in log)"; exit 2; \
+	fi
+	@n=$$(sed -n 's/^UVM_ERROR *: *\([0-9][0-9]*\).*/\1/p' $(SELFTEST_SIM)/sb_selftest.log | tail -1); \
+	 f=$$(sed -n 's/^UVM_FATAL *: *\([0-9][0-9]*\).*/\1/p' $(SELFTEST_SIM)/sb_selftest.log | tail -1); \
+	 grep -E '^UVM_(INFO|ERROR).*\[SB_SELFTEST\]' $(SELFTEST_SIM)/sb_selftest.log | sed 's/^.*\[SB_SELFTEST\] //'; \
+	 if [ "$$n" = "0" ] && [ "$$f" = "0" ]; then \
+	    echo "SB_SELFTEST: PASS"; \
+	 else \
+	    echo "SB_SELFTEST: FAIL (UVM_ERROR=$$n UVM_FATAL=$$f)"; exit 1; \
+	 fi
+
+clean_sb_selftest:
+	rm -rf $(SELFTEST_SIM) csrc_sb_selftest

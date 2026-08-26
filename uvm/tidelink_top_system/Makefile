@@ -156,7 +156,19 @@ VCS_FLAGS += $(EXTRA_VCS_FLAGS)
 # Compile outputs
 VCS_FLAGS += -l $(SIM_DIR)/compile.log
 VCS_FLAGS += -o $(SIM_DIR)/simv
-VCS_FLAGS += -cm_dir $(SIM_DIR)/simv.vdb
+# COVERAGE=1 redirects this bench's coverage database into the SHARED project
+# root ($(TIDELINK_HOME)/imp/coverage) so that `make coverage_merge` picks it up
+# with the same glob as the 62 cocotb benches -- this UVM bench is the ONLY
+# sim_gate suite that is not a cocotb bench (sim_gate_i1_selfarm), and merging
+# it from a bench-local path is exactly the kind of special case that rots.
+# Without COVERAGE it keeps its historical bench-local vdb, unchanged.
+ifdef COVERAGE
+  TL_COV_ROOT ?= $(PROJ_HOME)/imp/coverage
+  TL_CM_DIR    = $(TL_COV_ROOT)/uvm_tidelink_top_system__$(SIM_DIR).vdb
+else
+  TL_CM_DIR    = $(SIM_DIR)/simv.vdb
+endif
+VCS_FLAGS += -cm_dir $(TL_CM_DIR)
 # I1 sim-repro: per-variant VCS incremental-compile dir so the deps and local
 # (and fix) FCSM builds never collide in the shared ./csrc (parallel builds
 # otherwise fail "Failed to make rmapats.so").
@@ -441,7 +453,7 @@ $(SIM_DIR)/dut_fcsm_fix.flist: $(FLIST_DIR)/tidelink_fpga_v2.flist | $(SIM_DIR)
 	sed -E 's#\$$\{TIDELINK_HOME\}/src/rtl/local_overrides/(WlinkGenericFCSM(_[1-4])?\.v)#$(CURDIR)/i1fix_fcsm/\1#' $< > $@
 
 run: compile
-	cd $(SIM_DIR) && ./simv $(SIM_FLAGS) -cm_dir simv.vdb
+	cd $(SIM_DIR) && ./simv $(SIM_FLAGS) -cm_dir $(abspath $(TL_CM_DIR)) -cm_name uvm_top_system__$(TEST)
 
 waves: VCS_FLAGS += +define+WAVES_VCD
 waves: run
@@ -451,7 +463,7 @@ run_all: compile
 	for test in $(TESTS); do \
 		echo "======== Running $$test ========"; \
 		if cd $(SIM_DIR) && ./simv +UVM_TESTNAME=$$test +UVM_VERBOSITY=$(VERBOSITY) \
-			-cm line+cond+tgl+fsm+branch -cm_dir simv.vdb \
+			-cm line+cond+tgl+fsm+branch -cm_dir $(abspath $(TL_CM_DIR)) -cm_name uvm_top_system__$$test \
 			+ntb_random_seed_automatic -l $$test.log; then \
 			echo "  PASSED: $$test"; \
 			pass=$$((pass + 1)); \
@@ -465,7 +477,7 @@ run_all: compile
 	exit $$fail
 
 coverage:
-	$(VCS_HOME)/bin/urg -dir $(SIM_DIR)/simv.vdb -report $(COV_DIR) -format both
+	$(VCS_HOME)/bin/urg -dir $(TL_CM_DIR) -report $(COV_DIR) -format both
 
 clean:
 	rm -rf $(SIM_DIR) $(COV_DIR) csrc *.log ucli.key vc_hdrs.h

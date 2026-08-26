@@ -78,4 +78,9 @@ ifneq ($(TB_NO_DUMP),1)
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 endif
 
+# ── Code coverage (shared wiring; inert unless COVERAGE=1) ──────────────
+#     One include for all 62 benches. See cocotb/coverage.mk for why the
+#     per-bench copies were replaced and why -cm_dir must be absolute.
+include $(CURDIR)/../coverage.mk
+
 include $(shell cocotb-config --makefiles)/Makefile.sim

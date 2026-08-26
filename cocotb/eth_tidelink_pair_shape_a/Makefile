@@ -132,6 +132,11 @@ else
 COMPILE_ARGS += +define+TB_TOP_NO_DUMP
 endif
 
+# ── Code coverage (shared wiring; inert unless COVERAGE=1) ──────────────
+#     One include for all 62 benches. See cocotb/coverage.mk for why the
+#     per-bench copies were replaced and why -cm_dir must be absolute.
+include $(CURDIR)/../coverage.mk
+
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
 # ── eth flist-expansion recipes (AFTER the include so the cocotb `sim` target

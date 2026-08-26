@@ -35,4 +35,9 @@ COMPILE_ARGS += +define+TIDELINK_SRAM_NO_ZERO_INIT
 COMPILE_ARGS += +define+TB_TOP_NO_DUMP
 COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fifo.flist
 
+# ── Code coverage (shared wiring; inert unless COVERAGE=1) ──────────────
+#     One include for all 62 benches. See cocotb/coverage.mk for why the
+#     per-bench copies were replaced and why -cm_dir must be absolute.
+include $(CURDIR)/../coverage.mk
+
 include $(shell cocotb-config --makefiles)/Makefile.sim

@@ -55,13 +55,6 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 COMPILE_ARGS += -f $(FLIST)
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
-# ── Code coverage ───────────────────────────────────────────────────────
-ifdef COVERAGE
-  CM_METRICS    ?= line+cond+fsm+tgl+branch
-  COMPILE_ARGS  += -cm $(CM_METRICS)
-  SIM_ARGS      += -cm $(CM_METRICS) -cm_dir $(CURDIR)/coverage.vdb
-endif
-
 # --- Build-staleness guard: recompile on flist-sourced RTL edits. VERILOG_SOURCES
 #     lists only the tb; DUT RTL arrives via `-f $(FLIST)` (invisible to make), so
 #     without this an RTL-only edit re-runs the STALE simv. The flist's leaf deps
@@ -71,6 +64,11 @@ endif
 include $(TIDELINK_HOME)/cocotb/flist_deps.mk
 _flist_deps := $(FLIST) $(DUT_SRC) $(call flist_srcs,$(FLIST))
 CUSTOM_COMPILE_DEPS += $(_flist_deps)
+
+# ── Code coverage (shared wiring; inert unless COVERAGE=1) ──────────────
+#     One include for all 62 benches. See cocotb/coverage.mk for why the
+#     per-bench copies were replaced and why -cm_dir must be absolute.
+include $(CURDIR)/../coverage.mk
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
 

@@ -1898,6 +1898,108 @@ sim_gate_summary:
 	fi; \
 	exit $$fail
 
+# =============================================================================
+# CODE COVERAGE — one merged database over the WHOLE aggregate gate (2026-08-26)
+#
+# WHY (and why the old `make -C cocotb coverage` was not this)
+#   The COVERAGE capability existed but had never been run at scale, and it was
+#   wired into only 23 of 62 cocotb benches.  cocotb/Makefile's `coverage`
+#   target ran ENVS -- a 31-bench unit-test list that does NOT include
+#   tidelink_top_pair, tidelink_top_pair_v2, tidelink_axi_datanode_recovery,
+#   tidelink_error_injection or the eth_* relays, i.e. every suite that carries
+#   the AHB/AXI/Wlink DATA PATH.  A number produced that way is a confident
+#   number over a partial corpus, which is worse than no number.
+#
+#   This target instead runs THE GATE -- the same suite list sim_gate runs, no
+#   hand-picking -- with COVERAGE=1 in the environment, so all 62 benches plus
+#   the one UVM bench write into ONE shared root and merge into ONE database.
+#
+#   The concrete thing that motivated it: an entire arm of the XHB500 AHB->AXI
+#   bridge (the non-singles / burst arm, gated on HPROT[3] rather than HBURST at
+#   xhb500_..._core_addr.sv:147) had never executed in any test at any commit and
+#   was found by accident.  coverage_check below asserts that arm still reports
+#   UNCOVERED, so the instrument is proven before the number is believed.
+#
+#   ~4-6 h wall clock.  Run it overnight; per-suite vdbs land as each suite
+#   finishes, so an interrupted run still merges what completed.
+#
+#   make coverage_gate        # full gate + merge + report  (the overnight job)
+#   make coverage_merge       # merge whatever vdbs exist now
+#   make coverage_report      # ranked unexercised shipping RTL
+#   make coverage_check       # instrument sanity check (fails loud)
+#   make coverage_clean
+# =============================================================================
+COV_ROOT     := $(TIDELINK_HOME)/imp/coverage
+COV_MERGED   := $(COV_ROOT)/merged.vdb
+COV_REPORTS  := $(TIDELINK_HOME)/imp/coverage_report
+CM_METRICS   ?= line+cond+fsm+tgl+branch
+# Snapshot for the target-specific export below: `export CM_METRICS=$(CM_METRICS)`
+# on the target would be self-referential (GNU make: "Recursive variable").
+COV_CM_METRICS := $(CM_METRICS)
+
+.PHONY: coverage_gate coverage_merge coverage_report coverage_check coverage_clean
+
+coverage_clean:
+	rm -rf $(COV_ROOT) $(COV_REPORTS)
+
+# The gate, instrumented.  COVERAGE is EXPORTED (not just a command-line
+# variable) so it reaches the `cd <bench> && ENV... $(MAKE)` suites and the UVM
+# bench identically.
+#
+# STALE-SIMV IS A FAIL-OPEN HERE, NOT JUST A CORRECTNESS BUG: cocotb recompiles
+# on SOURCE timestamps, never on COMPILE_ARGS, so a simv left over from a
+# NON-instrumented run is reused verbatim and its suite contributes ZERO
+# coverage while reporting PASS -- a silent hole in the corpus that looks like
+# a clean run.  Every sim_build in the tree is therefore removed first, with a
+# glob (an enumerated list rots; see sim_gate_clean_builds).
+coverage_gate: export COVERAGE=1
+coverage_gate: export CM_METRICS=$(COV_CM_METRICS)
+coverage_gate: sim_gate_env_check
+	@echo "[coverage] wiping ALL sim_build dirs (stale simv = silent zero-coverage suite)"
+	@find $(TIDELINK_HOME)/cocotb $(TIDELINK_HOME)/uvm -maxdepth 2 -type d -name 'sim_build*' -prune -exec rm -rf {} + 2>/dev/null || true
+	@rm -rf $(COV_ROOT) $(COV_REPORTS)
+	@mkdir -p $(COV_ROOT)
+	@echo "[coverage] metrics: $(CM_METRICS)   root: $(COV_ROOT)"
+	-@$(MAKE) --no-print-directory sim_gate
+	@$(MAKE) --no-print-directory coverage_merge
+	@$(MAKE) --no-print-directory coverage_report
+
+# urg merges the per-compile databases into one.  Every suite that ran with
+# coverage left exactly one <bench>__<SIM_BUILD>.vdb here; the manifest records
+# which, so "which suites contributed" is an artifact and not a recollection.
+coverage_merge:
+	@test -d $(COV_ROOT) || { echo "[coverage] no $(COV_ROOT) — run 'make coverage_gate' first"; exit 1; }
+	@dirs=$$(ls -d $(COV_ROOT)/*.vdb 2>/dev/null | grep -v '/merged\.vdb$$'); \
+	 test -n "$$dirs" || { echo "[coverage] NO .vdb databases in $(COV_ROOT) — nothing ran with COVERAGE=1"; exit 1; }; \
+	 n=$$(echo "$$dirs" | wc -l); echo "[coverage] merging $$n databases"; \
+	 for d in $$dirs; do echo "  $$(basename $$d)"; done > $(COV_ROOT)/manifest.txt; \
+	 args=""; for d in $$dirs; do args="$$args -dir $$d"; done; \
+	 rm -rf $(COV_MERGED) $(COV_REPORTS); \
+	 urg -full64 $$args -dbname $(COV_MERGED) -format text -report $(COV_REPORTS) \
+	   -show tests -log $(COV_ROOT)/urg_merge.log; \
+	 echo "[coverage] merged db: $(COV_MERGED)"; \
+	 echo "[coverage] text report: $(COV_REPORTS)"
+
+# The deliverable: NOT a percentage.  A ranked list of shipping RTL that no test
+# executes, scoped to src/rtl/** plus the deps/ and local_overrides/ files named
+# by flists/tidelink_top_full_asic_v2.flist, testbenches excluded.
+coverage_report:
+	@python3 $(TIDELINK_HOME)/scripts/ci/coverage_shipping_report.py \
+	  --modinfo $(COV_REPORTS)/modinfo.txt \
+	  --flist $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist \
+	  --root $(TIDELINK_HOME) \
+	  --out $(COV_REPORTS)
+
+# INSTRUMENT BEFORE DUT.  The XHB500 non-singles/burst arm is known-unexercised
+# by construction (singles_burst is gated on HPROT[3], which no test drives), so
+# a report that calls it COVERED is measuring something other than this design
+# and must not be published.  Fails loud.
+coverage_check:
+	@python3 $(TIDELINK_HOME)/scripts/ci/coverage_shipping_report.py \
+	  --modinfo $(COV_REPORTS)/modinfo.txt \
+	  --flist $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist \
+	  --root $(TIDELINK_HOME) --out $(COV_REPORTS) --check-only
+
 # ── registry-driven regression harness (durable, "run for all bugs") ─────────
 .PHONY: sim_gate_registry_coverage sim_gate_regressions sim_gate_one
 

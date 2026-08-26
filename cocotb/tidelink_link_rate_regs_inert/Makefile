@@ -73,13 +73,6 @@ ifeq ($(TB_INERT_DUMP),1)
 COMPILE_ARGS := $(filter-out +define+TB_INERT_NO_DUMP,$(COMPILE_ARGS))
 endif
 
-# -- Code coverage -----------------------------------------------------------
-ifdef COVERAGE
-  CM_METRICS    ?= line+cond+fsm+tgl+branch
-  COMPILE_ARGS  += -cm $(CM_METRICS)
-  SIM_ARGS      += -cm $(CM_METRICS) -cm_dir $(CURDIR)/coverage.vdb
-endif
-
 # --- Build-staleness guard ---------------------------------------------------
 # VERILOG_SOURCES lists only the harness; the DUT arrives via `-f <flist>`,
 # which make cannot see. Without this a mutation of tidelink_top.sv would re-run
@@ -90,5 +83,10 @@ include $(TIDELINK_HOME)/cocotb/flist_deps.mk
 _TL_FLIST   := $(TIDELINK_HOME)/flists/tidelink_fpga.flist
 _flist_deps := $(_TL_FLIST) $(call flist_srcs,$(_TL_FLIST))
 CUSTOM_COMPILE_DEPS += $(_flist_deps)
+
+# ── Code coverage (shared wiring; inert unless COVERAGE=1) ──────────────
+#     One include for all 62 benches. See cocotb/coverage.mk for why the
+#     per-bench copies were replaced and why -cm_dir must be absolute.
+include $(CURDIR)/../coverage.mk
 
 include $(shell cocotb-config --makefiles)/Makefile.sim

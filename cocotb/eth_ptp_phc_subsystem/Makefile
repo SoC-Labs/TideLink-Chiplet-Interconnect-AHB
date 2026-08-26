@@ -80,6 +80,11 @@ include $(TIDELINK_HOME)/cocotb/flist_deps.mk
 _flist_deps := $(call flist_srcs,$(EXPANDED_FLIST))
 CUSTOM_COMPILE_DEPS += $(_flist_deps)
 
+# ── Code coverage (shared wiring; inert unless COVERAGE=1) ──────────────
+#     One include for all 62 benches. See cocotb/coverage.mk for why the
+#     per-bench copies were replaced and why -cm_dir must be absolute.
+include $(CURDIR)/../coverage.mk
+
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
 # ---- flist expansion (AFTER the include so `sim` stays the default goal) -----

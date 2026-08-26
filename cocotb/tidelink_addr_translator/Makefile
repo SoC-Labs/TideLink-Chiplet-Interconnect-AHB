@@ -21,12 +21,10 @@ COMPILE_ARGS += $(TIDELINK_HOME)/src/rtl/tidelink_addr_translator.sv
 
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
-# -- Code coverage -----------------------------------------------------------
-ifdef COVERAGE
-  CM_METRICS    ?= line+cond+fsm+tgl+branch
-  COMPILE_ARGS  += -cm $(CM_METRICS)
-  SIM_ARGS      += -cm $(CM_METRICS) -cm_dir $(CURDIR)/coverage.vdb
-endif
+# ── Code coverage (shared wiring; inert unless COVERAGE=1) ──────────────
+#     One include for all 62 benches. See cocotb/coverage.mk for why the
+#     per-bench copies were replaced and why -cm_dir must be absolute.
+include $(CURDIR)/../coverage.mk
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
 

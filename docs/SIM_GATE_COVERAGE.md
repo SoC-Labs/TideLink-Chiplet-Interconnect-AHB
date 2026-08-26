@@ -582,3 +582,81 @@ spurious rebuild); then `touch`-ing a DUT `.sv` that arrives only via the flist
 the next `make` **rebuild `simv`**. Before this change, that `touch` was a no-op
 to make and the stale binary re-ran. This ADDS a prerequisite only — it never
 changes what or how VCS compiles.
+
+---
+
+## 12. Code coverage over the gate (2026-08-26)
+
+This document has always been about *which suites exist*. §12 is about the
+complementary question the suite inventory cannot answer: **which shipping RTL
+does no suite execute.**
+
+### 12.1 The gap this closed
+
+The `COVERAGE` capability existed (`ifdef COVERAGE` → `-cm line+cond+fsm+tgl+branch`,
+`-cm_dir`) but had **never been run at scale**, and it was wired into only
+**23 of 62** cocotb benches. Worse, `cocotb/Makefile`'s `make coverage` target ran
+`ENVS` — a 31-bench *unit-test* list that contains **none** of
+`tidelink_top_pair`, `tidelink_top_pair_v2`, `tidelink_axi_datanode_recovery`,
+`tidelink_error_injection`, `tidechart_tidelink_pair` or the `eth_*` relays.
+Every bench that elaborates the full `tidelink_top` + XHB500 + Wlink **data path**
+was outside it. Measured across the aggregate gate: of the 64 suite→bench edges
+`make sim_gate` drives, **11 could produce coverage and 53 could not** (4 more are
+elaboration-only and cannot, by construction).
+
+That is worse than having no coverage at all, because the number it produces is
+believed. It is also the mechanism by which an entire arm of the XHB500 AHB→AXI
+bridge — `singles_burst` gated on `HPROT[3]` rather than `HBURST`, at
+`xhb500_ahb_to_axi_bridge_chiplet_slv_core_addr.sv:147` — went unexercised at
+**every commit** and was eventually found by accident.
+
+### 12.2 What replaced it
+
+- **`cocotb/coverage.mk`** — one shared include, wired into **all 62** cocotb
+  benches (`include $(CURDIR)/../coverage.mk`, immediately before the cocotb
+  `Makefile.sim` include so `MODULE`/`TESTCASE`/`SIM_BUILD` are final). Inert
+  unless `COVERAGE` is set, so the normal gate is unchanged.
+- **One `.vdb` per compile, one `-cm_name` per run.** A VCS database is bound to
+  one elaborated design, so the vdb is keyed on `(bench, SIM_BUILD)` — `SIM_BUILD`
+  is already this project's canonical compile key. Within a vdb each run gets a
+  distinct `-cm_name` from `MODULE`/`TESTCASE`, so suites that legitimately share
+  a compile (t31 + t30 on `sim_build_l4`; the five `sim_build_axirec` testcases)
+  do not overwrite each other.
+- **`-cm_dir` is absolute, and that is load-bearing.** cocotb's `Makefile.vcs`
+  *compiles* with `cd $(SIM_BUILD) && vcs …` but *runs* `$(SIM_BUILD)/simv` from
+  the bench directory, so a relative `-cm_dir` lands in two different places.
+  That is exactly why the old per-bench blocks had to be merged from two
+  directories. One absolute dir, no seam.
+- **`uvm/tidelink_top_system`** (the one non-cocotb gate suite,
+  `sim_gate_i1_selfarm`) writes into the same shared root under `COVERAGE`.
+- **`make coverage_gate`** at the project root runs **the gate** — not a
+  hand-picked list — with `COVERAGE=1` exported, then merges and reports.
+
+### 12.3 Stale `simv` is a *fail-open* here
+
+cocotb recompiles on **source timestamps**, never on `COMPILE_ARGS`. A `simv`
+left over from a non-instrumented run is therefore reused verbatim, and its suite
+contributes **zero coverage while reporting PASS** — a silent hole in the corpus
+that looks exactly like a clean run. `coverage_gate` removes every `sim_build*` in
+`cocotb/` and `uvm/` with a **glob** before it starts (an enumerated list rots;
+see `sim_gate_clean_builds`).
+
+### 12.4 Verify the instrument before believing the number
+
+`make coverage_check` asserts that the known-unexercised XHB500 non-singles/burst
+arm still reports **UNCOVERED**. If it ever reports COVERED, the report is
+measuring something other than this design and must not be published. The
+report generator exits non-zero on that condition rather than printing a score.
+
+### 12.5 What coverage cannot see here
+
+- The four **elaboration-only** gate suites (`asic_v1_elab`, `asic_v2_elab`,
+  `dft_wrapper_elab`, `v1_elab`) compile and never simulate, so they are
+  deliberately not instrumented — a design database with zero executed tests
+  measures nothing and would dilute the merge with V1-only files.
+- Consequently the **ASIC-only sources they are the sole cover for are never
+  simulated at all**: the ASIC flist ships `deps/…/WlinkGenericFCSM*.v` and
+  `src/rtl/fifo/asic/tidelink_sram.sv`, while every simulating suite elaborates
+  the `src/rtl/local_overrides/` / `fifo/fpga/` twins instead. The report calls
+  these out as **SHADOWED ASIC SOURCES**, because coverage of the substitute says
+  nothing about the file that tapes out.

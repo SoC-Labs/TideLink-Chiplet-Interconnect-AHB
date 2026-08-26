@@ -1,3 +1,4 @@
+TIDELINK_HOME ?= $(realpath $(CURDIR)/..)
 # Top-level cocotb regression Makefile
 # Usage:
 #   make regression          Run all test environments
@@ -91,38 +92,44 @@ link_rate_full:
 	[ "$$fail" -eq 0 ]
 
 # ── Coverage regression ──────────────────────────────────────────────────────
-# Run the full regression with VCS code coverage enabled, then merge results.
-#   make coverage
-# Override metrics with: make coverage CM_METRICS=line+cond
+# ⚠ THIS IS THE UNIT-TEST CORPUS ONLY, NOT THE GATE.  ENVS above is a 31-bench
+# list that deliberately excludes tidelink_top_pair, tidelink_top_pair_v2,
+# tidelink_axi_datanode_recovery, tidelink_error_injection and the eth_* relays
+# -- i.e. every bench that exercises the full tidelink_top + XHB500 + Wlink DATA
+# PATH.  Running coverage here and quoting the score is how you get a confident
+# number over a partial corpus.
+#
+# For a coverage database over the WHOLE aggregate gate, use the project root:
+#
+#     make coverage_gate     # runs sim_gate with COVERAGE=1, merges, reports
+#
+# Both routes share cocotb/coverage.mk, so per-bench flags cannot drift.
+#   make coverage                       # this (partial) corpus
+#   make coverage CM_METRICS=line+cond  # fewer metrics
 CM_METRICS ?= line+cond+fsm+tgl+branch
-COV_REPORT  = coverage_report
+COV_ROOT    = $(TIDELINK_HOME)/imp/coverage
+COV_REPORT  = $(TIDELINK_HOME)/imp/coverage_report_envs
 
 .PHONY: coverage coverage_merge
 coverage: export COVERAGE=1
 coverage: export CM_METRICS:=$(CM_METRICS)
 coverage: regression coverage_merge
 
+# One vdb per (bench, SIM_BUILD) under the shared root -- see cocotb/coverage.mk.
+# The old two-directory merge (`-dir $env/sim_build/simv.vdb -dir
+# $env/coverage.vdb`) existed only because compile and run wrote to different
+# places under a RELATIVE -cm_dir; that seam is gone.
 coverage_merge:
 	@echo "========================================"
 	@echo " Merging coverage databases"
 	@echo "========================================"
-	@echo "── Per-environment reports ──"
-	@for env in $(ENVS); do \
-	  urg -full64 -dir $$env/sim_build/simv.vdb -dir $$env/coverage.vdb \
-	    -report $(COV_REPORT)/$$env -format both 2>&1 \
-	    | grep -E 'Note|Error' || true; \
-	done
+	@dirs=$$(ls -d $(COV_ROOT)/*.vdb 2>/dev/null | grep -v '/merged\.vdb$$'); \
+	 test -n "$$dirs" || { echo " NO databases under $(COV_ROOT) — did COVERAGE=1 reach the benches?"; exit 1; }; \
+	 args=""; for d in $$dirs; do args="$$args -dir $$d"; done; \
+	 urg -full64 $$args -format both -report $(COV_REPORT) 2>&1 | grep -E 'Note|Error' || true
 	@echo ""
-	@echo "── Per-environment coverage summary ──"
-	@printf "  %-25s %6s %6s %6s %6s %6s %6s\n" "ENVIRONMENT" "SCORE" "LINE" "COND" "TOGGLE" "FSM" "BRANCH"
-	@printf "  %-25s %6s %6s %6s %6s %6s %6s\n" "-------------------------" "------" "------" "------" "------" "------" "------"
-	@for env in $(ENVS); do \
-	  scores=$$(grep -A2 'Total Coverage Summary' $(COV_REPORT)/$$env/dashboard.txt 2>/dev/null \
-	    | tail -1 | sed 's/--/  N\/A /g'); \
-	  printf "  %-25s %s\n" "$$env" "$$scores"; \
-	done
-	@echo ""
-	@echo "Coverage reports: $(COV_REPORT)/<env>/dashboard.html"
+	@echo "Coverage report: $(COV_REPORT)/dashboard.html (+ dashboard.txt)"
+	@sed -n '/Total Coverage Summary/,+3p' $(COV_REPORT)/dashboard.txt 2>/dev/null || true
 
 # ── Clean ────────────────────────────────────────────────────────────────────
 .PHONY: clean

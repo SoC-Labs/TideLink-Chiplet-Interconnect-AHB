@@ -86,6 +86,7 @@ package tidelink_pkg;
   `include "tidelink_single_packet_test.sv"
   `include "tidelink_random_test.sv"
   `include "tidelink_stall_test.sv"
+  `include "tidelink_scoreboard_loss_selftest.sv"
 
 endpackage
 

@@ -46,6 +46,10 @@ class tidelink_integration_scoreboard extends uvm_scoreboard;
   int unsigned cfg_read_count;
   int unsigned packet_match_count;
   int unsigned packet_mismatch_count;
+  // Word-count mismatches (words lost or duplicated). Distinct from
+  // packet_mismatch_count, which only counts words that were compared and
+  // differed — a lost word is never compared at all.
+  int unsigned packet_count_mismatches;
 
   function new(string name = "tidelink_integration_scoreboard", uvm_component parent = null);
     super.new(name, parent);
@@ -56,6 +60,7 @@ class tidelink_integration_scoreboard extends uvm_scoreboard;
     cfg_read_count        = 0;
     packet_match_count    = 0;
     packet_mismatch_count = 0;
+    packet_count_mismatches = 0;
   endfunction
 
   virtual function void build_phase(uvm_phase phase);
@@ -141,9 +146,25 @@ class tidelink_integration_scoreboard extends uvm_scoreboard;
     if (tx_write_data.size() == 0 && rx_read_data.size() == 0)
       return;
 
+    // A word-count mismatch means words were LOST (or duplicated) across the
+    // loopback. This must FAIL the test: a scoreboard that does not fail on
+    // packet loss is not a scoreboard.
+    //
+    // It was a `uvm_warning` until 2026-08-26, and the report_phase summary
+    // below could NOT cover for it, for two independent reasons:
+    //   1. min_size = min(tx.size(), rx.size()). With an empty RX queue that is
+    //      0, the per-word loop runs ZERO times, and the per-word `uvm_error`
+    //      was the only error this function used to raise. TOTAL PACKET LOSS
+    //      therefore produced a clean log.
+    //   2. This function delete()s all four queues a few lines below, so by the
+    //      time report_phase runs the evidence has been wiped.
+    // Ported from uvm/tidelink_system/env/tidelink_system_scoreboard.sv, which
+    // was fixed for this exact defect on 2026-07-18.
+    // Control: tests/tidelink_integration_scoreboard_loss_selftest.sv
     if (tx_write_data.size() != rx_read_data.size()) begin
-      `uvm_warning("SB_PKT", $sformatf(
-        "Loopback data count mismatch: %0d TX writes, %0d RX reads",
+      packet_count_mismatches++;
+      `uvm_error("SB_PKT", $sformatf(
+        "Loopback word-count mismatch: %0d TX writes, %0d RX reads (words lost or duplicated)",
         tx_write_data.size(), rx_read_data.size()))
     end
 
@@ -187,14 +208,23 @@ class tidelink_integration_scoreboard extends uvm_scoreboard;
       "  Config reads:           %0d\n"                            +
       "  Loopback word matches:  %0d\n"                            +
       "  Loopback word mismatches: %0d\n"                          +
+      "  Loopback count mismatches (loss/dup): %0d\n"              +
       "----------------------------------------------------",
       tx_write_count, fifo_read_count, fifo_write_count,
       cfg_write_count, cfg_read_count,
-      packet_match_count, packet_mismatch_count), UVM_LOW)
+      packet_match_count, packet_mismatch_count,
+      packet_count_mismatches), UVM_LOW)
 
     if (packet_mismatch_count > 0)
       `uvm_error("SB_REPORT", $sformatf(
         "%0d loopback data mismatches detected", packet_mismatch_count))
+    // Backstop on a COUNTER, not on the queues: compare_loopback_data()
+    // delete()s the queues, so any report_phase check that inspects .size() is
+    // dead code.
+    if (packet_count_mismatches > 0)
+      `uvm_error("SB_REPORT", $sformatf(
+        "%0d loopback word-count mismatches detected (words lost or duplicated)",
+        packet_count_mismatches))
   endfunction
 
 endclass

@@ -153,7 +153,8 @@ endif
 TESTS = tidelink_register_test \
         tidelink_single_packet_test \
         tidelink_random_test \
-        tidelink_stall_test
+        tidelink_stall_test \
+        tidelink_scoreboard_loss_selftest
 
 # ---------------------------------------------------------------
 # RTL targets

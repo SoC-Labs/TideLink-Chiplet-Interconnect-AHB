@@ -137,7 +137,8 @@ endif
 # ---------------------------------------------------------------
 TESTS = tidelink_integration_loopback_test \
         tidelink_integration_credit_test \
-        tidelink_integration_stress_test
+        tidelink_integration_stress_test \
+        tidelink_integration_scoreboard_loss_selftest
 
 # ---------------------------------------------------------------
 # Targets

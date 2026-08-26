@@ -16,6 +16,8 @@
 #-----------------------------------------------------------------------------
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 deck="$1"
 gds="$2"
 netlist="$3"
@@ -107,8 +109,19 @@ set +e
 rc=${PIPESTATUS[0]}
 set -e
 
-# Calibre LVS writes a "Comparison Results" section to $report — grep
-# the canonical pass / fail signature into the summary.
+# Grade the report. NOT with grep -q "CORRECT": "INCORRECT" CONTAINS
+# "CORRECT", so that test matched every failing report and the INCORRECT
+# branch was unreachable — every mismatch was announced as a match. The
+# verdict is now decided by lvs_verdict.sh, which anchors on Calibre's
+# verdict banner and distinguishes three outcomes:
+#   0 CORRECT   1 INCORRECT   2 COULD-NOT-EVALUATE
+set +e
+lvs_verdict_out="$("$script_dir/lvs_verdict.sh" "$report" 2>&1)"
+LVS_VERDICT_RC=$?
+set -e
+
+# Calibre LVS writes a "Comparison Results" section to $report — quote
+# it into the summary alongside the graded verdict.
 {
     echo "================================================================="
     echo " Calibre LVS summary — ${top}"
@@ -125,16 +138,8 @@ set -e
         echo " --- Comparison Results ---"
         sed -n '/COMPARISON RESULTS/,/^[[:space:]]*$/p' "$report" | head -40 || true
         echo ""
-        if grep -q "CORRECT" "$report" 2>/dev/null; then
-            echo " RESULT: LVS CORRECT (extracted source ↔ layout match)"
-        elif grep -q "INCORRECT" "$report" 2>/dev/null; then
-            echo " RESULT: LVS INCORRECT — see $report"
-        else
-            echo " RESULT: indeterminate — Calibre may not have completed comparison"
-        fi
-    else
-        echo " (no LVS .rep produced — Calibre may not have run a compare pass)"
     fi
+    echo " RESULT: $lvs_verdict_out"
     echo "================================================================="
 } > "$reports/10_calibre_lvs.rep"
 
@@ -144,4 +149,26 @@ if [ $rc -ne 0 ]; then
     echo "ERROR: Calibre LVS exited non-zero ($rc) — see $log"
     exit $rc
 fi
-echo "CALIBRE_LVS_OK: $top"
+
+# Calibre's exit status says whether the TOOL ran, NOT whether the layout
+# MATCHES — it exits 0 on a clean run that reported INCORRECT. The script
+# used to echo CALIBRE_LVS_OK unconditionally here, so a graded mismatch
+# still left "make lvs" green. Three outcomes, and only one of them is OK.
+case "$LVS_VERDICT_RC" in
+    0)
+        echo "CALIBRE_LVS_OK: $top"
+        ;;
+    1)
+        echo "ERROR: LVS INCORRECT for $top — layout does not match source."
+        echo "       $lvs_verdict_out"
+        echo "       report: $report"
+        exit 1
+        ;;
+    *)
+        echo "ERROR: LVS COULD-NOT-EVALUATE for $top — no usable verdict."
+        echo "       $lvs_verdict_out"
+        echo "       report: $report"
+        echo "       An unevaluable LVS run is NOT a pass. Investigate before signing off."
+        exit 2
+        ;;
+esac

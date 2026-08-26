@@ -1656,12 +1656,73 @@ sim_gate_dftelab:
 	      echo "FAIL: tidelink_tx_gen INSTANTIATED in ASIC tapeout netlist — TXGEN_PRESENT tie-off missing (docs/TXGEN_V1_DESIGN.md)"; exit 1; \
 	    else echo "STRUCTURAL-OK: tidelink_tx_gen absent from ASIC tapeout elaborated netlist (TXGEN_PRESENT=0 tie-off holds)"; fi; })
 
+# =============================================================================
+# ASIC (TAPEOUT) FILE SET — BEHAVIOURAL, not elaboration-only (2026-08-26)
+# =============================================================================
+# The four *_elab suites above compile the ASIC flist and never simulate, so
+# until these suites existed the RTL that tapes out had NO behavioural coverage
+# at all. flists/tidelink_top_full_asic_v2.flist and flists/tidelink_fpga_v2
+# .flist resolve 8 modules to DIFFERENT files (scripts/ci/flist_divergence.py);
+# five are the AXI FC state machines, deps/ recovery-STRIPPED vs
+# src/rtl/local_overrides/ recovery-bearing.
+#
+# Deterministic, no sim: the divergence set must not move without a decision.
+sim_gate_flist_divergence:
+	$(call sim_gate_run,flist_divergence,\
+	  python3 $(TIDELINK_HOME)/scripts/ci/flist_divergence.py --check)
+
+# WHICH FILE COMPILED — asserted from inside the running simulation, both ways.
+# ASIC_FLIST=1 must yield FCSM 0-4 with NO socl_ recovery markers and the rf_16k
+# SRAM; ASIC_FLIST=0 must yield all 5 markers and cmsdk_fpga_sram. Two runs
+# asserting OPPOSITE things, so a build that ignored the knob fails one of them.
+# Both carry must-be-present controls, so "marker absent" cannot be satisfied by
+# a mistyped hierarchy path.
+sim_gate_asic_fileset_identity:
+	$(call sim_gate_run,asic_fileset_identity,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 EPOCH_PROFILE=zero \
+	    COCOTB_RESULTS_FILE=sim_build_zero_asic/res_ident.xml \
+	    MODULE=test_asic_fileset_identity && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=0 EPOCH_PROFILE=zero \
+	    COCOTB_RESULTS_FILE=sim_build_zero/res_ident.xml \
+	    MODULE=test_asic_fileset_identity)
+
+# THE GAP-CLOSER: bilateral link-up + M->S and S->M byte-exact delivery on the
+# tapeout file set. An elaboration-only pass is not coverage; this executes.
+sim_gate_asic_v2_pair_data:
+	$(call sim_gate_run,asic_v2_pair_data,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 EPOCH_PROFILE=zero \
+	    COCOTB_RESULTS_FILE=sim_build_zero_asic/res_pair_data.xml \
+	    MODULE=test_v2_pair_data)
+
+# Clean bring-up at the ~40 ns silicon clock ratio, and the marginal-link
+# (periodic LL re-bring-up) stress, on the tapeout FCSMs. Same stimulus and same
+# assertion as the FPGA/recovery arm the bench was written for.
+sim_gate_asic_fcsm_ratio:
+	$(call sim_gate_run,asic_fcsm_silicon_ratio,\
+	  $(MAKE) -C cocotb/tidelink_fcsm_silicon_ratio ASIC_FLIST=1 control && \
+	  $(MAKE) -C cocotb/tidelink_fcsm_silicon_ratio ASIC_FLIST=1 fixed)
+
+# THE DIVERGENCE, EXECUTED. State-7 emit starvation: the FPGA copy escapes via
+# socl_l7_wdog_force_clear, the ASIC copy has no such term and stays wedged.
+# BOTH arms must behave as expected — the FPGA arm is the positive control, and
+# without it "the ASIC wedged" would not be attributable to the missing term.
+sim_gate_asic_l7_starvation:
+	$(call sim_gate_run,asic_l7_starvation_backstop,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=0 L7_WDOG_THRESHOLD=256 \
+	    EPOCH_PROFILE=zero COCOTB_RESULTS_FILE=sim_build_zero_wdog256/res_l7.xml \
+	    MODULE=test_asic_l7_starvation_backstop && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 L7_WDOG_THRESHOLD=256 \
+	    EPOCH_PROFILE=zero COCOTB_RESULTS_FILE=sim_build_zero_asic_wdog256/res_l7.xml \
+	    MODULE=test_asic_l7_starvation_backstop)
+
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t30_autonomous_fc_handoff ptp_link_sync v2_pair_data v2_autonomous_sync_detect \
 	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon epoch_anchor_plumb \
 	v2_pair_sustained v2_truncated_pkt_credit v2_truncated_pkt_aperture_offset v2_xhb_lostresp_pipe \
 	fifo_rx_phantom_pop fifo_rx_randinit v1_elab asic_v1_elab asic_v2_elab dft_wrapper_elab \
+	flist_divergence asic_fileset_identity asic_v2_pair_data asic_fcsm_silicon_ratio \
+	asic_l7_starvation_backstop \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
 	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
 	tc_pair_smoke tc_pair_election_datamode \
@@ -1797,6 +1858,11 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asicelab
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asicelab_v2
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_dftelab
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_flist_divergence
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asic_fileset_identity
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asic_v2_pair_data
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asic_fcsm_ratio
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asic_l7_starvation
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_retire_plumb
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_oddlane
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_lane_position

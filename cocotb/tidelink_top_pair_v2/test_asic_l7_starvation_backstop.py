@@ -38,10 +38,21 @@ indistinguishable from a broken stimulus:
   C2 ARM   (FPGA arm only) socl_l7_wdog_cnt must actually reach the threshold
            and socl_l7_wdog_force_clear must read 1 -- the backstop is armed,
            not merely compiled.
-  C3 POST  after releasing the starvation, the node MUST escape state 7 on
-           BOTH arms.  This proves the wedge was caused by the starvation and
-           not by a force we failed to release, and that the normal path still
-           works after the recovery fires.
+  C3 EXIT  if the node is still at 7, Force auto_tx_out_advance=1 -- the ONE
+           term the ASIC copy's _GEN_115 does have.  The node MUST then leave
+           state 7.  This is the decisive control: it proves the state-7 exit
+           path is alive and that the node is wedged specifically because the
+           OTHER term is missing, not because the stimulus jammed it.
+
+           An earlier version of C3 merely RELEASED auto_tx_out_advance and
+           required escape.  That was wrong and this test caught it: after
+           Release the natural driver sits at 0 (the link layer has no reason
+           to grant an emit to a jammed node), so the node stayed at 7 on the
+           ASIC arm and the control correctly declared the result vacuous.  On
+           the FPGA arm the same control had ALREADY been satisfied by the
+           watchdog escape, so it proved nothing there either -- a control that
+           passes for the wrong reason on one arm and fails on the other is not
+           a control.  Forcing the term to 1 tests the exact thing.
 
     make ASIC_FLIST=0 L7_WDOG_THRESHOLD=256 EPOCH_PROFILE=zero \
          MODULE=test_asic_l7_starvation_backstop     # expect ESCAPE
@@ -154,15 +165,28 @@ async def test_l7_emit_starvation_backstop(dut):
     dut._log.info(f"  after releasing `state` with auto_tx_out_advance still 0: "
                   f"states seen = {seen}  -> {'ESCAPED' if left else 'WEDGED at 7'}")
 
-    # ---- C3 POST: releasing the starvation must free the node on BOTH arms ---
+    # ---- C3 EXIT: the state-7 exit path itself must still work --------------
+    # _GEN_115's one surviving term on the ASIC copy is auto_tx_out_advance.
+    # Assert it and the node MUST leave state 7 -- otherwise the node is jammed
+    # for some unrelated reason and the observation above means nothing.
+    # Only meaningful while the node is STILL at 7; on the FPGA arm the watchdog
+    # has already moved it, and re-running it there would pass for the wrong
+    # reason.
+    st_now = _opt(node, "state")
+    if st_now == STATE_SEND_NACK:
+        node.auto_tx_out_advance.value = Force(1)
+        left_after, seen_after = await _observe_state(dut, node, thr * 2)
+        dut._log.info(f"  C3 EXIT forcing auto_tx_out_advance=1: states seen = "
+                      f"{seen_after} -> {'escaped' if left_after else 'STILL WEDGED'}")
+        assert left_after, (
+            f"CONTROL C3 FAILED: m.{NODE} did not leave state 7 even with "
+            f"auto_tx_out_advance forced to 1 (states seen {seen_after}) -- the one "
+            f"term deps/WlinkGenericFCSM.v:315 exits on. The node is jammed for an "
+            f"unrelated reason, so the observation above is vacuous.")
+    else:
+        dut._log.info(f"  C3 EXIT n/a - node already left state 7 (now {st_now}); "
+                      f"the escape above is the result.")
     node.auto_tx_out_advance.value = Release()
-    left_after, seen_after = await _observe_state(dut, node, thr * 6)
-    dut._log.info(f"  C3 POST after releasing auto_tx_out_advance: states seen = "
-                  f"{seen_after} -> {'escaped' if left_after else 'STILL WEDGED'}")
-    assert left_after, (
-        f"CONTROL C3 FAILED: m.{NODE} did not leave state 7 even after the "
-        f"starvation was released (states seen {seen_after}). The stimulus, not "
-        f"the RTL, is stuck - the result above is vacuous.")
 
     if asic:
         assert not left, (

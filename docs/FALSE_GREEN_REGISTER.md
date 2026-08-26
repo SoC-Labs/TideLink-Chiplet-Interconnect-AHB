@@ -32,6 +32,48 @@ an RTL sticky bit. There is no formal safety net under any of this.
 
 ---
 
+## TIER 0 — NOTHING IS GATED BY CI, ON EITHER FORGE
+
+Measured 2026-08-26. This subsumes every finding below, because a check that does not
+run cannot report anything at all.
+
+- **GitHub (`origin`, current, `5e8bdb5a`)**: no `.github/workflows` on any of 68 refs.
+  No Jenkins/Circle/Drone/Azure/Buildkite/Woodpecker/Travis config anywhere.
+- **GitLab (`gitlab`)**: reachable and writable over SSH, but `gitlab/main` is `9092300b`
+  dated 2026-07-23 -- **293 commits behind** origin/main and a strict ancestor. The
+  current `.gitlab-ci.yml` (1,431 lines) **has never been on that server** (it holds a
+  1,363-line version; three later commits touched it). `refs/pipelines/*` = **0**,
+  `refs/merge-requests/*` = **0**. This host is not a runner.
+
+**The consequence is specific and it is the reason this register exists.**
+`docs/TIDELINK_FPGA_VERIFICATION_PLAN.md:41-45` records that `make sim_gate` being wired
+into no CI hook was *"the single highest-leverage historical fix"* -- **four of five
+tapeout defects survived to T-3wk because of it** -- and declares the escape closed
+because sim_gate is *"now a blocking GitLab CI job (allow_failure: false, flipped
+2026-07-16)"*.
+
+**That closure is not in force.** The job is blocking in a file the CI forge has never
+seen, on a forge that runs no pipelines. The escape is open and documented as closed.
+
+~60 in-tree assertions depend on the same premise, including
+`docs/SIM_GATE_COVERAGE.md:472`, `docs_site/verification.md:416-451`, and
+`docs_site/contributing.md:117` ("`make sim_gate` is **the merge gate**").
+One document has it exactly inverted -- `docs/REPO_ASSESSMENT_2026_08_10.md:164` says the
+sim gate claim is out of date and only the hardware gate lacks CI. **Both lack CI.**
+
+**Read every "gated by CI" claim in this repo as "gated by whoever remembers to run it"**
+until a forge decision is made.
+
+Also found in the CI file itself, previously unexamined:
+- `coverage-merge` exits **0** when no `.vdb` is found -- a pipeline where every
+  simulation failed to emit a database is GREEN.
+- `clone`, `dashboard` and `cleanup` cannot go red (`|| echo WARN`, `|| true`).
+- Two `rules:` arms reference branches (`feat/fpga-flow`, `feat/phc-hw-test`) that exist
+  on **no ref anywhere**, so `fpga-ptp-pair` has zero auto-trigger paths.
+- 15 of 18 jobs carrying `allow_failure:` set it **true**.
+
+---
+
 ## TIER 1 — FALSE GREEN, backing a PASS claim
 
 ### Sign-off flow (would pass a broken chip)
@@ -78,8 +120,14 @@ has no `else`; `:86-88` downgrades a `report_drc` failure to a `puts`.
 Count mismatch is a `uvm_warning`; then `min_size = min(write.size(), read.size())`
 and the only `uvm_error` is inside `for (i=0; i<min_size; i++)`. An empty read queue
 gives **zero iterations**. Queues are then deleted, so no report_phase backstop can
-cover it. CI verdict is `grep -q 'failures="0"'`, which warnings do not trip
-(`.gitlab-ci.yml:492`, `:661`).
+cover it. CI verdict is `ci/uvm_results_to_junit.py:138` -> `sys.exit(min(failed,125))` off the
+`UVM_ERROR`/`UVM_FATAL` tally, which a `uvm_warning` does not increment. The jobs are
+`uvm-regression` (`.gitlab-ci.yml:492`, blocking), `uvm-integration` (`:661`, blocking)
+and `uvm-top-system` (`:718`, **allow_failure: true**).
+CORRECTED 2026-08-26: an earlier draft cited a `grep -q 'failures="0"'` as the verdict.
+That grep exists once, at `:506`, and only writes a dashboard artifact. The substance is
+unchanged -- a scoreboard emitting `uvm_warning` parses as PASS through every path -- but
+the cited mechanism was wrong.
 **The sibling `uvm/tidelink_top_system/.../tidelink_system_scoreboard.sv:203-214`
 was fixed on 2026-07-18 and carries a comment explaining this exact bug** — "a
 scoreboard that does not fail on packet loss is not a scoreboard". The fix and its

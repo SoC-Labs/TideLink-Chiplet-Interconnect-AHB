@@ -73,14 +73,52 @@ def _safe_int(sig, default=-1):
         return default
 
 
+# ── APPLICABILITY, DECIDED AT DECORATION TIME (false-green B4) ──────────────
+# These two are read once, at import, so they can drive `@cocotb.test(skip=...)`.
+# cocotb 1.7.2 has no runtime skip: a test that `return`s early is recorded as a
+# PASS. Every test in this module used to do exactly that, and on this build
+# BOTH guards are constant-false — `grep -c s_ref_clk tb_top.sv` is 0 while
+# TOPLEVEL = tb_top, and TIDELINK_SIM_ONCHIP_MASK_HS appears nowhere in the
+# cocotb Makefile — so the module reported 5 PASS at 0.00 ns simulated time:
+# zero coverage that reads as full coverage.
+#
+# Skipping is now decided by the env, which the Makefile sets from ONCHIP= and
+# MASK_HS=, and the RUNTIME check below asserts that the env's claim and the
+# actual compile agree. Three verdicts, kept distinct:
+#   SKIP  not applicable to this compile (env says so)
+#   FAIL  the env claims a compile the DUT does not have  <- new, was silent
+#   PASS  the test actually executed
+ONCHIP_ENV = os.environ.get("TIDELINK_SIM_ONCHIP", "0") == "1"
+HONEST_ENV = os.environ.get("TIDELINK_SIM_ONCHIP_MASK_HS", "0") == "1"
+
+SKIP_NO_ONCHIP = not ONCHIP_ENV
+SKIP_NO_HONEST = not HONEST_ENV
+SKIP_HONEST    = HONEST_ENV      # for the MASK_HS=0 negative control
+
+
 def _is_honest():
     """True when compiled with MASK_HS=1 (HONEST_MASK_HS=1, bypasses=0)."""
-    return os.environ.get("TIDELINK_SIM_ONCHIP_MASK_HS", "0") == "1"
+    return HONEST_ENV
 
 
 def _is_onchip(dut):
     """True only in an ONCHIP=1 compile (the phase-offset slave clock exists)."""
     return hasattr(dut, "s_ref_clk")
+
+
+def _require_onchip(dut):
+    """The env said ONCHIP=1. If the DUT disagrees, that is a FAILURE.
+
+    Previously this mismatch made the test `return` and be recorded as a PASS,
+    which is how a module that has never once executed accumulated a green
+    history. A disagreement between what the runner was told and what was
+    actually compiled is a broken harness, not a non-applicable test."""
+    assert _is_onchip(dut), (
+        "TIDELINK_SIM_ONCHIP=1 was set, but the DUT has no `s_ref_clk` port — "
+        "this is NOT an ONCHIP compile. The runner and the compile disagree; "
+        "refusing to report a result. (ONCHIP support needs the phase-offset "
+        "slave ref-clock in tb_top.sv; `grep -c s_ref_clk tb_top.sv` is 0 on "
+        "this tree.)")
 
 
 def _ctrl(tb, side):
@@ -96,25 +134,28 @@ def _gate(tb, side):
 
 
 def _skip(dut, msg):
-    """Mark the current test as non-applicable to this compile.
+    """RETIRED as a control-flow mechanism (false-green B4, 2026-08-26).
 
-    ⚠️ THIS REGISTERS AS A COCOTB **PASS**, NOT A SKIP. cocotb 1.7.2 has no
-    runtime skip (only the decoration-time `@cocotb.test(skip=True)`), so a
-    bailed-out test still prints "PASS". On `main` EVERY test in this module
-    bails this way — the module reports 5 PASS at 0.00 ns SIMULATED TIME, i.e.
-    ZERO coverage that LOOKS like full coverage. That false green is exactly
-    how the 2026-07-23 slave SHAM-GATE reached silicon unnoticed: this is the
-    only module that asserts bilateral mask_hs_match==1, and it has never once
-    executed (it needs ONCHIP=1 MASK_HS=1 + dut.s_ref_clk, which live only on
-    the unmerged 93a4cbe).
-    The banner below exists so nobody can read this module's PASS lines as
-    proof of anything. The REAL executable guard is the blocking gate suite
+    This used to be how every test in this module bailed out, and it registered
+    as a cocotb **PASS**: cocotb 1.7.2 has no runtime skip, only the
+    decoration-time `@cocotb.test(skip=True)`, so a test that logs and `return`s
+    still prints PASS. On this tree BOTH of the old guards are constant-false —
+    `grep -c s_ref_clk tb_top.sv` is 0 while TOPLEVEL = tb_top, and
+    TIDELINK_SIM_ONCHIP_MASK_HS appears nowhere in the cocotb Makefile — so the
+    module reported 5 PASS at 0.00 ns SIMULATED TIME: zero coverage that reads
+    as full coverage. That is exactly how the 2026-07-23 slave SHAM-GATE
+    reached silicon unnoticed; this is the only module that asserts bilateral
+    mask_hs_match==1, and it had never once executed.
+
+    Applicability is now decided at decoration time and the tests report SKIP.
+    This helper survives only to log a banner from a body that did run; it must
+    NEVER again be followed by a bare `return` as a way of not testing.
+
+    The other executable guard remains the blocking gate suite
     `v2_mask_hs_bilateral` (Makefile) -> test_v2_mask_hs_bilateral.py.
     """
     dut._log.warning("=" * 78)
-    dut._log.warning(f"SKIP (NOT A PROOF — counts as PASS, 0 ns simulated): {msg}")
-    dut._log.warning("This module asserts NOTHING in this compile. Do not cite its")
-    dut._log.warning("PASS as autonomy/handshake evidence. See gate v2_mask_hs_bilateral.")
+    dut._log.warning(f"NOT APPLICABLE: {msg}")
     dut._log.warning("=" * 78)
 
 
@@ -195,7 +236,7 @@ async def bringup_zeropoke(tb):
 # ===========================================================================
 # test_00 — anti-trap: the two dies' PLL references must be phase-offset.
 # ===========================================================================
-@cocotb.test()
+@cocotb.test(skip=SKIP_NO_ONCHIP)
 async def test_00_phase_is_nonzero(dut):
     """Probe the DUT's ACTUAL ref-clock ports (not dangling tb nets) and assert
     the slave clock (a) toggles and (b) is NOT identical to the master clock over
@@ -203,9 +244,7 @@ async def test_00_phase_is_nonzero(dut):
     them bit-equal at every sample -> this fails, which is the whole point: no
     host runtime read can catch a zero-skew collapse, so the proof must live
     here (plan §4)."""
-    if not _is_onchip(dut):
-        _skip(dut, "not an ONCHIP compile (no s_ref_clk) — phase gate N/A")
-        return
+    _require_onchip(dut)
 
     tb = PairV2TB(dut)          # starts hclk, ref_clk, and the phase-offset s_ref_clk
     # Let both clocks get going past the slave's initial phase delay.
@@ -244,16 +283,11 @@ async def test_00_phase_is_nonzero(dut):
 # ===========================================================================
 # test_01 — ZERO-POKE autonomy with a GENUINE mask handshake (positive gate).
 # ===========================================================================
-@cocotb.test()
+@cocotb.test(skip=SKIP_NO_ONCHIP or SKIP_NO_HONEST)
 async def test_01_zeropoke_autonomy(dut):
     """POR -> autoneg -> genuine peer-mask handshake -> role_lock -> link, with
     ZERO APB writes and BOTH bypass straps at 0. The positive gate."""
-    if not _is_honest():
-        _skip(dut, "MASK_HS!=1 — honest-handshake asserts N/A (see test_90)")
-        return
-    if not _is_onchip(dut):
-        _skip(dut, "not an ONCHIP compile — zero-poke autonomy N/A")
-        return
+    _require_onchip(dut)
 
     tb = PairV2TB(dut)
     await tb.reset()
@@ -350,28 +384,18 @@ async def test_01_zeropoke_autonomy(dut):
 # ===========================================================================
 # test_02 / test_03 — small data proof under the static phase offset.
 # ===========================================================================
-@cocotb.test()
+@cocotb.test(skip=SKIP_NO_ONCHIP or SKIP_NO_HONEST)
 async def test_02_data_master_to_slave(dut):
-    if not _is_honest():
-        _skip(dut, "MASK_HS!=1 — data proof runs only under the honest gate")
-        return
-    if not _is_onchip(dut):
-        _skip(dut, "not an ONCHIP compile — data proof N/A")
-        return
+    _require_onchip(dut)
     tb = PairV2TB(dut)
     await bringup_zeropoke(tb)
     await ClockCycles(dut.hclk, 500)
     await send_and_check(tb, "m", "s", [0xDA7A0000, 0xCAFEBABE], ctx="onchip-m2s")
 
 
-@cocotb.test()
+@cocotb.test(skip=SKIP_NO_ONCHIP or SKIP_NO_HONEST)
 async def test_03_data_slave_to_master(dut):
-    if not _is_honest():
-        _skip(dut, "MASK_HS!=1 — data proof runs only under the honest gate")
-        return
-    if not _is_onchip(dut):
-        _skip(dut, "not an ONCHIP compile — data proof N/A")
-        return
+    _require_onchip(dut)
     tb = PairV2TB(dut)
     await bringup_zeropoke(tb)
     await ClockCycles(dut.hclk, 500)
@@ -386,14 +410,9 @@ async def test_03_data_slave_to_master(dut):
 # forbids. If this ever fails, HONEST_MASK_HS is not actually load-bearing and
 # test_01's pass is meaningless.
 # ===========================================================================
-@cocotb.test()
+@cocotb.test(skip=SKIP_NO_ONCHIP or SKIP_HONEST)
 async def test_90_negctl_gate_forced_open(dut):
-    if _is_honest():
-        _skip(dut, "MASK_HS=1 (honest compile) — negative control N/A here")
-        return
-    if not _is_onchip(dut):
-        _skip(dut, "not an ONCHIP compile — negative control N/A")
-        return
+    _require_onchip(dut)
 
     tb = PairV2TB(dut)
     await tb.reset()

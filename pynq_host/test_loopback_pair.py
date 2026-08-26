@@ -26,6 +26,7 @@ _local_role = os.environ.get("FPGAHUB_LOCAL_ROLE")
 if _local_role:
     _ol.set_role(_local_role)
 
+from hosttest_verdict import summarise_and_exit
 from tidelink.pynq_driver import PynqTidelinkDriver
 from tidelink.packet import FifoPacket
 from tidelink import regs
@@ -192,6 +193,9 @@ check(f"A pair credit counter == {expected_ctr}", pair_ctr == expected_ctr,
       f"got {pair_ctr}")
 
 # ── Summary ──────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print(f"Results: {passed} passed, {failed} failed")
-print("=" * 60)
+# FALSE-GREEN C11 (fixed 2026-08-26): this block used to print the tally and
+# stop. There was no `exit`/`sys.exit` anywhere in this file, so the script
+# always exited 0 and a board failing every check was scored as a pass.
+# summarise_and_exit() gives three verdicts: 0 pass, 1 any failure,
+# 2 COULD-NOT-EVALUATE (zero checks ran).
+summarise_and_exit(passed, failed, name="test_loopback_pair")

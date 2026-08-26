@@ -24,7 +24,16 @@
 
 # Re-assert the promotions in case this POST hook runs in a context where the
 # matching PRE hook did not (belt-and-suspenders; idempotent).
-catch { source [file join [file dirname [info script]] msg_gate_child_promote.tcl] }
+# NOT a bare catch: msg_gate_child_promote.tcl deliberately errors when a
+# promotion fails to install, and swallowing that here would restore exactly
+# the fail-open this file exists to close.
+if {[catch { source [file join [file dirname [info script]] msg_gate_child_promote.tcl] } _perr]} {
+    puts "==========================================="
+    puts " TideLink message gate FAILED (in child run)"
+    puts " could not re-assert promotions: $_perr"
+    puts "==========================================="
+    error "tidelink_msg_gate/child: promotion re-assert failed: $_perr"
+}
 
 # --- check 1: CRITICAL WARNING count (child-visible) -----------------------
 set _cw [get_msg_config -count -severity {CRITICAL WARNING}]
@@ -63,7 +72,30 @@ if { [info exists ::env(TIDELINK_GIT_USR_ACCESS)] && $::env(TIDELINK_GIT_USR_ACC
 # --- check 2: combinational-loop DRC (LUTLP-1) -----------------------------
 # Only run when a fully-routed design is in memory (route POST). Guarded so the
 # synth POST invocation (no placed/routed design) is a clean no-op.
-if { ![catch { get_property ROUTE_STATUS [current_design] } _rs] && $_rs eq "ROUTED" } {
+# Three outcomes, never two:
+#   NOT-APPLICABLE  no routed design in memory (this is the synth POST call) —
+#                   ROUTE_STATUS is unreadable or empty. A legitimate skip.
+#   EVALUATED       ROUTE_STATUS is ROUTED: run the DRC and grade it.
+#   COULD-NOT-EVALUATE
+#                   ROUTE_STATUS is readable, non-empty and NOT "ROUTED" at a
+#                   route POST hook, or report_drc itself failed. Previously
+#                   the first of these fell off the end of an if with no else,
+#                   and the second was downgraded to a puts — either way the
+#                   combinational-loop guard silently did not run and the step
+#                   passed. Both now fail the run.
+set _rs ""
+set _rs_readable [expr {![catch { get_property ROUTE_STATUS [current_design] } _rs]}]
+if { !$_rs_readable || $_rs eq "" } {
+    puts "\[tidelink_msg_gate/child\] no routed design in memory - LUTLP-1 check not applicable at this step (synth POST)."
+} elseif { $_rs ne "ROUTED" } {
+    puts "==========================================="
+    puts " TideLink message gate FAILED (in child run)"
+    puts " ROUTE_STATUS = '$_rs' (expected ROUTED)"
+    puts " The combinational-loop (LUTLP-1) guard could NOT be evaluated."
+    puts " A check that did not run has not passed."
+    puts "==========================================="
+    error "tidelink_msg_gate/child: ROUTE_STATUS='$_rs', LUTLP-1 guard could not be evaluated"
+} else {
     if { ![catch { report_drc -checks {LUTLP-1} -name tl_combloop_drc } _drcerr] } {
         set _viols [get_drc_violations -name tl_combloop_drc]
         set _nv [llength $_viols]
@@ -84,6 +116,15 @@ if { ![catch { get_property ROUTE_STATUS [current_design] } _rs] && $_rs eq "ROU
             error "tidelink_msg_gate/child: $_nv un-waived combinational loop(s)"
         }
     } else {
-        puts "\[tidelink_msg_gate/child\] report_drc LUTLP-1 unavailable ($_drcerr) - skipped."
+        puts "==========================================="
+        puts " TideLink message gate FAILED (in child run)"
+        puts " report_drc -checks {LUTLP-1} failed: $_drcerr"
+        puts " The combinational-loop guard could NOT be evaluated on a"
+        puts " ROUTED design. This used to be downgraded to a note, which"
+        puts " let the cb33c9f class (silicon write-vanish) through."
+        puts " If LUTLP-1 was renamed in this Vivado release, re-map it in"
+        puts " msg_gate_child_promote.tcl."
+        puts "==========================================="
+        error "tidelink_msg_gate/child: LUTLP-1 DRC could not be evaluated: $_drcerr"
     }
 }

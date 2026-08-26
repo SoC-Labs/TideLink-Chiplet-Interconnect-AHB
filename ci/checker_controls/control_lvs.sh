@@ -22,6 +22,27 @@ echo "==============================================================="
 echo " CONTROL: Calibre LVS verdict grading"
 echo "==============================================================="
 echo
+# -- Section 0: the fixtures themselves must be present and non-vacuous -----
+# A control whose inputs are missing grades nothing and reports success. The
+# repo's blanket '*.rep' ignore rule already swallowed these once; assert
+# rather than trust.
+for f in lvs-missing-connection lvs-clean lvs-truncated; do
+    rep="$FIXTURES/$f/tidelink_top_lvs.rep"
+    if [ ! -s "$rep" ]; then
+        echo "  FAIL: fixture $rep is missing or empty — this control would be vacuous."
+        echo "        (is it excluded by .gitignore's '*.rep' rule?)"
+        exit 1
+    fi
+done
+n_inc=$(grep -Ec '(^|[^A-Za-z])INCORRECT([^A-Za-z]|$)' "$FIXTURES/lvs-missing-connection/tidelink_top_lvs.rep")
+n_cor=$(grep -Ec '(^|[^A-Za-z])CORRECT([^A-Za-z]|$)'   "$FIXTURES/lvs-missing-connection/tidelink_top_lvs.rep")
+if [ "$n_inc" -lt 1 ] || [ "$n_cor" -ne 0 ]; then
+    echo "  FAIL: lvs-missing-connection fixture is not the intended must-fail case"
+    echo "        (INCORRECT lines=$n_inc, standalone-CORRECT lines=$n_cor; want >=1 and 0)"
+    exit 1
+fi
+echo "  fixtures ok: lvs-missing-connection has $n_inc INCORRECT line(s), $n_cor standalone CORRECT"
+echo
 echo "-- Section 1: the SHIPPED-BUGGY logic, replayed on each fixture --"
 echo "   (if grep -q CORRECT ... elif grep -q INCORRECT ...)"
 for f in lvs-missing-connection lvs-clean lvs-truncated lvs-empty; do

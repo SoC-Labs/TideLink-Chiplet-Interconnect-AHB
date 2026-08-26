@@ -1,0 +1,30 @@
+                    ###############################################################
+                    ##                                                           ##
+                    ##                   CALIBRE SYSTEM                          ##
+                    ##                                                           ##
+                    ###############################################################
+
+CELL COMPARISON RESULTS ( TOP LEVEL )
+
+                    ###############################################################
+                    ##                                                           ##
+                    ##                     ---  CORRECT  ---                     ##
+                    ##                                                           ##
+                    ###############################################################
+
+                          LAYOUT CELL NAME:      tidelink_top
+                          SOURCE CELL NAME:      tidelink_top
+
+ INITIAL NUMBERS OF OBJECTS
+ --------------------------
+
+              Layout    Source            Component Type
+              ------    ------            --------------
+ Ports:          412       412
+ Nets:         38104     38104            Nets
+ Instances:    54868     54868            MN (4 pins)
+
+OVERALL COMPARISON RESULTS:  CORRECT
+
+ Total CPU Time:    398 s
+ Total Elapsed Time: 415 s

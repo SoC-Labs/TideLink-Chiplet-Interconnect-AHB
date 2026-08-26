@@ -1,0 +1,56 @@
+// ---------------------------------------------------------------------------
+// flists/xhb500_bridge_unit.flist
+//
+// The XHB500 bridge pair, and nothing else, for the standalone unit bench
+// cocotb/xhb500_bridge.
+//
+// WHY THIS EXISTS (2026-08-26)
+//   The first coverage run measured `xhb500_axi_to_ahb_bridge_chiplet_mst_
+//   core_xin` at FSM 0.00% in ALL 42 databases that contain it: no simulation
+//   in this repository has ever driven an AXI AR or AW into the INBOUND
+//   (peer-side) half of the cross-die path.  The `tidelink_top_pair_v2`
+//   testbench does not model a peer-side XHB500 target memory, so the
+//   inbound bridge can only be reached by instantiating it directly.
+//
+//   File ORDER and file SET are copied verbatim from the shipping tapeout
+//   flist `tidelink_top_full_asic_v2.flist` (lines 87-121) so that this bench
+//   compiles the SAME sources the ASIC does.  If those lines change, change
+//   these -- a unit bench compiled against a different file set would report
+//   coverage for RTL that does not tape out.
+// ---------------------------------------------------------------------------
+
+// XHB500 AHB-to-AXI bridge (subordinate path)
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/models/cells/generic/xhb500_flop.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/models/cells/generic/xhb500_or.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/models/cells/generic/xhb500_sync.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/models/cells/generic/xhb500_xor.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_bypass_regd_slice.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_reverse_regd_slice_rst_empty.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_pkg.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_hazard_list.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_strb.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core_addr.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core_wdata.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core_resp.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv_core.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_slv/logical/xhb500_ahb_to_axi_bridge_chiplet_slv/verilog/xhb500_ahb_to_axi_bridge_chiplet_slv.sv
+
+// XHB500 AXI-to-AHB bridge (manager path)
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/models/cells/generic/xhb500_flop.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/models/cells/generic/xhb500_or.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/models/cells/generic/xhb500_sync.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/models/cells/generic/xhb500_xor.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_bypass_regd_slice_empty.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_forward_regd_slice.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/shared/verilog/xhb500_regd_slice/verilog/xhb500_forward_regd_slice_empty.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_pkg.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_hreg.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_strbgen.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_xreg.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_respreg_b.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_respreg_r.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_core_h_xout.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_core_xin.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_lpi.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst_core.sv
+${TIDELINK_HOME}/deps/xhb500/generated/xhb_chiplet_mst/logical/xhb500_axi_to_ahb_bridge_chiplet_mst/verilog/xhb500_axi_to_ahb_bridge_chiplet_mst.sv

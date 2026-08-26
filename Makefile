@@ -1656,6 +1656,28 @@ sim_gate_dftelab:
 	      echo "FAIL: tidelink_tx_gen INSTANTIATED in ASIC tapeout netlist — TXGEN_PRESENT tie-off missing (docs/TXGEN_V1_DESIGN.md)"; exit 1; \
 	    else echo "STRUCTURAL-OK: tidelink_tx_gen absent from ASIC tapeout elaborated netlist (TXGEN_PRESENT=0 tie-off holds)"; fi; })
 
+# --- XHB500 BRIDGE PAIR unit bench (added 2026-08-26, coverage-driven) -------
+# The first coverage database over this repository's whole simulation corpus
+# put xhb500_axi_to_ahb_bridge_chiplet_mst_core_xin -- the INBOUND half of the
+# cross-die path, the direction a far die uses to reach OUR memory -- at FSM
+# 0.00%, and a per-database re-check confirmed 0.00% in all 42 databases that
+# contain it.  No AXI AR or AW had ever reached the peer-side bridge in any
+# simulation here.  On the outbound side slv_core_resp was at 2 of 10
+# transitions, with RESP_FSM_ERROR and RESP_FSM_LOCK_ERROR never entered --
+# the error machinery that N1 / TL-042 / TL-044 are all specified against.
+#
+# The pair-level tb cannot reach any of it (it models no peer-side XHB500
+# target memory), so the bench instantiates both bridges directly against
+# flists/xhb500_bridge_unit.flist -- the same files, same order, as lines
+# 87-121 of the shipping tapeout flist.
+#
+# Own SIM_BUILD (sim_build_gate_xhb) so it never shares a compile.
+sim_gate_xhb500_bridge:
+	$(call sim_gate_run,xhb500_bridge,\
+	  rm -rf cocotb/xhb500_bridge/sim_build_gate_xhb && \
+	  $(MAKE) -C cocotb/xhb500_bridge SIM_BUILD=sim_build_gate_xhb \
+	    COCOTB_RESULTS_FILE=sim_build_gate_xhb/res_xhb500_bridge.xml)
+
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t30_autonomous_fc_handoff ptp_link_sync v2_pair_data v2_autonomous_sync_detect \
@@ -1672,6 +1694,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	tl044_read_deadgate \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
+	xhb500_bridge \
 	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \
 	a2l_wready_tear \
 	v2_auto_anchor
@@ -1712,7 +1735,8 @@ sim_gate_clean_builds:
 	        cocotb/eth_tidelink_pair/sim_build_gate* \
 	        cocotb/eth_tidelink_pair_m1/sim_build_gate* \
 	        cocotb/eth_tidelink_pair_shape_a/sim_build_gate* \
-	        cocotb/tidelink_error_injection/sim_build_gate*
+	        cocotb/tidelink_error_injection/sim_build_gate* \
+	        cocotb/xhb500_bridge/sim_build_gate*
 
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
@@ -1761,6 +1785,10 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_isolated_write
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_mbox_writeprotect
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_xhb_lostresp_pipe
+	@# XHB500 bridge pair unit bench: the inbound AXI->AHB path (core_xin, FSM
+	@# 0.00% before this suite existed) and the error/exclusive response paths
+	@# of both bridges.
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_xhb500_bridge
 	@# HAZARD-3 / N2 fix: AUTO_ANCHOR beacon force must respect io_link_tx_tx_idle.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_auto_anchor
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data

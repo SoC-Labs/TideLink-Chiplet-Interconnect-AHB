@@ -223,6 +223,22 @@ ifeq ($(EYE_FAULT),1)
 COMPILE_ARGS += +define+TB_TOP_EYE_FAULT
 endif
 
+# ── state-7 emit-starvation watchdog threshold (test_asic_l7_starvation_backstop)
+# The recovery FCSM's SOCL_L7_WDOG_THRESHOLD defaults to the SILICON value
+# 16'h4000 (16384 io_tx_clk), which is far outside a sim window. This knob
+# lowers it so the backstop can be exercised. It is a PLAIN DECIMAL (no tick):
+# the value is passed through a shell, and 16'd256 would break its quoting.
+#
+# The deps/ (ASIC) copy does not reference SOCL_L7_WDOG_THRESHOLD_VAL at all,
+# so this define is INERT on the ASIC arm -- which is the point: both arms of
+# the A/B run the identical command line and differ only in which file was
+# compiled. Silicon is unaffected; nothing sets this in any gate default.
+L7_WDOG_THRESHOLD ?=
+ifneq ($(strip $(L7_WDOG_THRESHOLD)),)
+COMPILE_ARGS += +define+SOCL_L7_WDOG_THRESHOLD_VAL=$(L7_WDOG_THRESHOLD)
+export L7_WDOG_THRESHOLD
+endif
+
 # Extra ad-hoc defines (e.g. per-lane overrides) — passthrough.
 EXTRA_DEFINES ?=
 COMPILE_ARGS += $(EXTRA_DEFINES)
@@ -245,7 +261,7 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 #   (negctl) share one sim_build for a given EPOCH_PROFILE, so running deliver then
 #   negctl silently re-runs the beacon-ON binary -> the negctl delivers and reports
 #   a FALSE non-vacuity failure. Add AUTO_ANCHOR to the key so the two get separate dirs.
-SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)$(if $(filter 1,$(HONEST_STRAPS)),_honest,)$(if $(filter 1,$(AUTO_ANCHOR)),_autoanchor,)$(if $(filter 1,$(ASIC_FLIST)),_asic,)
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)$(if $(filter 1,$(HONEST_STRAPS)),_honest,)$(if $(filter 1,$(AUTO_ANCHOR)),_autoanchor,)$(if $(filter 1,$(ASIC_FLIST)),_asic,)$(if $(L7_WDOG_THRESHOLD),_wdog$(L7_WDOG_THRESHOLD),)
 
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0

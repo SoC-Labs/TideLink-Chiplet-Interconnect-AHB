@@ -50,7 +50,34 @@ LOCAL_FLIST := $(CURDIR)/tidelink_fpga_v2_fcsm_local.flist
 # Generate at parse time so flist_srcs (below) can see it, and so a clean
 # checkout builds it before the simv rule runs.
 _gen := $(shell sed -E 's@deps/axi-chiplet-controller/logical/wlink/(WlinkGenericFCSM(_[1-4])?)\.v@src/rtl/local_overrides/\1.v@' $(BASE_FLIST) > $(LOCAL_FLIST))
-COMPILE_ARGS += -f $(LOCAL_FLIST)
+
+# --- ASIC (TAPEOUT) ARM (2026-08-26, rev2/asic-sim) --------------------------
+# Everything above deliberately re-points FCSM 0-4 to the RECOVERY copies so the
+# socl_ gates are compiled in and observable. That is the right thing for the
+# I1 repro -- but it means this bench, the one bench in the repo built to test
+# FCSM recovery, has only ever tested the copies that DO NOT SHIP.
+#
+# ASIC_FLIST=1 compiles flists/tidelink_top_full_asic_v2.flist verbatim: no sed,
+# FCSM 0-4 stay on the recovery-STRIPPED deps/ copies -- the files that tape out.
+# The pass criterion of both tests is `state >= LINK_IDLE`, which exists in BOTH
+# variants (only socl_l7_crack_emit_count is override-only, and the test already
+# reports -1 for it), so the SAME stimulus and the SAME assertion run against
+# both file sets. That is the A/B this bench was always the right shape for.
+#
+#   make ASIC_FLIST=1 control   # clean bring-up at the silicon ratio, ASIC RTL
+#   make ASIC_FLIST=1 fixed     # marginal link (periodic LL re-bring-up), ASIC RTL
+#   make            control     # same two, FPGA/recovery RTL, for the A/B
+#
+# rf_16k_stub.v: the ASIC tidelink_sram instantiates the TSMC65 compiled macro,
+# which ships no Verilog model. SIM-ONLY behavioural stub; timing not modelled.
+ASIC_FLIST ?= 0
+ifeq ($(ASIC_FLIST),1)
+DUT_FLIST := $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist
+VERILOG_SOURCES += $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v
+else
+DUT_FLIST := $(LOCAL_FLIST)
+endif
+COMPILE_ARGS += -f $(DUT_FLIST)
 
 # Zero skew, SW bring-up (bit-identical to the EI zero profile).
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=0
@@ -77,14 +104,14 @@ COMPILE_ARGS += +define+TB_TOP_NO_DUMP
 endif
 
 # Separate build dirs so repro (32) and fixed (default) never share a stale simv.
-SIM_BUILD ?= sim_build_fixed
+SIM_BUILD ?= sim_build_fixed$(if $(filter 1,$(ASIC_FLIST)),_asic,)
 
 # --- Build-staleness guard: recompile on flist-sourced RTL edits (the DUT
 #     arrives via -f <flist>, invisible to make). Depend on the base flist, the
 #     generated flist, and every bare source path the generated flist lists
 #     (which now includes the local_overrides FCSM copies).
 include $(TIDELINK_HOME)/cocotb/flist_deps.mk
-_flist_deps := $(BASE_FLIST) $(LOCAL_FLIST) $(call flist_srcs,$(LOCAL_FLIST))
+_flist_deps := $(BASE_FLIST) $(LOCAL_FLIST) $(DUT_FLIST) $(call flist_srcs,$(DUT_FLIST))
 CUSTOM_COMPILE_DEPS += $(_flist_deps)
 
 # ── Code coverage (shared wiring; inert unless COVERAGE=1) ──────────────
@@ -101,21 +128,21 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
 # link the state-2 emit count never reaches 32 -> all AXI nodes stall at state 2.
 # EXPECT FAIL.
 repro:
-	$(MAKE) CRACK_EMITS=32 SIM_BUILD=sim_build_repro \
+	$(MAKE) ASIC_FLIST=$(ASIC_FLIST) CRACK_EMITS=32 SIM_BUILD=sim_build_repro$(if $(filter 1,$(ASIC_FLIST)),_asic,) \
 	        MODULE=test_fcsm_silicon_ratio \
 	        TESTCASE=test_axi_fcsm_state2_clears_under_marginal_link
 
 # Prove the fix: RTL default (tuned) gate -> state 2 clears under the same
 # marginal link -> all AXI nodes reach LINK_IDLE. EXPECT PASS.
 fixed:
-	$(MAKE) SIM_BUILD=sim_build_fixed \
+	$(MAKE) ASIC_FLIST=$(ASIC_FLIST) SIM_BUILD=sim_build_fixed$(if $(filter 1,$(ASIC_FLIST)),_asic,) \
 	        MODULE=test_fcsm_silicon_ratio \
 	        TESTCASE=test_axi_fcsm_state2_clears_under_marginal_link
 
 # Control: a CLEAN link-up clears state 2 at the tuned gate (fix does not break
 # link-up). Runs at gate default; also passes at gate=32 (see repro comment).
 control:
-	$(MAKE) SIM_BUILD=sim_build_control \
+	$(MAKE) ASIC_FLIST=$(ASIC_FLIST) SIM_BUILD=sim_build_control$(if $(filter 1,$(ASIC_FLIST)),_asic,) \
 	        MODULE=test_fcsm_silicon_ratio \
 	        TESTCASE=test_axi_fcsm_clean_bringup_at_silicon_ratio
 

@@ -2027,6 +2027,20 @@ coverage_merge:
 	   -show tests -log $(COV_ROOT)/urg_merge.log; \
 	 echo "[coverage] merged db: $(COV_MERGED)"; \
 	 echo "[coverage] text report: $(COV_REPORTS)"
+	@# MERGE INTEGRITY (2026-08-26).  urg SILENTLY DISCARDS a database whose
+	@# design shape differs from the base design -- and in this repository
+	@# almost every bench's top level is called `tb_top`, so 43 of the 56 gate
+	@# databases had data thrown away in the first whole-corpus merge.  That is
+	@# how src/rtl/tidelink_addr_translator.sv came to be ranked the
+	@# worst-covered shipping file at 35.29%/20.00% while the bench that
+	@# targets it -- present in the merge input, 34 tests, all passing -- puts
+	@# it at 100.00%/80.00% on its own.  Reversing the -dir order reverses
+	@# which data survives; a measurement whose answer depends on argument
+	@# order is not a measurement.  Reported (not fatal) here so the merge
+	@# still completes; `make coverage_check` FAILS on it.
+	-@python3 $(TIDELINK_HOME)/scripts/ci/coverage_merge_integrity.py \
+	  --log $(COV_ROOT)/urg_merge.log \
+	  --out $(COV_REPORTS)/merge_dropped.txt --allow-drops
 
 # The deliverable: NOT a percentage.  A ranked list of shipping RTL that no test
 # executes, scoped to src/rtl/** plus the deps/ and local_overrides/ files named
@@ -2047,6 +2061,18 @@ coverage_check:
 	  --modinfo $(COV_REPORTS)/modinfo.txt \
 	  --flist $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist \
 	  --root $(TIDELINK_HOME) --out $(COV_REPORTS) --check-only
+	@# SECOND HALF OF THE SAME PROMISE.  The burst-arm check above proves the
+	@# instrument still sees an arm that IS unexercised.  It cannot see the
+	@# opposite failure -- an arm that IS exercised being reported unexercised
+	@# because urg threw the database that exercised it away.  That failure
+	@# happened, at scale, in the very first run (43 of 56 gate databases), and
+	@# the check that was here could not detect it.  This one can.
+	@#   COV_ALLOW_MERGE_DROPS=1 downgrades it to a warning for a knowingly
+	@#   mixed merge; it does NOT make the number trustworthy.
+	@python3 $(TIDELINK_HOME)/scripts/ci/coverage_merge_integrity.py \
+	  --log $(COV_ROOT)/urg_merge.log \
+	  --out $(COV_REPORTS)/merge_dropped.txt \
+	  $(if $(COV_ALLOW_MERGE_DROPS),--allow-drops,)
 
 # ── registry-driven regression harness (durable, "run for all bugs") ─────────
 .PHONY: sim_gate_registry_coverage sim_gate_regressions sim_gate_one

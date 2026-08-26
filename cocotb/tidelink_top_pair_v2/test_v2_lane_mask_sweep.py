@@ -45,6 +45,11 @@ from cocotb.triggers import ClockCycles
 
 from pair_v2_common import PairV2TB, run_bringup_full, make_packet, ST_CAL_DONE
 from test_v2_reduced_lane import force_lane_mask, read_mask_state
+from lane_mask_oracle import inject_specimen, oracle_verdict
+
+# Deliberate-specimen injection for test_00 ONLY. Unset in every gate
+# invocation; see lane_mask_oracle.INJECTIONS.
+ORACLE_INJECT = os.environ.get("TIDELINK_ORACLE_SELFTEST_INJECT", "").strip().lower()
 
 LANE_MASK = int(os.environ.get("LANE_MASK", "0xE5"), 0)
 POPCOUNT = bin(LANE_MASK).count("1")
@@ -111,11 +116,29 @@ async def _send_strict(tb, src, dst, payload, ctx):
 # ---------------------------------------------------------------------------
 @cocotb.test()
 async def test_00_oracle_selftest(dut):
-    """Prove the byte-exact oracle can FAIL. Sends a real packet, then compares
-    against a deliberately WRONG expectation; the comparison must not match.
+    """Prove the byte-exact oracle can FAIL, then apply it to a real packet.
 
-    Without this, a suite that passes at 0xFF/0xE4 but is structurally
-    incapable of going red would be worthless."""
+    FALSE-GREEN B3, fixed 2026-08-26. This test used to compute the byte-exact
+    verdict and never read it:
+
+        ok, got, words = await _send_strict(...)   # `ok` discarded
+        zeros_ok = all(0 == words[i] for i in range(4))
+        assert not zeros_ok
+
+    `zeros_ok` compared the EXPECTED packet against zero. make_packet() puts a
+    nonzero header in words[0], so it was a compile-time False and
+    `assert not zeros_ok` could not fire under any stimulus. On the all-zeros RX
+    signature this file's own header names at the top (silicon 0xE5: link
+    trains, payload never lands) every predicate here evaluated False and the
+    test PASSED — the one test whose stated job is proving the oracle can go
+    red was itself incapable of it.
+
+    The verdict now lives in lane_mask_oracle.oracle_verdict(), which is
+    exercised against invented specimens with no simulator by
+    scripts/ci/tests/test_lane_mask_oracle.py, and is applied here to the real
+    RX. Setting TIDELINK_ORACLE_SELFTEST_INJECT=zeros|inverted|shifted|truncated
+    hands this test a deliberate specimen so the red path can be demonstrated
+    end to end on demand."""
     tb = PairV2TB(dut)
     await _bringup(tb)
     assert await tb.wait_cr_crack(), "link did not reach bilateral CR/CRACK"
@@ -123,20 +146,22 @@ async def test_00_oracle_selftest(dut):
 
     ok, got, words = await _send_strict(tb, "m", "s", PAYLOAD_M2S,
                                         ctx="oracle-selftest")
-    # The real comparison should pass on a healthy mask; but the SELF-TEST is
-    # that a corrupted expectation MUST mismatch.
-    corrupted = [w ^ 0xFFFFFFFF for w in words]
-    false_ok = all(got[i] == corrupted[i] for i in range(4))
-    assert not false_ok, (
-        "ORACLE FAULT: RX matched a bit-inverted expectation — the comparison "
-        "is not actually comparing anything")
-    # And an all-zeros RX must never satisfy the real oracle.
-    zeros_ok = all(0 == words[i] for i in range(4))
-    assert not zeros_ok, (
-        "ORACLE FAULT: the expected packet is itself all-zeros, so an all-zeros "
-        "RX would false-pass")
-    tb.log.info("  [oracle-selftest] oracle is live: it rejects both a "
-                "bit-inverted and an all-zeros RX")
+
+    if ORACLE_INJECT:
+        tb.log.warning(
+            f"  [oracle-selftest] SPECIMEN INJECTION ACTIVE "
+            f"(TIDELINK_ORACLE_SELFTEST_INJECT={ORACLE_INJECT!r}) — this run is "
+            f"a control, not a DUT result. The test MUST fail.")
+        got = inject_specimen(ORACLE_INJECT, got, words)
+
+    problems = oracle_verdict(got, words)
+    assert not problems, (
+        f"mask 0x{LANE_MASK:02X} (K={POPCOUNT}) oracle self-test FAILED:\n  "
+        + "\n  ".join(problems))
+
+    tb.log.info("  [oracle-selftest] oracle is live: expectation is "
+                "discriminating, a bit-inverted RX is rejected, an all-zeros RX "
+                "is rejected, and the real RX is byte-exact")
 
 
 @cocotb.test()
@@ -166,10 +191,11 @@ async def test_02_data_m2s(dut):
     assert await tb.wait_cr_crack(), "link did not reach bilateral CR/CRACK"
     await ClockCycles(dut.hclk, 500)
     ok, got, words = await _send_strict(tb, "m", "s", PAYLOAD_M2S, ctx="m2s")
-    assert ok, (
-        f"mask 0x{LANE_MASK:02X} (K={POPCOUNT}) M->S NOT byte-exact: "
-        f"sent [{', '.join(f'0x{w:08x}' for w in words)}] "
-        f"got [{', '.join(f'0x{w:08x}' for w in got)}]")
+    problems = oracle_verdict(got, words)
+    assert not problems, (
+        f"mask 0x{LANE_MASK:02X} (K={POPCOUNT}) M->S:\n  "
+        + "\n  ".join(problems))
+    assert ok, "internal: oracle_verdict clean but byte-exact flag false"
 
 
 @cocotb.test()
@@ -183,7 +209,8 @@ async def test_03_data_s2m(dut):
     assert await tb.wait_cr_crack(), "link did not reach bilateral CR/CRACK"
     await ClockCycles(dut.hclk, 500)
     ok, got, words = await _send_strict(tb, "s", "m", PAYLOAD_S2M, ctx="s2m")
-    assert ok, (
-        f"mask 0x{LANE_MASK:02X} (K={POPCOUNT}) S->M NOT byte-exact: "
-        f"sent [{', '.join(f'0x{w:08x}' for w in words)}] "
-        f"got [{', '.join(f'0x{w:08x}' for w in got)}]")
+    problems = oracle_verdict(got, words)
+    assert not problems, (
+        f"mask 0x{LANE_MASK:02X} (K={POPCOUNT}) S->M:\n  "
+        + "\n  ".join(problems))
+    assert ok, "internal: oracle_verdict clean but byte-exact flag false"

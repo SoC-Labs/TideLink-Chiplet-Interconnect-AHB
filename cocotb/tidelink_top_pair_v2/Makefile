@@ -55,6 +55,39 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 # of tidelink_fpga_v2.flist into a generated flist; no tracked RTL is touched.
 # Default (PREFIX_FC=0) uses the in-tree fixed fc_adapter (clamps to 1:1).
 #   make EPOCH_PROFILE=zero MODULE=test_v2_multipkt_pktnum PREFIX_FC=1
+# ── ASIC FILE-SET BUILD (2026-08-26, rev2/asic-sim) ─────────────────────────
+# ASIC_FLIST=1 compiles the TAPEOUT file list — flists/tidelink_top_full_asic_v2
+# .flist — instead of the FPGA one, under this SAME testbench. It is the only
+# way any behavioural bench in this repository exercises the RTL that actually
+# tapes out.
+#
+# WHY IT MATTERS: the two flists resolve 8 files differently. Five of them are
+# the AXI-path flow-control state machines WlinkGenericFCSM{,_1.._4}: the FPGA
+# flist takes src/rtl/local_overrides/ (SoC Labs recovery: Fix A/B/C/D/E — the
+# L6 CR-emit gate, the L7 CRACK-emit gate, the sticky-NACK bring-up forgive,
+# the TL-033 state-7 emit-starvation watchdog and the periodic re-ACK), the
+# ASIC flist takes the recovery-STRIPPED deps/ copies (grep socl_ -> 0 hits).
+# Every cocotb suite in this repo compiles the FPGA twin, so FPGA-proven
+# recovery has never been shown to transfer to the ASIC — and until this knob
+# existed, the ASIC copies were covered ONLY by elaboration-only gates.
+#
+#   make ASIC_FLIST=1 EPOCH_PROFILE=zero MODULE=test_v2_pair_data
+#
+# rf_16k: the ASIC tidelink_sram.sv instantiates the TSMC65 compiled macro,
+# which ships no Verilog model. syn/asic/sim_stubs/rf_16k_stub.v is a
+# behavioural single-port RAM with per-bit write enable (already used by the
+# asic_v*_elab gates) and is added to VERILOG_SOURCES here. It is a SIM-ONLY
+# stub: real macro timing/margin is not modelled, so this proves FUNCTION, not
+# timing. It must never enter a synthesis flist.
+#
+# NOT a design change: no tracked RTL is touched, only which of two existing
+# files each module is taken from.
+ASIC_FLIST ?= 0
+export ASIC_FLIST   # test_asic_fileset_identity.py reads it to pick which arm to assert
+ifeq ($(ASIC_FLIST),1)
+V2_FLIST := $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist
+VERILOG_SOURCES += $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v
+endif
 V2_FLIST  ?= $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist
 PREFIX_FC ?= 0
 ifeq ($(PREFIX_FC),1)
@@ -212,7 +245,7 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 #   (negctl) share one sim_build for a given EPOCH_PROFILE, so running deliver then
 #   negctl silently re-runs the beacon-ON binary -> the negctl delivers and reports
 #   a FALSE non-vacuity failure. Add AUTO_ANCHOR to the key so the two get separate dirs.
-SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)$(if $(filter 1,$(HONEST_STRAPS)),_honest,)$(if $(filter 1,$(AUTO_ANCHOR)),_autoanchor,)
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)$(if $(filter 1,$(HONEST_STRAPS)),_honest,)$(if $(filter 1,$(AUTO_ANCHOR)),_autoanchor,)$(if $(filter 1,$(ASIC_FLIST)),_asic,)
 
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0
@@ -230,7 +263,11 @@ endif
 #     (the generated one lists prefix_fc_adapter.sv when PREFIX_FC=1).
 #     See docs/SIM_GATE_COVERAGE.md.
 include $(TIDELINK_HOME)/cocotb/flist_deps.mk
+ifeq ($(ASIC_FLIST),1)
+_flist_deps := $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist $(call flist_srcs,$(V2_FLIST))
+else
 _flist_deps := $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist $(call flist_srcs,$(V2_FLIST))
+endif
 CUSTOM_COMPILE_DEPS += $(_flist_deps)
 
 include $(shell cocotb-config --makefiles)/Makefile.sim

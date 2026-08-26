@@ -1656,6 +1656,21 @@ sim_gate_dftelab:
 	      echo "FAIL: tidelink_tx_gen INSTANTIATED in ASIC tapeout netlist — TXGEN_PRESENT tie-off missing (docs/TXGEN_V1_DESIGN.md)"; exit 1; \
 	    else echo "STRUCTURAL-OK: tidelink_tx_gen absent from ASIC tapeout elaborated netlist (TXGEN_PRESENT=0 tie-off holds)"; fi; })
 
+# --- ADDRESS TRANSLATOR unit bench (registered 2026-08-26) -------------------
+# cocotb/tidelink_addr_translator has existed, and passed, for a long time --
+# but it was never in the gate.  The 2026-08-26 coverage run therefore ranked
+# src/rtl/tidelink_addr_translator.sv as the WORST-covered shipping file
+# (35.29% line / 20.00% branch), which was an artefact of measuring only what
+# the gate runs: the bench alone puts that same file at 100.00% line /
+# 80.00% branch, tl_addr_trans_cam at 100/100 and tl_addr_trans_regs at
+# 87.65/77.08.  This is the cross-die address path; leaving its only bench out
+# of the gate meant nothing protected it against regression.
+sim_gate_addr_translator:
+	$(call sim_gate_run,addr_translator,\
+	  rm -rf cocotb/tidelink_addr_translator/sim_build_gate_at && \
+	  $(MAKE) -C cocotb/tidelink_addr_translator SIM_BUILD=sim_build_gate_at \
+	    COCOTB_RESULTS_FILE=sim_build_gate_at/res_addr_translator.xml)
+
 # --- XHB500 BRIDGE PAIR unit bench (added 2026-08-26, coverage-driven) -------
 # The first coverage database over this repository's whole simulation corpus
 # put xhb500_axi_to_ahb_bridge_chiplet_mst_core_xin -- the INBOUND half of the
@@ -1695,6 +1710,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
 	xhb500_bridge \
+	addr_translator \
 	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \
 	a2l_wready_tear \
 	v2_auto_anchor
@@ -1736,7 +1752,8 @@ sim_gate_clean_builds:
 	        cocotb/eth_tidelink_pair_m1/sim_build_gate* \
 	        cocotb/eth_tidelink_pair_shape_a/sim_build_gate* \
 	        cocotb/tidelink_error_injection/sim_build_gate* \
-	        cocotb/xhb500_bridge/sim_build_gate*
+	        cocotb/xhb500_bridge/sim_build_gate* \
+	        cocotb/tidelink_addr_translator/sim_build_gate*
 
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
@@ -1789,6 +1806,9 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@# 0.00% before this suite existed) and the error/exclusive response paths
 	@# of both bridges.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_xhb500_bridge
+	@# Cross-die address path: the CAM translator's only bench, which existed
+	@# but was never gated (see sim_gate_addr_translator).
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_addr_translator
 	@# HAZARD-3 / N2 fix: AUTO_ANCHOR beacon force must respect io_link_tx_tx_idle.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_auto_anchor
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data

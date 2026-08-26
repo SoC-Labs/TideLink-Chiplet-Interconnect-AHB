@@ -21,6 +21,13 @@ from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
 
 # ── Minimal APB Master Driver ───────────────────────────────────────────────
 
+# An APB slave that never raises PREADY wedges the bus.  This project has lost
+# a board to exactly that class of failure (an undecoded address hard-wedging
+# the PS), so the driver refuses to poll forever: a stuck PREADY is reported as
+# a test failure at the point it happens, not as a run that never terminates.
+APB_PREADY_TIMEOUT_CYCLES = 64
+
+
 class APBMaster:
     """Minimal APB master driver for register access."""
 
@@ -34,6 +41,7 @@ class APBMaster:
         self._pstrb   = getattr(dut, f"{prefix}_pstrb")
         self._prdata  = getattr(dut, f"{prefix}_prdata")
         self._pready  = getattr(dut, f"{prefix}_pready")
+        self._pslverr = getattr(dut, f"{prefix}_pslverr")
 
     def idle(self):
         self._psel.value    = 0
@@ -53,7 +61,12 @@ class APBMaster:
         await RisingEdge(self._clk)
         self._penable.value = 1
         await RisingEdge(self._clk)
+        waited = 0
         while not int(self._pready.value):
+            assert waited < APB_PREADY_TIMEOUT_CYCLES, (
+                f"APB write to {addr:#06x} never completed: PREADY still low "
+                f"after {waited} cycles")
+            waited += 1
             await RisingEdge(self._clk)
         self.idle()
 
@@ -66,13 +79,48 @@ class APBMaster:
         await RisingEdge(self._clk)
         self._penable.value = 1
         await FallingEdge(self._clk)
+        waited = 0
         while not int(self._pready.value):
+            assert waited < APB_PREADY_TIMEOUT_CYCLES, (
+                f"APB read of {addr:#06x} never completed: PREADY still low "
+                f"after {waited} cycles")
+            waited += 1
             await RisingEdge(self._clk)
             await FallingEdge(self._clk)
         data = int(self._prdata.value)
         await RisingEdge(self._clk)
         self.idle()
         return data
+
+    async def read_full(self, addr):
+        """Read, returning (PRDATA, PSLVERR, PREADY) sampled in the ACCESS phase.
+
+        The plain read() throws PSLVERR away, which is why the APB slave mux's
+        error response had never been asserted on despite the `default:` arm
+        showing as covered -- test_27 drove it and then only logged.
+        """
+        self._psel.value    = 1
+        self._penable.value = 0
+        self._pwrite.value  = 0
+        self._paddr.value   = addr
+        self._pwdata.value  = 0
+        await RisingEdge(self._clk)
+        self._penable.value = 1
+        await FallingEdge(self._clk)
+        waited = 0
+        while not int(self._pready.value):
+            assert waited < APB_PREADY_TIMEOUT_CYCLES, (
+                f"APB read of {addr:#06x} never completed: PREADY still low "
+                f"after {waited} cycles")
+            waited += 1
+            await RisingEdge(self._clk)
+            await FallingEdge(self._clk)
+        data    = int(self._prdata.value)
+        slverr  = int(self._pslverr.value)
+        pready  = int(self._pready.value)
+        await RisingEdge(self._clk)
+        self.idle()
+        return data, slverr, pready
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -133,6 +181,10 @@ class AddrTranslatorTB:
     async def cfg_read(self, offset):
         """Read a 32-bit config register via the APB config slave."""
         return await self.apb_cfg.read(offset)
+
+    async def cfg_read_full(self, offset):
+        """Read a config register, returning (PRDATA, PSLVERR, PREADY)."""
+        return await self.apb_cfg.read_full(offset)
 
     async def cfg_write(self, offset, data):
         """Write a 32-bit config register via the APB config slave."""
@@ -696,15 +748,20 @@ async def test_26_config_cleared_by_reset(dut):
 
 @cocotb.test()
 async def test_27_unused_apb_port_access(dut):
-    """Accessing disabled APB ports (2-15) does not hang the bus."""
+    """Accessing disabled APB ports (2-15) does not hang the bus.
+
+    2026-08-26: this test used to READ the two ports and only log the result,
+    so it could not fail -- it drove the `default:` arm of the slave mux and
+    then asserted nothing about it.  It now asserts the claim in its own
+    docstring: PREADY comes back high, so the access terminates.
+    See test_35/36/37 for the error-response semantics.
+    """
     tb = AddrTranslatorTB(dut)
     await tb.reset()
 
-    val = await tb.cfg_read(0x2000)
-    dut._log.info(f"Unused port 2 read: 0x{val:08X}")
-
-    val = await tb.cfg_read(0xF000)
-    dut._log.info(f"Unused port 15 read: 0x{val:08X}")
+    for port in (2, 15):
+        _val, _slverr, pready = await tb.cfg_read_full(port << 12)
+        assert pready == 1, f"unused port {port} did not terminate the access"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -857,3 +914,70 @@ async def test_34_all_rules_match_same_addr(dut):
     await ClockCycles(dut.hclk, 1)
     out = tb.get_translated_addr(0)
     assert out == 0x10000000, f"All rules match: rule 0 (replace=0x10) should win, got 0x{out:08X}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# APB slave-mux error response (added 2026-08-26)
+#
+# The empty `default: ;` arm at tidelink_addr_translator.sv:104 was flagged as
+# UNPROVEN: does an access to an unmapped port index actually produce an error
+# response, or does the empty arm just leave the outputs at whatever they were?
+#
+# SETTLED BY READING, THEN BY TEST.  The always_comb block assigns
+# i_pready_mux = 1'b1 / i_prdata_mux = 0 / i_pslverr_mux = 1'b1 at lines 84-86,
+# UNCONDITIONALLY, before `if (chp_adr_psel)`.  The empty default arm therefore
+# leaves exactly that default standing: PSLVERR=1, PREADY=1, PRDATA=0.  The
+# comment on line 104 is accurate.  These tests assert it, and assert the
+# discriminating control -- that a MAPPED port does NOT error -- so that a mux
+# which simply errored on everything could not pass.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@cocotb.test()
+async def test_35_unmapped_port_returns_slverr(dut):
+    """Every unmapped APB port index (2-15) answers PSLVERR=1, PREADY=1, PRDATA=0."""
+    tb = AddrTranslatorTB(dut)
+    await tb.reset()
+
+    for port in range(2, 16):
+        data, slverr, pready = await tb.cfg_read_full(port << 12)
+        assert slverr == 1, f"port {port:#x}: expected PSLVERR=1, got {slverr}"
+        assert pready == 1, f"port {port:#x}: expected PREADY=1, got {pready}"
+        assert data == 0, f"port {port:#x}: expected PRDATA=0, got {data:#010x}"
+
+
+@cocotb.test()
+async def test_36_mapped_port_does_not_slverr(dut):
+    """The two MAPPED ports answer PSLVERR=0 -- the control for test_35.
+
+    Without this, a slave mux that errored on every access would pass test_35
+    and the error response would mean nothing.
+    """
+    tb = AddrTranslatorTB(dut)
+    await tb.reset()
+
+    for ch_base in (CH0_BASE, CH1_BASE):
+        _data, slverr, pready = await tb.cfg_read_full(ch_base + REG_CTRL)
+        assert slverr == 0, f"mapped port {ch_base:#x}: unexpected PSLVERR=1"
+        assert pready == 1, f"mapped port {ch_base:#x}: PREADY low"
+
+
+@cocotb.test()
+async def test_37_unmapped_port_write_is_rejected_and_inert(dut):
+    """A write to an unmapped port errors AND changes no channel state.
+
+    An error response that still let the write through would be worse than no
+    error response at all, so the test reads CH0 and CH1 back afterwards.
+    """
+    tb = AddrTranslatorTB(dut)
+    await tb.reset()
+
+    await tb.write_base_offset(0, 0x1000_0000)
+    await tb.write_base_offset(1, 0x2000_0000)
+
+    await tb.cfg_write(0x3000 + REG_BASE_OFFSET, 0xDEAD_BEEF)
+    await tb.cfg_write(0xE000 + REG_BASE_OFFSET, 0xDEAD_BEEF)
+
+    assert await tb.read_base_offset(0) == 0x1000_0000, \
+        "a write to an unmapped port reached channel 0"
+    assert await tb.read_base_offset(1) == 0x2000_0000, \
+        "a write to an unmapped port reached channel 1"

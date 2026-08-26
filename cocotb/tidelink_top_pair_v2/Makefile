@@ -84,9 +84,50 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 # files each module is taken from.
 ASIC_FLIST ?= 0
 export ASIC_FLIST   # test_asic_fileset_identity.py reads it to pick which arm to assert
+
+# rf_16k SOURCE — the REAL vendor model when this site has one, else the stub.
+#
+# The ASIC tidelink_sram.sv instantiates the TSMC65 rf_16k compiled macro.
+# syn/asic/sim_stubs/rf_16k_stub.v was written because "no Verilog model ships
+# in the flist" -- but ARM Physical IP DOES ship one, and its port list is
+# identical, so it is a drop-in. Prefer it: the stub and the macro do not agree
+# on read-during-write (the stub's `q_r <= mem[A]` returns OLD data; the FPGA
+# cmsdk_fpga_sram registers the ADDRESS and returns NEW data) and the stub also
+# omits the CS-gated read output. Simulating the ASIC SRAM against a
+# hand-written stand-in that differs from both the FPGA model and the macro is
+# most of the value of this arm thrown away.
+#
+# MEM_PATH is the existing repo convention for the macro directory (site.env
+# section 5; cocotb/tidelink/Makefile uses it for netlist sim). NO DEFAULT PATH
+# IS HARD-CODED HERE -- per site.env.example, tool and vendor-IP roots are
+# per-machine facts, and a committed absolute path is also a public-repo
+# exposure. Unset => stub + a visible warning, so nobody silently believes they
+# measured the macro.
+#
+# +notimingcheck matches what cocotb/tidelink/Makefile's sim_asic already does
+# for gate-level runs. Without it the macro's setup/hold checks fire on every
+# access (621 violations measured, 3/3 FAIL) because RTL co-simulation drives
+# the memory ports exactly at the clock edge -- an artifact of zero-delay
+# stimulus, not a design finding. With it: 3/3 PASS, 0 violations.
+# RF16K_UD=1 selects ARM's own fast functional model instead (also 3/3 PASS).
+RF16K_V := $(firstword $(wildcard $(MEM_PATH)/rf_16k.v))
 ifeq ($(ASIC_FLIST),1)
 V2_FLIST := $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist
+ifneq ($(RF16K_V),)
+VERILOG_SOURCES += $(RF16K_V)
+RF16K_UD ?= 0
+ifeq ($(RF16K_UD),1)
+COMPILE_ARGS += +define+ARM_UD_MODEL
+else
+COMPILE_ARGS += +notimingcheck
+endif
+else
 VERILOG_SOURCES += $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v
+$(warning [ASIC_FLIST=1] MEM_PATH/rf_16k.v not found -- falling back to \
+  syn/asic/sim_stubs/rf_16k_stub.v. The stub's read-during-write differs from \
+  both the macro and the FPGA SRAM model; set MEM_PATH in site.env to simulate \
+  the real macro.)
+endif
 endif
 V2_FLIST  ?= $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist
 PREFIX_FC ?= 0
@@ -261,7 +302,7 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 #   (negctl) share one sim_build for a given EPOCH_PROFILE, so running deliver then
 #   negctl silently re-runs the beacon-ON binary -> the negctl delivers and reports
 #   a FALSE non-vacuity failure. Add AUTO_ANCHOR to the key so the two get separate dirs.
-SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)$(if $(filter 1,$(HONEST_STRAPS)),_honest,)$(if $(filter 1,$(AUTO_ANCHOR)),_autoanchor,)$(if $(filter 1,$(ASIC_FLIST)),_asic,)$(if $(L7_WDOG_THRESHOLD),_wdog$(L7_WDOG_THRESHOLD),)
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)$(if $(filter 1,$(HONEST_STRAPS)),_honest,)$(if $(filter 1,$(AUTO_ANCHOR)),_autoanchor,)$(if $(filter 1,$(ASIC_FLIST)),_asic,)$(if $(RF16K_V),$(if $(filter 1,$(ASIC_FLIST)),$(if $(filter 1,$(RF16K_UD)),_rfud,_rfreal),),)$(if $(L7_WDOG_THRESHOLD),_wdog$(L7_WDOG_THRESHOLD),)
 
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0

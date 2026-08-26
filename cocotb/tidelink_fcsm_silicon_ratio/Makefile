@@ -70,10 +70,20 @@ _gen := $(shell sed -E 's@deps/axi-chiplet-controller/logical/wlink/(WlinkGeneri
 #
 # rf_16k_stub.v: the ASIC tidelink_sram instantiates the TSMC65 compiled macro,
 # which ships no Verilog model. SIM-ONLY behavioural stub; timing not modelled.
+# rf_16k source: real vendor macro when MEM_PATH resolves, else the stub.
+# See cocotb/tidelink_top_pair_v2/Makefile for why the real model is preferred
+# and why +notimingcheck is required for RTL co-simulation.
 ASIC_FLIST ?= 0
+RF16K_V := $(firstword $(wildcard $(MEM_PATH)/rf_16k.v))
 ifeq ($(ASIC_FLIST),1)
 DUT_FLIST := $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist
+ifneq ($(RF16K_V),)
+VERILOG_SOURCES += $(RF16K_V)
+COMPILE_ARGS += +notimingcheck
+else
 VERILOG_SOURCES += $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v
+$(warning [ASIC_FLIST=1] MEM_PATH/rf_16k.v not found -- using the rf_16k stub.)
+endif
 else
 DUT_FLIST := $(LOCAL_FLIST)
 endif
@@ -104,7 +114,7 @@ COMPILE_ARGS += +define+TB_TOP_NO_DUMP
 endif
 
 # Separate build dirs so repro (32) and fixed (default) never share a stale simv.
-SIM_BUILD ?= sim_build_fixed$(if $(filter 1,$(ASIC_FLIST)),_asic,)
+SIM_BUILD ?= sim_build_fixed$(if $(filter 1,$(ASIC_FLIST)),_asic,)$(if $(RF16K_V),$(if $(filter 1,$(ASIC_FLIST)),_rfreal,),)
 
 # --- Build-staleness guard: recompile on flist-sourced RTL edits (the DUT
 #     arrives via -f <flist>, invisible to make). Depend on the base flist, the

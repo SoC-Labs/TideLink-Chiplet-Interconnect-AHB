@@ -204,23 +204,76 @@ def t3_delivery_soak(base=0xB6B60000):
     return ok
 
 # ---- T6 endurance (chunked write+verify to ENDUR_BEATS) ----------------------
-def t6_endurance(base=0xC7C70000):
+def verify_verdict(rc, out, n):
+    """Pure: a board `verify N BASE` result -> (verdict, detail).
+
+    Three outcomes, kept distinct. rc=255 is an ssh-layer reset with no board
+    output, NOT a data mismatch — mislabelling it as one is what drove weeks of
+    investigation into a defect that did not exist (2026-08-24), so it is
+    INCONCLUSIVE here.
+    """
+    tag = "%d/%d" % (n, n)
+    if rc == 124:
+        return "FAIL", "verify wedged (rc=124, board timeout)"
+    if rc == 255 and not (out or "").strip():
+        return ("INCONCLUSIVE",
+                "ssh returned 255 with NO board output — connection reset, not "
+                "a data mismatch. Verdict UNKNOWN; re-run over a reused "
+                "connection.")
+    if rc != 0:
+        return ("INCONCLUSIVE",
+                "verify could not be evaluated: rc=%d out=%r" % (rc, (out or "")[:80]))
+    if tag in (out or ""):
+        return "PASS", "%s beats verified byte-exact" % tag
+    return "FAIL", "delivery MISMATCH: wanted %s, got %r" % (tag, (out or "")[:80])
+
+
+def t6_endurance(base=0xC7C70000, board_fn=None, obs_fn=None,
+                 por_fn=None, record_fn=None):
+    """Endurance: chunked cross-die writes to ENDUR_BEATS, Region-F gate each
+    chunk, then a final die_b-local delivery check.
+
+    FALSE-GREEN C4, fixed 2026-08-26. The final delivery check used to be
+
+        rc, out = board(B, "verify %d 0x%08X" % (min(step, ENDUR_BEATS), base), 60)
+        record("T6_endurance", "PASS", "%d beats, die_a alive, ..." % ENDUR_BEATS)
+
+    `rc` and `out` were both dead at function end — the verify ran, its answer
+    was discarded, and PASS was recorded unconditionally. T6 could not report a
+    delivery failure AT ALL, and it writes a JSON verdict artefact that other
+    people read as evidence.
+
+    The dependencies are injectable so the whole function can be driven against
+    a fake board with no hardware; see scripts/ci/tests/test_kr260_sysval_t6.py.
+    """
+    _board  = board_fn  or board
+    _obs    = obs_fn    or obs
+    _por    = por_fn    or por_die_a
+    _record = record_fn or record
+
     done = 0; step = 256
     while done < ENDUR_BEATS:
         n = min(step, ENDUR_BEATS - done)
         b = (base + done) & 0xFFFFFFFF
-        rc, out = board(A, "write %d 0x%08X" % (n, b), 60)
+        rc, out = _board(A, "write %d 0x%08X" % (n, b), 60)
         if rc != 0:
-            record("T6_endurance", "FAIL", "write wedged at beat %d" % done); por_die_a(); return False
-        o = obs(A)
+            _record("T6_endurance", "FAIL", "write wedged at beat %d" % done); _por(); return False
+        o = _obs(A)
         if not healthy(o):
-            record("T6_endurance", "FAIL", "Region-F/health fault at beat %d (%s)"
-                   % (done, o.get("witness_raw") if o else "no-obs")); por_die_a(); return False
+            _record("T6_endurance", "FAIL", "Region-F/health fault at beat %d (%s)"
+                    % (done, o.get("witness_raw") if o else "no-obs")); _por(); return False
         done += n
-    # final delivery check (die_b local)
-    rc, out = board(B, "verify %d 0x%08X" % (min(step, ENDUR_BEATS), base), 60)
-    record("T6_endurance", "PASS", "%d beats, die_a alive, Region-F healthy throughout" % ENDUR_BEATS)
-    return True
+
+    # final delivery check (die_b local) — READ THE ANSWER.
+    n_final = min(step, ENDUR_BEATS)
+    rc, out = _board(B, "verify %d 0x%08X" % (n_final, base), 60)
+    verdict, detail = verify_verdict(rc, out, n_final)
+    _record("T6_endurance", verdict,
+            "%d beats, die_a alive, Region-F healthy throughout; final delivery: %s"
+            % (ENDUR_BEATS, detail))
+    if verdict == "FAIL":
+        _por()
+    return verdict == "PASS"
 
 # ---- T10 cross-die READ soak (die_b seeds local; die_a reads over link) ------
 def t10_read_soak(base):

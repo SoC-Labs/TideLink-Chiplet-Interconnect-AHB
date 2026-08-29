@@ -275,7 +275,7 @@ module tidelink_fifo_ctrl #(
     assign translated_addr = addr;
 
     // AHB path: translated byte address for cmsdk_ahb_to_sram (CPU reads + legacy writes)
-    assign translated_haddr = haddr + (hwrite ? write_ptr_r : read_ptr_r);
+    assign translated_haddr = hwrite ? (haddr + write_ptr_r) : (haddr + read_ptr_r);
 
     // FC direct write path: translated byte address (write_ptr offset applied)
     assign fc_translated_addr = fc_wr_addr + write_ptr_r;

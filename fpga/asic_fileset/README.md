@@ -159,24 +159,62 @@ image contains the divergent tapeout sources in full.
 ## Proving it — do not take this file's word for it
 
 ```sh
-fpga/scripts/verify_asic_fileset_image.sh kr260-pair-onchip
+fpga/scripts/verify_asic_fileset_image.sh kr260-pair-onchip --netlist
 ```
 
-Four independent checks, closing the chain from repo source to synthesised
-netlist:
+Vivado does **not** name the `WlinkGenericFCSM*` files in its synthesis log
+(checked, not assumed: `grep -oE "/[^ ]*WlinkGenericFCSM[^ ]*\.v" runme.log`
+returns nothing — it emits `8-6157` for only ~101 of the modules). So the proof
+is built from what the tools *do* say:
 
-1. Vivado's own `[Synth 8-6157] synthesizing module '<m>' [<file>:<line>]` lines
-   in the tidelink OOC synthesis run log — **the tool naming the physical file**,
-   not a flist and not a build banner.
-2. sha256 of that file — the one the synthesiser opened — against the ASIC
-   source on disk. (1) alone only proves a path was opened.
-3. sha256 of the packaged IP's imported copy against the same source, so a
-   divergence at either hop is localised.
-4. `grep -c socl_` on the synthesised copy: 0 for a tapeout FCSM. Run in **both
-   directions** — the same grep on the FPGA twin must return non-zero, or "0
-   hits" is a dead grep and proves nothing.
+1. **Vivado names the source directory.** Its own
+   `[Synth 8-6157] synthesizing module 'tidelink_sram' [<path>:<line>]`,
+   and the same for `i2c_master`, `rf_16k` and `tidelink_top`, all resolve to
+   `…/tidelink_project.gen/sources_1/bd/tidelink_design/ipshared/0b70/src`.
+   That is the directory this synthesis run read.
+2. **sha256 of every divergent file in that directory** against the ASIC
+   source — and against the FPGA twin, so a mismatch says *which* it is rather
+   than merely "not equal". All ten match the ASIC source.
+3. **sha256 at the packaging hop** as well, so a divergence is localised.
+4. **`grep -c socl_` in both directions.** 0 on the synthesised copy; the same
+   grep on the FPGA twin must return non-zero (73/72/72/72/72) or it is a dead
+   grep proving nothing.
+5. **The netlist itself** (`--netlist`), which is the only check that inspects
+   the actual hardware:
 
----
+```
+CENSUS_CONTROL wlink_axiawFC.state_reg = 3     <- control: the path is right
+CENSUS_CONTROL wlink_axiwFC.state_reg  = 7
+CENSUS_CONTROL wlink_axibFC.state_reg  = 3
+CENSUS_CONTROL wlink_axiarFC.state_reg = 4
+CENSUS_CONTROL wlink_axirFC.state_reg  = 3
+CENSUS_MARKER socl_l7_wdog_cnt        in_axi_nodes=0  anywhere_in_design=45
+CENSUS_MARKER socl_l6_cr_emit_count   in_axi_nodes=0  anywhere_in_design=20
+CENSUS_MARKER socl_l7_crack_emit_count in_axi_nodes=0 anywhere_in_design=20
+CENSUS_MARKER socl_l7_bringup_forgive in_axi_nodes=0  anywhere_in_design=0
+CENSUS_MARKER socl_reack_idle_cnt     in_axi_nodes=0  anywhere_in_design=43
+CENSUS_XCHECK FCSM_6(wlink_tidelinktl) socl_* cells = 145
+CENSUS_SRAM   u_rf_cells=12  RAMB_primitives=4
+```
+
+Read it in this order:
+
+* The **controls pass** — `state_reg` exists in all five AXI FC nodes, so the
+  hierarchy filter is right and the zeros below are real absences rather than
+  typos.
+* The **cross-check passes** — the identical search strings find 145 `socl_`
+  cells in `wlink_tidelinktl` (FCSM_6), which *both* flists take from
+  `local_overrides`. The search is alive.
+* Therefore **`in_axi_nodes=0` means the recovery logic is genuinely not in the
+  hardware** for AW/W/B/AR/R. That is the whole point of this image.
+* `socl_l7_bringup_forgive` reads 0 *everywhere*, including FCSM_6. It is a
+  combinational `wire`, and synthesis collapses combinational names — **a
+  netlist grep for a wire is an unconditional zero.** It is printed for
+  completeness and carries **no** evidential weight; the other four are
+  counters, i.e. real flops, and they are the ones that count.
+* `u_rf_cells=12` confirms the ASIC wrapper's `rf_16k` instance is in the
+  netlist, and `RAMB_primitives=4` confirms the substitute inferred block RAM
+  as intended rather than collapsing into thousands of LUTs.
 
 ## Provenance — read this before quoting the manifest
 

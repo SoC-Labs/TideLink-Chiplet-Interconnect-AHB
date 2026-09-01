@@ -68,6 +68,34 @@ RED PROOF -- every test here has been demonstrated FAILING
     mutation that forces it on (M10 / M11) is what catches them.  That
     asymmetry is the point of having both halves.
 
+    2026-09-01 -- the three cross-die exclusive tests at the bottom of this
+    file were reddened the same way, on the same restored-and-digested tree
+    (find|md5sum|md5sum = 391c23fd3cc0af55f3828bce50ae1924 before AND after,
+    verified).  Every one of the three fails under at least two mutations,
+    and each mutation's victim list was recorded, not assumed:
+
+      M12 slv_core_addr  assign awlock = 1'b0
+                         -> hexcl_drives_arlock_and_awlock (the hexcl=1 arm),
+                            shipping_tie_strips_exclusive (its CONTROL),
+                            two_initiators_are_indistinguishable (its CONTROL)
+      M13 slv_core_addr  assign awlock = 1'b1
+                         -> hexcl_drives_arlock_and_awlock (the hexcl=0 arm),
+                            shipping_tie_strips_exclusive (the MEASURED arm),
+                            two_initiators_are_indistinguishable (MEASURED)
+      M14 slv_core_addr  assign awid = 12'd0
+                         -> two_initiators_are_indistinguishable (CONTROL:
+                            the bench can no longer tell initiators apart, so
+                            the measured (0,0) would prove nothing)
+      M15 slv_core_wdata wdata_in payload hwdata -> 32'h0
+                         -> shipping_tie_strips_exclusive ("the store DID
+                            commit"), two_initiators ("the surviving value")
+      M16 slv_core_resp  assign hexokay = 1'b1
+                         -> slv_exokay_sets_hexokay, and both exclusive tests'
+                            "HEXOKAY was never raised" assertions
+
+    M12/M13 are the pair that matters: a lock stuck at EITHER value is caught,
+    so none of the three can pass against a dead AxLOCK observer.
+
 Copyright 2026, SoC Labs (www.soclabs.org)
 """
 
@@ -371,7 +399,8 @@ class AhbMasterForSlv:
         d.s_haddr.value = 0
         d.s_hwdata.value = 0
 
-    async def _addr_phase(self, addr, write, size, hmastlock, hexcl, htrans):
+    async def _addr_phase(self, addr, write, size, hmastlock, hexcl, htrans,
+                          hmaster=0):
         d = self.dut
         await RisingEdge(d.clk)
         d.s_hsel.value = 1
@@ -381,6 +410,7 @@ class AhbMasterForSlv:
         d.s_hsize.value = size
         d.s_hmastlock.value = 1 if hmastlock else 0
         d.s_hexcl.value = 1 if hexcl else 0
+        d.s_hmaster.value = hmaster
         while True:
             await ReadOnly()
             rdy = _i(d.s_hreadyout)
@@ -468,14 +498,16 @@ class AhbMasterForSlv:
         self.idle()
         return results
 
-    async def read(self, addr, size=2, hmastlock=0, hexcl=0):
+    async def read(self, addr, size=2, hmastlock=0, hexcl=0, hmaster=0):
         self.dphase_log = []
-        await self._addr_phase(addr, False, size, hmastlock, hexcl, NONSEQ)
+        await self._addr_phase(addr, False, size, hmastlock, hexcl, NONSEQ,
+                               hmaster)
         return await self._data_phase()
 
-    async def write(self, addr, data, size=2, hmastlock=0, hexcl=0):
+    async def write(self, addr, data, size=2, hmastlock=0, hexcl=0, hmaster=0):
         self.dphase_log = []
-        await self._addr_phase(addr, True, size, hmastlock, hexcl, NONSEQ)
+        await self._addr_phase(addr, True, size, hmastlock, hexcl, NONSEQ,
+                               hmaster)
         return await self._data_phase(wdata=data)
 
 
@@ -493,6 +525,13 @@ class AxiSlaveForSlv:
         self.bresp = OKAY
         self.aw_seen = []
         self.ar_seen = []
+        # EXCLUSIVE evidence, kept in SEPARATE lists so the existing
+        # (addr, len, size) tuples above are untouched: what a downstream
+        # exclusive monitor would need in order to arbitrate between two
+        # initiators is exactly (AxLOCK, AxID), and TideLink's integration
+        # constants decide both.  See test_slv_hexcl_drives_arlock_and_awlock.
+        self.aw_excl_seen = []   # (awlock, awid) per accepted AW
+        self.ar_excl_seen = []   # (arlock, arid) per accepted AR
         self.stopped = False
 
     async def run(self):
@@ -531,11 +570,13 @@ class AxiSlaveForSlv:
                 araddr, arlen, arsize = (_i(d.s_araddr), _i(d.s_arlen),
                                          _i(d.s_arsize))
                 self.ar_seen.append((araddr, arlen, arsize))
+                self.ar_excl_seen.append((_lax(d.s_arlock), _lax(d.s_arid)))
                 for i in range(arlen + 1):
                     rq.append((araddr + i * (1 << arsize), i == arlen))
             if _lax(d.s_awvalid) and out["awready"]:
                 self.aw_seen.append((_i(d.s_awaddr), _i(d.s_awlen),
                                      _i(d.s_awsize)))
+                self.aw_excl_seen.append((_lax(d.s_awlock), _lax(d.s_awid)))
             if _lax(d.s_wvalid) and out["wready"]:
                 addr = self.aw_seen[-1][0] if self.aw_seen else 0
                 self.mem[addr & ~3] = _lax(d.s_wdata)
@@ -1056,3 +1097,206 @@ async def test_slv_locked_transfer_pipelined_behind_normal_is_rejected(dut):
         f"locked transfer must be rejected with ERROR: {logs[1]}"
     assert len(axs.ar_seen) == ar_before + 1, \
         f"the locked transfer leaked onto AXI: {axs.ar_seen[ar_before:]}"
+
+
+# ===========================================================================
+# CROSS-DIE EXCLUSIVES (2026-09-01) -- what an AXI exclusive actually does
+# ===========================================================================
+# The three tests below finish the exclusive story that
+# test_mst_shipping_tie_makes_exclusive_read_non_exclusive started.  That test
+# covers the INBOUND half (HEXOKAY tied low => RRESP can never be EXOKAY).  It
+# leaves the OUTBOUND half unexamined, and the outbound half turns out to be
+# the one that decides the answer:
+#
+#   src/rtl/tidelink_top.sv:3171   .hexcl   (1'b0)   on u_xhb_sub
+#   src/rtl/tidelink_top.sv:3172   .hmaster (12'd0)  on u_xhb_sub
+#
+# core_addr.sv:253/268 assign awlock/arlock = cntrl_2_out.hexcl and
+# core_addr.sv:248/263 assign awid/arid = cntrl_2_out.hmaster.  With those two
+# constants, EVERY outbound AXI transaction leaves this die as AxLOCK=0,
+# AxID=0.  So the exclusive marker is not merely unanswered across the die
+# boundary -- it never crosses it, and no exclusive monitor anywhere
+# downstream can be engaged, let alone arbitrate between initiators.
+#
+# (tidelink_top's own AHB subordinate port has no HEXCL and no HEXOKAY pin at
+# all -- src/rtl/tidelink_top.sv:273-284 -- so the tie-off is not even
+# reachable from outside the module.  That is asserted at the pair level in
+# cocotb/tidelink_axi_datanode_recovery/test_xdie_exclusive.py; here we work
+# at the bridge pins, where both the wired and the tied behaviour can be
+# produced side by side in one simulation.)
+
+
+@cocotb.test(timeout_time=50, timeout_unit="us")
+async def test_slv_hexcl_drives_arlock_and_awlock(dut):
+    """MECHANISM ALIVE + INSTRUMENT PROOF.
+
+    HEXCL on the AHB address phase becomes ARLOCK / AWLOCK on AXI.  Asserted
+    in BOTH directions in one run -- hexcl=0 must give lock=0 and hexcl=1 must
+    give lock=1 -- so the test cannot pass against a lock that is stuck either
+    way, and the AxLOCK observer used by the two tests below is proven able to
+    report both values before anything is concluded from it.
+    """
+    base = 0x800
+    _axm, _ahs, ahm, axs = await bringup(dut, slv_mem={base: 0xC0DE_0001})
+
+    await ahm.read(base, hexcl=0)
+    await ahm.write(base + 4, 0x1111_1111, hexcl=0)
+    await ahm.read(base, hexcl=1)
+    await ahm.write(base + 8, 0x2222_2222, hexcl=1)
+    await ClockCycles(dut.clk, 10)
+
+    assert len(axs.ar_excl_seen) == 2, f"expected 2 ARs, got {axs.ar_excl_seen}"
+    assert len(axs.aw_excl_seen) == 2, f"expected 2 AWs, got {axs.aw_excl_seen}"
+    assert axs.ar_excl_seen[0][0] == 0, \
+        f"a NON-exclusive read must give ARLOCK=0, got {axs.ar_excl_seen}"
+    assert axs.ar_excl_seen[1][0] == 1, \
+        f"HEXCL must become ARLOCK=1 (core_addr.sv:268), got {axs.ar_excl_seen}"
+    assert axs.aw_excl_seen[0][0] == 0, \
+        f"a NON-exclusive write must give AWLOCK=0, got {axs.aw_excl_seen}"
+    assert axs.aw_excl_seen[1][0] == 1, \
+        f"HEXCL must become AWLOCK=1 (core_addr.sv:253), got {axs.aw_excl_seen}"
+
+
+@cocotb.test(timeout_time=50, timeout_unit="us")
+async def test_slv_shipping_tie_strips_exclusive_but_still_commits(dut):
+    """THE SILENT DEGRADE, outbound half.
+
+    With HEXCL tied low -- as src/rtl/tidelink_top.sv:3171 ties it -- an
+    exclusive-intent sequence (read X, then write X) crosses to AXI as two
+    ORDINARY transactions:
+
+      * ARLOCK / AWLOCK are 0, so nothing downstream is asked to monitor
+        anything.  The store is not conditional on anything.
+      * the store is COMMITTED anyway.  This is what makes it a silent
+        degrade rather than a failure: the data lands.
+      * HEXOKAY is low for every data-phase cycle of the read, and HRESP is
+        OKAY throughout.  An AHB5 manager therefore sees exactly what it would
+        see from a subordinate that has no exclusive monitor -- and gets no
+        signal at all distinguishing "your exclusive was honoured" from "your
+        exclusive was never even attempted".
+
+    CONTROL, same run, run FIRST: the identical sequence with HEXCL wired and
+    the AXI subordinate returning EXOKAY produces ARLOCK=1 and HEXOKAY=1.  So
+    the two observables this test asserts to be 0 are both demonstrably able
+    to read 1 in this very simulation.
+    """
+    ctl, base = 0x900, 0x904
+    _axm, _ahs, ahm, axs = await bringup(dut, slv_mem={ctl: 0xAAAA_0001,
+                                                       base: 0xBBBB_0001})
+
+    # -- CONTROL: wired exclusive, monitor present ---------------------------
+    axs.rresp = EXOKAY
+    await ahm.read(ctl, hexcl=1)
+    ctl_exokay = any(c[2] == 1 for c in ahm.dphase_log)
+    ctl_lock = axs.ar_excl_seen[-1][0]
+    axs.rresp = OKAY
+    assert ctl_lock == 1, \
+        f"CANNOT EVALUATE -- the control did not put ARLOCK on AXI ({ctl_lock})"
+    assert ctl_exokay, \
+        "CANNOT EVALUATE -- the control did not raise HEXOKAY, so a 0 in the " \
+        "measured arm below would prove nothing"
+
+    # -- MEASURED: the shipping tie ------------------------------------------
+    ar_n, aw_n = len(axs.ar_excl_seen), len(axs.aw_excl_seen)
+    rd = await ahm.read(base, hexcl=0)
+    rd_log = list(ahm.dphase_log)
+    await ahm.write(base, 0x5AFE_D00D, hexcl=0)
+    wr_log = list(ahm.dphase_log)
+    await ClockCycles(dut.clk, 10)
+
+    ars = axs.ar_excl_seen[ar_n:]
+    aws = axs.aw_excl_seen[aw_n:]
+    dut._log.info(f"[xdie-excl] shipping tie: AR={ars} AW={aws} rd=0x{rd:08x} "
+                  f"mem=0x{axs.mem.get(base, 0):08x}")
+
+    assert rd == 0xBBBB_0001, f"the exclusive-intent read returned 0x{rd:08x}"
+    assert all(l == 0 for l, _ in ars), \
+        f"ARLOCK must be 0 with HEXCL tied low, got {ars}"
+    assert all(l == 0 for l, _ in aws), \
+        f"AWLOCK must be 0 with HEXCL tied low, got {aws}"
+    assert all(c[2] == 0 for c in rd_log), \
+        f"HEXOKAY asserted with HEXCL tied low: {rd_log}"
+    assert all(c[1] == 0 for c in rd_log + wr_log), \
+        f"the degraded sequence errored instead of silently completing: " \
+        f"rd={rd_log} wr={wr_log}"
+    assert axs.mem.get(base) == 0x5AFE_D00D, \
+        f"the store did NOT commit (0x{axs.mem.get(base, 0):08x}) -- if the " \
+        f"store were dropped this would be a failure, not a silent degrade, " \
+        f"and the hazard writeup would be wrong"
+
+
+@cocotb.test(timeout_time=50, timeout_unit="us")
+async def test_slv_two_initiators_are_indistinguishable_and_both_commit(dut):
+    """DOUBLE EXCLUSIVE -- the rev-2 correctness question.
+
+    Two initiators run interleaved exclusive sequences on the SAME address:
+
+        A: read  X          (load-exclusive)
+        B: read  X          (load-exclusive)
+        B: write X = VB     (store-exclusive)
+        A: write X = VA     (store-exclusive)
+
+    A correctly-monitored system must fail exactly one of the two stores: B's
+    store breaks A's reservation, so A's store must not commit.
+
+    CONTROL, run FIRST, in this same simulation: with HEXCL wired and HMASTER
+    carrying distinct initiator ids, AXI sees (AxLOCK=1, AxID=1) and
+    (AxLOCK=1, AxID=2).  That is precisely the information a global exclusive
+    monitor needs, and it is present -- so the check below is a check of the
+    integration, not of a bench that cannot see ids.
+
+    MEASURED, with the shipping constants (.hexcl(1'b0), .hmaster(12'd0)):
+    every one of the four transactions reaches AXI as (AxLOCK=0, AxID=0).  The
+    two initiators are BIT-IDENTICAL on the wire.  Both stores commit, neither
+    is errored, HEXOKAY is never raised for either load, and the final value
+    of X is A's -- B's store has been silently overwritten by a store that a
+    monitored system would have rejected.
+    """
+    x = 0xA00
+    VA, VB = 0x1111_AAAA, 0x2222_BBBB
+    _axm, _ahs, ahm, axs = await bringup(dut, slv_mem={x: 0x0000_0000})
+
+    # -- CONTROL: initiator identity and exclusivity DO reach AXI when wired --
+    await ahm.read(x, hexcl=1, hmaster=1)
+    await ahm.read(x, hexcl=1, hmaster=2)
+    ctl = list(axs.ar_excl_seen)
+    assert ctl == [(1, 1), (1, 2)], (
+        f"CANNOT EVALUATE -- the control could not put (AxLOCK, AxID) on AXI, "
+        f"got {ctl}.  Without it, the (0, 0) measured below would not "
+        f"distinguish 'the integration strips it' from 'the bench cannot see "
+        f"it'.")
+
+    # -- MEASURED: the shipping constants ------------------------------------
+    ar_n, aw_n = len(axs.ar_excl_seen), len(axs.aw_excl_seen)
+    logs = {}
+    logs["A_ldrex"] = None
+    await ahm.read(x, hexcl=0, hmaster=0)            # A: load-exclusive
+    logs["A_ldrex"] = list(ahm.dphase_log)
+    await ahm.read(x, hexcl=0, hmaster=0)            # B: load-exclusive
+    logs["B_ldrex"] = list(ahm.dphase_log)
+    await ahm.write(x, VB, hexcl=0, hmaster=0)       # B: store-exclusive
+    logs["B_strex"] = list(ahm.dphase_log)
+    await ahm.write(x, VA, hexcl=0, hmaster=0)       # A: store-exclusive
+    logs["A_strex"] = list(ahm.dphase_log)
+    await ClockCycles(dut.clk, 10)
+
+    ars = axs.ar_excl_seen[ar_n:]
+    aws = axs.aw_excl_seen[aw_n:]
+    final = axs.mem.get(x)
+    dut._log.info(f"[xdie-excl] two initiators: AR={ars} AW={aws} "
+                  f"final=0x{(final or 0):08x}")
+
+    assert len(ars) == 2 and len(aws) == 2, \
+        f"CANNOT EVALUATE -- expected 2 AR + 2 AW, got {ars} {aws}"
+    assert ars == [(0, 0), (0, 0)] and aws == [(0, 0), (0, 0)], (
+        f"the two initiators were distinguishable on AXI: AR={ars} AW={aws}. "
+        f"With .hexcl(1'b0)/.hmaster(12'd0) they must be identical.")
+    for name, log in logs.items():
+        assert all(c[1] == 0 for c in log), f"{name} was errored: {log}"
+        assert all(c[2] == 0 for c in log), f"{name} saw HEXOKAY=1: {log}"
+    assert final == VA, (
+        f"DOUBLE EXCLUSIVE IS REACHABLE: both store-exclusives committed and "
+        f"the surviving value is 0x{(final or 0):08x} (A's store, issued after "
+        f"B's).  A monitored system would have rejected one of them; here "
+        f"neither initiator can tell that it lost, because HEXOKAY is never "
+        f"raised and both stores answer OKAY.")

@@ -238,6 +238,7 @@ tl044_hol_prefix:
 clean_builds:
 	rm -rf sim_build_axirec sim_build_axirec_* sim_build_bidfix sim_build_gaps* \
 	       sim_build_writehold* sim_build_tl042v2* sim_build_tl037* sim_build_tl044* \
+	       sim_build_xdie_excl* \
 	       sim_build_wrhold_drain_guard* $(LOCAL_FLIST) \
 	       tl044_mutant_green.log
 
@@ -419,6 +420,45 @@ tl044_mutant:
 	else \
 	  echo "[tl044] mutant killed: GREEN FAILS with the ACTION disabled (required)"; \
 	fi
+
+# =============================================================================
+# TL-044 PARK RECIPE (2026-09-01) — test_tl044_park_recipe.py
+#
+# The deadgate suite above proves what the CONTAINMENT does. This target proves
+# what parks the BRIDGE, and which exit branch the park actually takes, using
+# only real stimulus (no Force on any design signal):
+#   S1  the far AHB terminus stops answering  (bench BRAM model knob)
+#   S2  the R packet is persistently lost in the link, far die HEALTHY
+#       (Wlink built-in injector — the on-silicon 0x2E03_003C model)
+# and then the three exits: NEVER (structural: no AR is admitted while parked,
+# so no new r_done can ever decrement read_counter), RECOVERED (a real late R),
+# INTERMITTENT (RELAPSE_MAX+1 genuine park/recover cycles — the arm the deadgate
+# suite has to author with Force).
+#
+# Same short windows as tl044_deadgate, same one-test-per-sim rule (a second
+# run_bringup_full does not re-POR).
+TL044_PARK_TESTS := test_park_recipe_far_terminus_stall \
+               test_park_recipe_lost_r_in_link \
+               test_park_exit_is_structurally_never \
+               test_park_exit_recovers_when_late \
+               test_park_exit_intermittent_latches
+.PHONY: tl044_park $(TL044_PARK_TESTS)
+$(TL044_PARK_TESTS):
+	$(TL044_ENV) $(MAKE) SIM_BUILD=sim_build_tl044_park MODULE=test_tl044_park_recipe \
+	        EXTRA_DEFINES="$(TL044_DEFINES)" TESTCASE=$@
+tl044_park: ; @for t in $(TL044_PARK_TESTS); do $(MAKE) $$t || exit 1; done
+
+# =============================================================================
+# CROSS-DIE EXCLUSIVES (2026-09-01) — test_xdie_exclusive.py
+#
+# What an AXI exclusive actually does across the die boundary. No special
+# defines: the point is the SHIPPING wiring.
+XDIE_EXCL_TESTS := test_xdie_exclusive_marker_never_reaches_axi \
+               test_xdie_two_initiators_both_commit
+.PHONY: xdie_exclusive $(XDIE_EXCL_TESTS)
+$(XDIE_EXCL_TESTS):
+	$(MAKE) SIM_BUILD=sim_build_xdie_excl MODULE=test_xdie_exclusive TESTCASE=$@
+xdie_exclusive: ; @for t in $(XDIE_EXCL_TESTS); do $(MAKE) $$t || exit 1; done
 
 # Per-node injection (AW/W/AR/R). Default 2^16 I5 timeout — these must recover
 # via NACK/replay long before any backstop is relevant.

@@ -291,6 +291,7 @@ endef
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
 	sim_gate_axi_datanode_recovery sim_gate_axi_datanode_gaps sim_gate_tl044_hol_write_age \
 	sim_gate_n1_read_backstop sim_gate_tl044_read_deadgate \
+	sim_gate_tl044_park_recipe sim_gate_xdie_exclusive \
 	sim_gate_axinode_obs \
 	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write \
 	sim_gate_v2_mbox_writeprotect \
@@ -1033,6 +1034,43 @@ sim_gate_tl044_read_deadgate:
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery tl044_deadgate && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery tl044_mutant)
 
+
+# TL-044 PARK RECIPE (2026-09-01): what actually PARKS the bridge, and which of
+# the containment's three exit branches the park really takes.
+#
+# The deadgate suite proves what the CONTAINMENT does; its INTERMITTENT arm has
+# to FORCE xhb_sub_hreadyout_raw to author a waveform, because nobody had armed
+# a real park deliberately. This suite arms two independent REAL parks (far
+# terminus stops answering; R persistently lost in the link with the far die
+# healthy), shows they produce the SAME internal signature, and then drives all
+# three exits with no Force anywhere:
+#   NEVER        structural — while parked, ready_for_read is 0 and the RESP FSM
+#                holds HREADYOUT low, so NO further AR is admitted; with no AR
+#                there is no r_done, and read_counter is decremented by nothing
+#                else (core_resp.sv:115-123). Measured under ONGOING traffic so
+#                ar_accepts==0 is a refusal, not an idle bus.
+#   RECOVERED    a real late R un-parks it and the sticky clears.
+#   INTERMITTENT RELAPSE_MAX+1 genuine park/recover cycles latch xhb_dead_perm_r.
+sim_gate_tl044_park_recipe:
+	$(call sim_gate_run,tl044_park_recipe,\
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_tl044_park && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery tl044_park)
+
+# CROSS-DIE EXCLUSIVES (2026-09-01): an AXI exclusive cannot be expressed across
+# this die boundary at all.
+#
+# tidelink_top's AHB subordinate port has no HEXCL and no HEXOKAY pin
+# (src/rtl/tidelink_top.sv:273-284); u_xhb_sub ties .hexcl(1'b0) (:3171) and
+# .hmaster(12'd0) (:3172), so core_addr.sv:253/268/248/263 emit (AxLOCK=0,
+# AxID=0) for EVERY outbound transaction; u_xhb_mng leaves .hexcl() unconnected
+# (:3313) and ties .hexokay(1'b0) (:3319). Wlink itself carries axlock fine
+# (AXI4ToWlink.v:454/473) — every break is in the integration. Consequence,
+# demonstrated: two initiators both complete a store-exclusive to the same
+# cross-die address, both answered OKAY, second silently overwriting the first.
+sim_gate_xdie_exclusive:
+	$(call sim_gate_run,xdie_exclusive,\
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_xdie_excl && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery xdie_exclusive)
 
 # F-1 (KNOWN DEFECT, 2026-08-02): I5's AHB ERROR is driven with NO transfer in
 # its data phase on the POSTED-write path. I5 is deliberately HREADYOUT-blind so
@@ -1781,7 +1819,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
 	axi_datanode_recovery axi_datanode_gaps tl044_hol_write_age n1_read_backstop \
-	tl044_read_deadgate \
+	tl044_read_deadgate tl044_park_recipe xdie_exclusive \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
 	xhb500_bridge \
@@ -1893,6 +1931,14 @@ sim_gate: sim_gate_integrity sim_gate_env_check sim_gate_clean_builds
 	@# the port must not fall through to the known-wedged xhb_sub_hreadyout_raw
 	@# and hold HREADYOUT low on an IDLE bus (whole-bus PS wedge, JTAG-POR only).
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_tl044_read_deadgate
+	@# TL-044 PARK RECIPE: two REAL parks (far terminus stalled; R lost in the
+	@# link with the far die healthy) with one signature, and all three exit
+	@# branches driven with no Force — the arm the deadgate suite has to author.
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_tl044_park_recipe
+	@# CROSS-DIE EXCLUSIVES: the exclusive marker never leaves the die
+	@# (.hexcl(1'b0)) and every initiator is AxID=0 (.hmaster(12'd0)), so two
+	@# initiators both commit a store-exclusive to the same cross-die address.
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_xdie_exclusive
 	@# I1 eth-chiplet bring-up regressions (SELF_ARM + FIX-E + isolated-write).
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_i1_selfarm
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_i1_fixe_training_release

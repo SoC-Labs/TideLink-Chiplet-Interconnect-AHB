@@ -1243,6 +1243,109 @@ coverage-merge:
     expose_as: "Merged Coverage Report"
     expire_in: 30 days
 
+# ----------------------------------------------------------------------------
+# coverage-publish / coverage-trend
+#
+# WHAT THE JOB ABOVE DOES NOT DO, and why these two exist.
+#
+# `coverage-merge` publishes merged_coverage_report/ as a GitLab job artifact
+# with `expire_in: 30 days`. That is a report on one runner that deletes itself
+# in a month: it cannot be compared against last week, it does not survive the
+# workspace cleanup in `clone` (which rm -rf's dirs older than 24h), and it
+# carries no identity beyond the pipeline that made it. It is the "artifact that
+# lives only on one host in a reapable directory" failure with a nicer UI.
+#
+# It also cannot fail. Two lines are responsible:
+#     if [ -z "$VDB_DIRS" ]; then ... exit 0     # no databases -> GREEN
+#     urg ... 2>&1 | grep -E 'Note|Error|Warning' || true   # urg's rc discarded
+# A pipeline where every simulation failed to emit a database produces a green
+# coverage job. cov_pack.sh hard-fails on both.
+#
+# NOTE ON WHERE THIS PIPELINE ACTUALLY RUNS. Measured 2026-08-26:
+#   git.soton.ac.uk  soclabs/tidelink  main = 9092300b
+#   github.com       SoC-Labs/TideLink-Chiplet-Interconnect-AHB  main = 5e8bdb5a
+#   `git merge-base --is-ancestor 9092300b 5e8bdb5a` -> TRUE
+# The GitLab trunk is a strict ANCESTOR of the GitHub trunk: this file only ever
+# sees commits that were pushed to GitLab, and the work is not going there. The
+# repo has no .github/workflows at all. So these jobs are correct and inert
+# until someone decides which forge runs CI -- and `make cov_pack && make
+# cov_publish` is the path that works today, on a developer machine or on the
+# gate host, with no CI at all. That is deliberate, not a fallback: the manual
+# command is the primary interface and the CI job is a caller of it.
+# ----------------------------------------------------------------------------
+
+coverage-publish:
+  stage: coverage
+  needs:
+    - job: clone
+    - job: coverage-merge
+      artifacts: true
+  tags:
+    - vcs
+  before_script:
+    - export PATH="$VCS_HOME/bin:$VERDI_HOME/bin:$PATH"
+    - cd "$WORK_DIR" && source ./set_env.sh
+  script:
+    # Assemble the artifact. Hard-fails if no database was found, if urg exits
+    # non-zero, or if a digest does not match the bytes.
+    - cd "$WORK_DIR" && make cov_pack
+    # Rehearse ALWAYS. The upload is a separate, explicit step so that a
+    # pipeline change can never start writing to the store by accident.
+    - cd "$WORK_DIR" && make cov_publish
+    # Upload only where a credential is actually configured. ARTIFACTORY_NETRC
+    # is a GitLab FILE-type CI variable containing a ~/.netrc; it is never
+    # echoed, never passed on a command line, and the job is skipped entirely
+    # when it is absent rather than failing loudly on every fork's pipeline.
+    - |
+      if [ -n "${ARTIFACTORY_NETRC:-}" ] && [ -f "$ARTIFACTORY_NETRC" ]; then
+        install -m 600 "$ARTIFACTORY_NETRC" "$HOME/.netrc"
+        cd "$WORK_DIR" && make cov_publish_real
+      else
+        echo "coverage-publish: no ARTIFACTORY_NETRC -- rehearsal only."
+        echo "coverage-publish: the artifact is still attached below, so this"
+        echo "coverage-publish: pipeline's coverage is not lost either way."
+      fi
+    # The small, decision-carrying half goes into the tree so it can be reviewed
+    # in the MR by `git diff` with no store and no network.
+    - cd "$WORK_DIR" && make cov_track
+    - mkdir -p coverage_artifact && cp -r "$WORK_DIR/imp/coverage/"covrun-* coverage_artifact/
+    - cp -r "$WORK_DIR/docs/coverage" coverage_tracked || true
+  allow_failure: true      # flip to false once a green baseline exists in
+                           # verif-baseline -- the same sequence sim-gate used
+  artifacts:
+    when: always
+    paths:
+      - coverage_artifact/
+      - coverage_tracked/
+    expose_as: "Coverage artifact"
+    # 90 days here is a courtesy copy only. The durable copies are the store
+    # (backed up nightly to /research) and docs/coverage/ in git. Nothing
+    # depends on this one surviving.
+    expire_in: 90 days
+
+coverage-trend:
+  stage: coverage
+  needs:
+    - job: clone
+    - job: coverage-publish
+      artifacts: true
+  tags:
+    - vcs
+  script:
+    # The baseline is fetched from verif-baseline when credentials exist;
+    # otherwise the newest tracked summary in docs/coverage/ is used, which is
+    # in every clone. A trend that only works when the store is up is a trend
+    # that stops being consulted.
+    - cd "$WORK_DIR" && bash scripts/coverage/cov_fetch_baseline.sh --out "$WORK_DIR/imp/coverage/_baseline"
+    - cd "$WORK_DIR" && make cov_diff BASE="$WORK_DIR/imp/coverage/_baseline"
+  allow_failure: true      # exit 1 = REGRESSED, 2 = REVIEW, 3 = REFUSED.
+                           # Blocking only once the baseline is real.
+  artifacts:
+    when: always
+    paths:
+      - cov_diff.txt
+    expire_in: 90 days
+
 # ============================================================================
 # Stage 8: Dashboard
 # ============================================================================

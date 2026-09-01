@@ -2118,6 +2118,11 @@ hwtest_gate: hwtest_registry_coverage
 # tidelink_top_full (full chiplet subsystem).
 include flows/makefile.asic
 
+# Verification-coverage repository: pack / publish / diff / track.
+# Kept in its own file so the coverage tooling can be read, reviewed and moved
+# without touching a 2000-line Makefile. See docs/plans/COVERAGE_REPOSITORY_2026-08-26.md
+include scripts/coverage/coverage.mk
+
 # Clean all verification, lint, and synthesis directories
 clean_all: clean_uvm clean_cocotb clean_xprop clean_lint clean_syn
 	@echo "All clean targets completed"

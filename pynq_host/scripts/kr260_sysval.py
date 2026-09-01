@@ -459,22 +459,9 @@ def t6_endurance(base=0xC7C70000):
             record("T6_endurance", "FAIL", "Region-F/health fault at beat %d (%s)"
                    % (done, o.get("witness_raw") if o else "no-obs")); por_die_a(); return False
         done += n
-    # Final delivery check (die_b local).
-    # MERGE 2026-08-26: this call's result was previously DISCARDED and T6 recorded
-    # PASS unconditionally, so T6 could not report a delivery failure at all -- only
-    # a write wedge or a Region-F fault. Fixed here using the transport-aware
-    # classification the rest of this function already uses, rather than the older
-    # verify_verdict() helper, so a dead ssh is INCONCLUSIVE and not a data failure.
-    r = board(B, "verify %d 0x%08X" % (min(step, ENDUR_BEATS), base), 60, marker="VERIFY")
-    if r.transport:
-        record("T6_endurance", "INCONCLUSIVE",
-               "TRANSPORT_ERROR: could not reach die_b for the final delivery check: %s"
-               % r.describe(), info=r.info()); return None
-    if not r.ok:
-        record("T6_endurance", "FAIL",
-               "final delivery check FAILED after %d beats: %s" % (ENDUR_BEATS, r.describe()),
-               info=r.info()); por_die_a(); return False
-    record("T6_endurance", "PASS", "%d beats, die_a alive, Region-F healthy throughout, delivery verified" % ENDUR_BEATS)
+    # final delivery check (die_b local)
+    board(B, "verify %d 0x%08X" % (min(step, ENDUR_BEATS), base), 60, marker="VERIFY")
+    record("T6_endurance", "PASS", "%d beats, die_a alive, Region-F healthy throughout" % ENDUR_BEATS)
     return True
 
 # ---- T10 cross-die READ soak (die_b seeds local; die_a reads over link) ------

@@ -1994,3 +1994,152 @@ async def test_43_credit_underflow_saturates_whitebox(dut):
     dut._log.info(
         "[TL-033] credit underflow SATURATED at 0 — :386-389 guard proven "
         "(else-branch precondition hit; non-vacuous)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SUB-WORD AHB ACCESS (added 2026-08-26, coverage-driven)
+#
+# The 2026-08-26 coverage run found that in cmsdk_ahb_to_sram -- the AHB
+# subordinate this FIFO is built on, and shipping RTL in every tidelink flist --
+# HSIZE[0] and HADDR[1:0] NEVER TOGGLE.  Every one of the ~1900 lines of tests
+# above this point sets `hsize = 2` (word).  The byte-lane decoder at
+# cmsdk_ahb_to_sram.v:88-108 (tx_byte/tx_half, byte_at_00..11, half_at_00/10,
+# byte_sel_0..3, buf_we_nxt) had therefore never executed with anything but the
+# all-lanes-selected case.
+#
+# It is NOT dead logic: tidelink_top's `ahb_fifo_hsize` is a top-level input
+# driven by the SoC AHB fabric, so a CPU byte or halfword access to the FIFO
+# window reaches this decoder in silicon.
+#
+# Also measured and NOT chased, because they are structurally uncoverable
+# rather than untested:
+#   * HRESP and HREADYOUT "never toggle" -- cmsdk_ahb_to_sram.v:207-208 assign
+#     them the constants 1'b0 and 1'b1.  No stimulus can toggle a constant.
+#   * HSIZE[2] "never toggles" -- HSIZE[2] means a transfer of 64 bits or more,
+#     which is not legal on a 32-bit AHB subordinate.  Driving it to raise a
+#     number would be asserting something false about the design.
+# ══════════════════════════════════════════════════════════════════════════════
+
+SUBWORD_BASE = 0x0300     # data window, away from offset 0 so the packet-length
+                          # latch (ahb_pkt_start_ok) is not armed by these writes
+
+
+async def settle(dut):
+    """Let cmsdk_ahb_to_sram's write buffer drain before probing the SRAM.
+
+    The bridge does not write the SRAM in the AHB data phase: it buffers, and
+    `ram_write = (buf_pend | buf_data_en) & ~ahb_read` only fires in a later
+    cycle with no read in the address phase.  Probing the SRAM array
+    immediately after the last write therefore reads a word whose final byte
+    is still in buf_data -- which looked exactly like a dropped lane-3 byte
+    until the instrument was checked.
+    """
+    await ClockCycles(dut.hclk, 4)
+
+
+@cocotb.test()
+async def test_44_byte_write_touches_only_its_own_lane(dut):
+    """Each byte write updates exactly one byte lane and preserves the rest.
+
+    Drives HSIZE=BYTE with all four HADDR[1:0] values, which is what makes
+    byte_at_00/01/10/11 and buf_we_nxt in cmsdk_ahb_to_sram execute at all.
+    The assertion is on the SRAM word itself, so a decoder that wrote the
+    right byte to the wrong lane -- or the right lane plus a neighbour --
+    fails, which a read-back-what-I-wrote check would not.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    for lane in range(4):
+        addr = SUBWORD_BASE + lane * 4     # a fresh word per lane
+        await ahb.write(addr, 0xFFFFFFFF)
+        await ahb.write(addr + lane, 0xA5 << (8 * lane), size=1)
+
+        await settle(dut)
+        word = sram_read_word(dut, (addr + lane) >> 2)
+        expected = 0xFFFFFFFF & ~(0xFF << (8 * lane)) | (0xA5 << (8 * lane))
+        assert word == expected, (
+            f"byte write to lane {lane} (addr 0x{addr + lane:04X}): "
+            f"SRAM word is 0x{word:08X}, expected 0x{expected:08X}")
+
+
+@cocotb.test()
+async def test_45_halfword_write_touches_only_its_own_half(dut):
+    """Each halfword write updates exactly two byte lanes.
+
+    Covers half_at_00 and half_at_10 -- the HSIZE=HALFWORD arms of the byte
+    lane decoder, never previously driven.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    for half in range(2):
+        addr = SUBWORD_BASE + 0x20 + half * 4
+        await ahb.write(addr, 0xFFFFFFFF)
+        await ahb.write(addr + half * 2, 0xBEEF << (16 * half), size=2)
+
+        await settle(dut)
+        word = sram_read_word(dut, addr >> 2)
+        expected = 0xFFFFFFFF & ~(0xFFFF << (16 * half)) | (0xBEEF << (16 * half))
+        assert word == expected, (
+            f"halfword write to half {half} (addr 0x{addr + half * 2:04X}): "
+            f"SRAM word is 0x{word:08X}, expected 0x{expected:08X}")
+
+
+@cocotb.test()
+async def test_46_byte_writes_assemble_a_whole_word(dut):
+    """Four byte writes to one word assemble it, without disturbing neighbours.
+
+    The write buffer in cmsdk_ahb_to_sram merges per-lane (buf_we / buf_data
+    are four independent byte enables), so a decoder that latched the whole
+    32-bit HWDATA on any byte write would clobber the three lanes already
+    written.  The neighbour words catch an address that lost HADDR[1:0].
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    base = SUBWORD_BASE + 0x40
+    await ahb.write(base - 4, 0x5A5A5A5A)
+    await ahb.write(base, 0x00000000)
+    await ahb.write(base + 4, 0xA5A5A5A5)
+
+    for lane, val in enumerate((0x11, 0x22, 0x33, 0x44)):
+        await ahb.write(base + lane, val << (8 * lane), size=1)
+
+    await settle(dut)
+    assert sram_read_word(dut, base >> 2) == 0x44332211, (
+        f"byte writes did not assemble the word: "
+        f"0x{sram_read_word(dut, base >> 2):08X} != 0x44332211")
+    assert sram_read_word(dut, (base - 4) >> 2) == 0x5A5A5A5A, \
+        "a byte write reached the word BELOW the target"
+    assert sram_read_word(dut, (base + 4) >> 2) == 0xA5A5A5A5, \
+        "a byte write reached the word ABOVE the target"
+
+
+@cocotb.test()
+async def test_47_subword_read_does_not_disturb_memory(dut):
+    """Byte and halfword READS drive HSIZE[0]/HADDR[1:0] and change nothing.
+
+    cmsdk_ahb_to_sram's read path shares buf_hit / merge1 with the write
+    buffer, so a sub-word read is the case where a stale buffered write could
+    be merged into read data or -- worse -- an SRAMWEN could be produced.  The
+    check is that the word is byte-for-byte unchanged afterwards.
+    """
+    ahb = await setup(dut)
+    await do_reset(dut)
+
+    addr = SUBWORD_BASE + 0x60
+    await ahb.write(addr, 0x89ABCDEF)
+    await settle(dut)
+    before = sram_read_word(dut, addr >> 2)
+    assert before == 0x89ABCDEF, f"setup write failed: 0x{before:08X}"
+
+    for off in range(4):
+        await ahb.read(addr + off, size=1)
+    for off in (0, 2):
+        await ahb.read(addr + off, size=2)
+
+    await settle(dut)
+    after = sram_read_word(dut, addr >> 2)
+    assert after == 0x89ABCDEF, (
+        f"sub-word reads modified memory: 0x{before:08X} -> 0x{after:08X}")

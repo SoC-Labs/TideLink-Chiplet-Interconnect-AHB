@@ -1714,6 +1714,57 @@ sim_gate_asic_l7_starvation:
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 L7_WDOG_THRESHOLD=256 \
 	    EPOCH_PROFILE=zero COCOTB_RESULTS_FILE=sim_build_zero_asic_wdog256/res_l7.xml \
 	    MODULE=test_asic_l7_starvation_backstop)
+# --- WLINK TX POWER-STATE unit bench (added 2026-08-26, coverage-driven) -----
+# WlinkTxPstateCtrl was at FSM 0.00% -- 1 of 3 states, 0 of 4 transitions -- in
+# all 42 coverage databases that contain it: the TX power-state controller has
+# never changed state in any simulation here.  It is ARMED IN SILICON:
+# swi_delay_cycles resets to 16'h6a4 (1700) and Wlink.v:1702 assigns
+# phy_link_tx_tx_en = txpstate_io_tx_en, so 1700 idle cycles after the last
+# packet the block backpressures the upstream TX path, injects PREQ packets and
+# drops the PHY TX enable until traffic returns.  Every existing bench either
+# keeps the link busy or ends before 1700 quiet cycles elapse.
+sim_gate_wlink_tx_pstate:
+	$(call sim_gate_run,wlink_tx_pstate,\
+	  rm -rf cocotb/wlink_tx_pstate/sim_build_gate_wp && \
+	  $(MAKE) -C cocotb/wlink_tx_pstate SIM_BUILD=sim_build_gate_wp \
+	    COCOTB_RESULTS_FILE=sim_build_gate_wp/res_wlink_tx_pstate.xml)
+
+# --- ADDRESS TRANSLATOR unit bench (registered 2026-08-26) -------------------
+# cocotb/tidelink_addr_translator has existed, and passed, for a long time --
+# but it was never in the gate.  The 2026-08-26 coverage run therefore ranked
+# src/rtl/tidelink_addr_translator.sv as the WORST-covered shipping file
+# (35.29% line / 20.00% branch), which was an artefact of measuring only what
+# the gate runs: the bench alone puts that same file at 100.00% line /
+# 80.00% branch, tl_addr_trans_cam at 100/100 and tl_addr_trans_regs at
+# 87.65/77.08.  This is the cross-die address path; leaving its only bench out
+# of the gate meant nothing protected it against regression.
+sim_gate_addr_translator:
+	$(call sim_gate_run,addr_translator,\
+	  rm -rf cocotb/tidelink_addr_translator/sim_build_gate_at && \
+	  $(MAKE) -C cocotb/tidelink_addr_translator SIM_BUILD=sim_build_gate_at \
+	    COCOTB_RESULTS_FILE=sim_build_gate_at/res_addr_translator.xml)
+
+# --- XHB500 BRIDGE PAIR unit bench (added 2026-08-26, coverage-driven) -------
+# The first coverage database over this repository's whole simulation corpus
+# put xhb500_axi_to_ahb_bridge_chiplet_mst_core_xin -- the INBOUND half of the
+# cross-die path, the direction a far die uses to reach OUR memory -- at FSM
+# 0.00%, and a per-database re-check confirmed 0.00% in all 42 databases that
+# contain it.  No AXI AR or AW had ever reached the peer-side bridge in any
+# simulation here.  On the outbound side slv_core_resp was at 2 of 10
+# transitions, with RESP_FSM_ERROR and RESP_FSM_LOCK_ERROR never entered --
+# the error machinery that N1 / TL-042 / TL-044 are all specified against.
+#
+# The pair-level tb cannot reach any of it (it models no peer-side XHB500
+# target memory), so the bench instantiates both bridges directly against
+# flists/xhb500_bridge_unit.flist -- the same files, same order, as lines
+# 87-121 of the shipping tapeout flist.
+#
+# Own SIM_BUILD (sim_build_gate_xhb) so it never shares a compile.
+sim_gate_xhb500_bridge:
+	$(call sim_gate_run,xhb500_bridge,\
+	  rm -rf cocotb/xhb500_bridge/sim_build_gate_xhb && \
+	  $(MAKE) -C cocotb/xhb500_bridge SIM_BUILD=sim_build_gate_xhb \
+	    COCOTB_RESULTS_FILE=sim_build_gate_xhb/res_xhb500_bridge.xml)
 
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
@@ -1733,6 +1784,9 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	tl044_read_deadgate \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
+	xhb500_bridge \
+	addr_translator \
+	wlink_tx_pstate \
 	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \
 	a2l_replay_cdc_7 a2l_replay_cdc_9 \
 	a2l_wready_tear \
@@ -1774,7 +1828,10 @@ sim_gate_clean_builds:
 	        cocotb/eth_tidelink_pair/sim_build_gate* \
 	        cocotb/eth_tidelink_pair_m1/sim_build_gate* \
 	        cocotb/eth_tidelink_pair_shape_a/sim_build_gate* \
-	        cocotb/tidelink_error_injection/sim_build_gate*
+	        cocotb/tidelink_error_injection/sim_build_gate* \
+	        cocotb/xhb500_bridge/sim_build_gate* \
+	        cocotb/tidelink_addr_translator/sim_build_gate* \
+	        cocotb/wlink_tx_pstate/sim_build_gate*
 
 # GATE-INTEGRITY (false-green B6, 2026-08-26): the set of suites `make sim_gate`
 # RUNS and the set `sim_gate_summary` SCORES are two hand-maintained lists, and
@@ -1842,6 +1899,16 @@ sim_gate: sim_gate_integrity sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_isolated_write
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_mbox_writeprotect
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_xhb_lostresp_pipe
+	@# XHB500 bridge pair unit bench: the inbound AXI->AHB path (core_xin, FSM
+	@# 0.00% before this suite existed) and the error/exclusive response paths
+	@# of both bridges.
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_xhb500_bridge
+	@# Cross-die address path: the CAM translator's only bench, which existed
+	@# but was never gated (see sim_gate_addr_translator).
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_addr_translator
+	@# Wlink TX power-state controller: the idle timeout that drops the PHY TX
+	@# enable, FSM 0.00% before this suite existed.
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_wlink_tx_pstate
 	@# HAZARD-3 / N2 fix: AUTO_ANCHOR beacon force must respect io_link_tx_tx_idle.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_auto_anchor
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
@@ -2065,6 +2132,20 @@ coverage_merge:
 	   -show tests -log $(COV_ROOT)/urg_merge.log; \
 	 echo "[coverage] merged db: $(COV_MERGED)"; \
 	 echo "[coverage] text report: $(COV_REPORTS)"
+	@# MERGE INTEGRITY (2026-08-26).  urg SILENTLY DISCARDS a database whose
+	@# design shape differs from the base design -- and in this repository
+	@# almost every bench's top level is called `tb_top`, so 43 of the 56 gate
+	@# databases had data thrown away in the first whole-corpus merge.  That is
+	@# how src/rtl/tidelink_addr_translator.sv came to be ranked the
+	@# worst-covered shipping file at 35.29%/20.00% while the bench that
+	@# targets it -- present in the merge input, 34 tests, all passing -- puts
+	@# it at 100.00%/80.00% on its own.  Reversing the -dir order reverses
+	@# which data survives; a measurement whose answer depends on argument
+	@# order is not a measurement.  Reported (not fatal) here so the merge
+	@# still completes; `make coverage_check` FAILS on it.
+	-@python3 $(TIDELINK_HOME)/scripts/ci/coverage_merge_integrity.py \
+	  --log $(COV_ROOT)/urg_merge.log \
+	  --out $(COV_REPORTS)/merge_dropped.txt --allow-drops
 
 # The deliverable: NOT a percentage.  A ranked list of shipping RTL that no test
 # executes, scoped to src/rtl/** plus the deps/ and local_overrides/ files named
@@ -2102,6 +2183,18 @@ selfcheck_gates:
 	if [ $$rc -eq 0 ]; then echo "selfcheck_gates: ALL CONTROLS PASS"; \
 	else echo "selfcheck_gates: FAILURES — a checker cannot produce its failing verdict"; fi; \
 	exit $$rc
+	@# SECOND HALF OF THE SAME PROMISE.  The burst-arm check above proves the
+	@# instrument still sees an arm that IS unexercised.  It cannot see the
+	@# opposite failure -- an arm that IS exercised being reported unexercised
+	@# because urg threw the database that exercised it away.  That failure
+	@# happened, at scale, in the very first run (43 of 56 gate databases), and
+	@# the check that was here could not detect it.  This one can.
+	@#   COV_ALLOW_MERGE_DROPS=1 downgrades it to a warning for a knowingly
+	@#   mixed merge; it does NOT make the number trustworthy.
+	@python3 $(TIDELINK_HOME)/scripts/ci/coverage_merge_integrity.py \
+	  --log $(COV_ROOT)/urg_merge.log \
+	  --out $(COV_REPORTS)/merge_dropped.txt \
+	  $(if $(COV_ALLOW_MERGE_DROPS),--allow-drops,)
 
 # ── registry-driven regression harness (durable, "run for all bugs") ─────────
 .PHONY: sim_gate_registry_coverage sim_gate_regressions sim_gate_one

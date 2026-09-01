@@ -301,9 +301,9 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV
 // TL-027 a2l CDC self-latch fix (B node _5): re-point deps->local_override. 2026-08-09.
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_5.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_6.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_7.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_8.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_9.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_9.v
 // SoC Labs I1 (silicon-feedback P1, 2026-07-29): FCSM 0-4 RE-POINTED to the
 // local_overrides recovery copies (reverting the 2026-07-11 revert-to-deps). The
 // deps copies are RECOVERY-STRIPPED (grep -c socl_l7 == 0): the AXI FC nodes had

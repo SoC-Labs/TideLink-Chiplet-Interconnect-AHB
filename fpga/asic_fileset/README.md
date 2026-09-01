@@ -251,3 +251,47 @@ starvation the sim test drives. **It has never been run.** Read its docstring
 first — in particular the part explaining that FCSM `state` for the five
 divergent nodes is **not observable on hardware at all**, so the test is
 behavioural and its most likely honest outcome is COULD-NOT-EVALUATE.
+
+---
+
+## This build
+
+| | |
+|---|---|
+| target | `kr260-pair-onchip` (xck26-sfvc784-2LV-c) |
+| source commit | `a585a2f5` (branch `rev2/asic-fpga`, off `rev2/integration` `bf813a74`) |
+| `tidelink.bit` sha256 | `9465208f3dcaf063e781f7daf2b144e813389283160b590ca3eb13fc52f2d442` |
+| `tidelink.bin` sha256 | `fbeca52424f5390de39a963d607de0e460b1af81cf99e9ec45dae270953c4fd7` |
+| manifest `phy_marker` | `V2-ASICFILESET` |
+| manifest `flist` | `tidelink_top_full_asic_v2.flist` |
+| verification | `VERIFIED` — all 6 checks, netlist census included |
+
+Named copies live in `imp/fpga/output/kr260-pair-onchip/artefact/`:
+`tidelink_ASICFILESET_9465208f3dca.bit`,
+`tidelink_ASICFILESET_fbeca52424f5.bin`, plus the `.hwh`, the manifest, the
+census output and this README. `.bin` is the ZynqMP/`fpgautil` form — produced
+by `bit2bin_zynqmp.py`, which strips the 127-byte field header and does **not**
+byte-swap. Never feed a KR260 a `bit2bin.py` output.
+
+**Timing is clean.** WNS **+27.934 ns**, TNS 0.000, WHS **+0.010 ns**, THS
+0.000 — **0 failing endpoints of 148,403**. Utilisation 57.1% CLB LUTs, 31.1%
+registers, 12 of 144 block-RAM tiles. Removing five copies of the recovery
+logic makes the tapeout file set *smaller* than the FPGA one, so this is not a
+build that was squeezed in.
+
+### The manifest on this build says `git_dirty: true`. Here is exactly why.
+
+Three files were edited *after* the build launched, and all three are
+documentation or verification tooling that no build step reads:
+`fpga/asic_fileset/README.md`, `fpga/scripts/verify_asic_fileset_image.sh`,
+`fpga/scripts/asic_fileset_netlist_census.tcl`. Every actual build input —
+`fpga/filelist.tcl`, `fpga/asic_fileset/rf_16k_fpga.v`,
+`flists/tidelink_top_full_asic_v2.flist`, `fpga/build_design.tcl`,
+`fpga/vivado_ip/package_tidelink_ip.tcl`, `fpga/scripts/build_provenance.tcl` —
+has an mtime **before** the launch and was committed at `526e0ab8`/`9a713177`.
+
+That flag is behaving correctly here (dirty is the fail-*closed* direction).
+It is recorded in full because the *reason* matters and because, on this
+branch, a `git_dirty: false` would have been the reading you could not trust.
+**Identity of this image rests on the sha256 above and on the verification
+script's own output, not on the manifest.**

@@ -251,9 +251,31 @@ async def test_01_wlink_verdict_sniffer_present(dut):
     hs_result_match_q exists ONLY in the fixed version, so its absence in the
     elaborated hierarchy proves which Wlink is in the build."""
     tb = PairV2TB(dut)
+
+    # COULD-NOT-EVALUATE guard: the probe is only meaningful if the hierarchy it
+    # walks actually resolves. A renamed instance would otherwise make
+    # hasattr() False everywhere and read as "dead stub confirmed".
     sniffer = {}
     for side in ("m", "s"):
-        sniffer[side] = hasattr(_ctrl(tb, side).u_wlink, "hs_result_match_q")
+        wl = getattr(_ctrl(tb, side), "u_wlink", None)
+        assert wl is not None, (
+            f"COULD-NOT-EVALUATE: {side}: u_chiplet_controller.u_wlink does not "
+            f"resolve in the elaborated hierarchy, so this probe proves nothing "
+            f"either way. Fix the path before reading any verdict from it.")
+        sniffer[side] = hasattr(wl, "hs_result_match_q")
+
+    # Deliberate-specimen injection, for demonstrating that this probe can go
+    # RED without regenerating Wlink from the vendor Chisel. Unset in every
+    # gate invocation.
+    _inject = os.environ.get("TIDELINK_MASKHS_PROBE_INJECT", "").strip().lower()
+    if _inject in ("absent", "slave_absent", "master_absent"):
+        dut._log.warning(
+            "SPECIMEN INJECTION ACTIVE (TIDELINK_MASKHS_PROBE_INJECT=%r) — this "
+            "run is a control, not a DUT result. The test MUST fail." % _inject)
+        if _inject in ("absent", "slave_absent"):
+            sniffer["s"] = False
+        if _inject in ("absent", "master_absent"):
+            sniffer["m"] = False
 
     dut._log.info("-" * 78)
     dut._log.info("WLINK 0x21C VERDICT-SNIFFER STRUCTURAL PROBE")
@@ -269,14 +291,31 @@ async def test_01_wlink_verdict_sniffer_present(dut):
             f"(0/0 == honest: gate can ONLY open via a real mask_hs_match)")
     dut._log.info("-" * 78)
 
-    if not sniffer["s"]:
-        dut._log.error(
-            "DEAD STUB CONFIRMED IN THE ELABORATED DESIGN: the compiled Wlink "
-            "has no 0x21C verdict sniffer, so mask_hs_result_o is hardwired "
-            "2'b00 and wlink_mask_hs_result can NEVER be non-zero on either "
-            "die. Combined with the MASTER-ONLY MASK_RES_TX states "
-            "(tidelink_autoneg.sv:248-251), the slave has ZERO hardware paths "
-            "to a genuine mask_hs_match.")
-    else:
-        dut._log.info(
-            "Fixed Wlink is in the build — the 0x21C verdict sniffer exists.")
+    # FALSE-GREEN B5, fixed 2026-08-26. This test had ZERO asserts and ZERO
+    # raises: its detection branch was `_log.error(...)`, which does not fail
+    # cocotb. The test named "..._sniffer_present" reported PASS whether the
+    # sniffer was present or not, while another test in the gate points at this
+    # module as "the REAL executable guard".
+    #
+    # The dead stub HAS since been fixed in both sources
+    # (src/rtl/local_overrides/Wlink.v:502-517 and
+    #  deps/axi-chiplet-controller/logical/wlink/Wlink.v:223-238 both declare
+    #  hs_result_match_q and drive mask_hs_result_o from it), so the sniffer
+    # must now be PRESENT — and this assert is the tripwire that catches a
+    # regeneration from the vendor Chisel silently reinstating
+    # `assign mask_hs_result_o = 2'b00;`.
+    missing = [side for side in ("m", "s") if not sniffer[side]]
+    assert not missing, (
+        "DEAD STUB IN THE ELABORATED DESIGN on: %s. The compiled Wlink has no "
+        "0x21C verdict sniffer (hs_result_match_q), so mask_hs_result_o is "
+        "hardwired 2'b00 and wlink_mask_hs_result can NEVER be non-zero on "
+        "that die. Combined with the MASTER-ONLY MASK_RES_TX states "
+        "(tidelink_autoneg.sv:248-251), the slave then has ZERO hardware paths "
+        "to a genuine mask_hs_match — the 2026-07-23 slave SHAM GATE. Both "
+        "in-tree Wlink sources carry the sniffer today; if this fires, one of "
+        "them has been regenerated from the vendor Chisel and the fix is gone."
+        % ",".join(missing))
+
+    dut._log.info(
+        "Fixed Wlink is in the build on BOTH dies — the 0x21C verdict sniffer "
+        "exists.")

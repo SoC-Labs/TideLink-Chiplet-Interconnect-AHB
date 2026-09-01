@@ -290,3 +290,6 @@ syn/asic/*/outputs_*/
 **/xcelium.d*/
 **/INCA_libs*/
 **/*.vdb/
+
+# UVM scoreboard self-test build dir (uvm/tidelink_top_system/sb_selftest)
+sim_build_sb_selftest/

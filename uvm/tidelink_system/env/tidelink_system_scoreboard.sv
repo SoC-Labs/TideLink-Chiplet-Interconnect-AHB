@@ -65,6 +65,11 @@ class tidelink_system_scoreboard extends uvm_scoreboard;
   int unsigned a2b_mismatch_count;
   int unsigned b2a_match_count;
   int unsigned b2a_mismatch_count;
+  // Surplus TX words with no RX counterpart, accumulated in the compare
+  // functions BEFORE they delete() their queues. report_phase must read these,
+  // never the queues — see the backstop note there.
+  int unsigned a_tx_unmatched;
+  int unsigned b_tx_unmatched;
 
   function new(string name = "tidelink_system_scoreboard", uvm_component parent = null);
     super.new(name, parent);
@@ -211,6 +216,8 @@ class tidelink_system_scoreboard extends uvm_scoreboard;
     // backstop only fires if compare was never called at all. This line is
     // therefore the ONLY place an A->B drop is detectable, and it was soft.
     if (a_tx_write_data.size() != b_fifo_read_data.size()) begin
+      if (a_tx_write_data.size() > b_fifo_read_data.size())
+        a_tx_unmatched += (a_tx_write_data.size() - b_fifo_read_data.size());
       `uvm_error("SB_A2B", $sformatf(
         "A->B data count mismatch: %0d A TX writes, %0d B FIFO reads (packets lost or duplicated)",
         a_tx_write_data.size(), b_fifo_read_data.size()))
@@ -253,6 +260,8 @@ class tidelink_system_scoreboard extends uvm_scoreboard;
     // See the A->B note above: this is the only place a B->A drop is detectable,
     // because the queue delete() below wipes the report_phase backstop.
     if (b_tx_write_data.size() != a_fifo_read_data.size()) begin
+      if (b_tx_write_data.size() > a_fifo_read_data.size())
+        b_tx_unmatched += (b_tx_write_data.size() - a_fifo_read_data.size());
       `uvm_error("SB_B2A", $sformatf(
         "B->A data count mismatch: %0d B TX writes, %0d A FIFO reads (packets lost or duplicated)",
         b_tx_write_data.size(), a_fifo_read_data.size()))
@@ -320,15 +329,24 @@ class tidelink_system_scoreboard extends uvm_scoreboard;
       `uvm_error("SB_REPORT", $sformatf(
         "%0d B->A data mismatches detected", b2a_mismatch_count))
 
-    // Check for lost packets (data left in queues)
-    if (a_tx_write_data.size() > 0)
+    // Check for lost packets. DEAD CODE UNTIL 2026-08-26 (false-green B2, same
+    // mechanism as the tidelink_top_system sibling): these used to test
+    // `a_tx_write_data.size() > 0`, which is always false here — report_phase
+    // calls compare_a2b_data()/compare_b2a_data() above and both delete() every
+    // queue before returning. Read the counters instead, which are accumulated
+    // inside the compare functions before the delete().
+    //
+    // The count-mismatch `uvm_error` in compare_a2b_data() (added 2026-07-18)
+    // already caught real loss in this file, so this was redundant dead code
+    // rather than an open hole — but it is now live and reports the surplus.
+    if (a_tx_unmatched > 0)
       `uvm_error("SB_REPORT", $sformatf(
-        "%0d A TX writes not matched by B FIFO reads (lost packets?)",
-        a_tx_write_data.size()))
-    if (b_tx_write_data.size() > 0)
+        "%0d A TX writes not matched by B FIFO reads (lost packets)",
+        a_tx_unmatched))
+    if (b_tx_unmatched > 0)
       `uvm_error("SB_REPORT", $sformatf(
-        "%0d B TX writes not matched by A FIFO reads (lost packets?)",
-        b_tx_write_data.size()))
+        "%0d B TX writes not matched by A FIFO reads (lost packets)",
+        b_tx_unmatched))
   endfunction
 
 endclass

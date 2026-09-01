@@ -85,6 +85,7 @@ package tidelink_integration_pkg;
   `include "tidelink_integration_loopback_test.sv"
   `include "tidelink_integration_credit_test.sv"
   `include "tidelink_integration_stress_test.sv"
+  `include "tidelink_integration_scoreboard_loss_selftest.sv"
 
 endpackage
 

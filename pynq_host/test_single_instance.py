@@ -19,6 +19,7 @@ except ImportError:
     from bare_overlay import TidelinkBareOverlay as _Overlay, BareMMIO as _mmio_cls
     _ol = _Overlay(paired=False, skip_load=True)
 
+from hosttest_verdict import summarise_and_exit
 from tidelink.pynq_driver import PynqTidelinkDriver
 from tidelink.packet import FifoPacket
 from tidelink import regs
@@ -130,6 +131,9 @@ acc_val2 = tl.cfg_read(regs.REG_RELEASED_ACC)
 check("accumulator cleared to 0", acc_val2 == 0, f"got {acc_val2}")
 
 # ── Summary ──────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print(f"Results: {passed} passed, {failed} failed")
-print("=" * 60)
+# FALSE-GREEN C11 (fixed 2026-08-26): this block used to print the tally and
+# stop. There was no `exit`/`sys.exit` anywhere in this file, so the script
+# always exited 0 and a board failing every check was scored as a pass.
+# summarise_and_exit() gives three verdicts: 0 pass, 1 any failure,
+# 2 COULD-NOT-EVALUATE (zero checks ran).
+summarise_and_exit(passed, failed, name="test_single_instance")

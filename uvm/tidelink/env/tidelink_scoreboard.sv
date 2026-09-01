@@ -41,6 +41,10 @@ class tidelink_scoreboard extends uvm_scoreboard;
   int unsigned apb_txn_count;
   int unsigned packet_match_count;
   int unsigned packet_mismatch_count;
+  // Word-count mismatches (packets lost or duplicated). Distinct from
+  // packet_mismatch_count, which only counts words that were compared and
+  // differed — a lost word is never compared at all.
+  int unsigned packet_count_mismatches;
   int unsigned returner_addr_errors;
 
   function new(string name = "tidelink_scoreboard", uvm_component parent = null);
@@ -51,6 +55,7 @@ class tidelink_scoreboard extends uvm_scoreboard;
     apb_txn_count         = 0;
     packet_match_count    = 0;
     packet_mismatch_count = 0;
+    packet_count_mismatches = 0;
     returner_addr_errors  = 0;
   endfunction
 
@@ -150,9 +155,26 @@ class tidelink_scoreboard extends uvm_scoreboard;
     if (write_packet_data.size() == 0 && read_packet_data.size() == 0)
       return;
 
+    // A word-count mismatch means words were LOST (or duplicated) between the
+    // write side and the read side. This must FAIL the test: a scoreboard that
+    // does not fail on packet loss is not a scoreboard.
+    //
+    // It was a `uvm_warning` until 2026-08-26, and the report_phase summary
+    // below could NOT cover for it, for two independent reasons:
+    //   1. min_size = min(write.size(), read.size()). With an empty read queue
+    //      that is 0, the per-word loop runs ZERO times, and the per-word
+    //      `uvm_error` is the only error this function used to raise. TOTAL
+    //      PACKET LOSS therefore produced a clean log.
+    //   2. This function delete()s both queues a few lines below, so by the
+    //      time report_phase runs, the evidence has been wiped.
+    // This line is the ONLY place a drop is detectable, and it was soft.
+    // Ported from uvm/tidelink_system/env/tidelink_system_scoreboard.sv, which
+    // was fixed for this exact defect on 2026-07-18.
+    // Control: tests/tidelink_scoreboard_loss_selftest.sv
     if (write_packet_data.size() != read_packet_data.size()) begin
-      `uvm_warning("SB_PKT", $sformatf(
-        "Packet size mismatch: %0d words written, %0d words read",
+      packet_count_mismatches++;
+      `uvm_error("SB_PKT", $sformatf(
+        "Packet word-count mismatch: %0d words written, %0d words read (words lost or duplicated)",
         write_packet_data.size(), read_packet_data.size()))
     end
 
@@ -182,14 +204,21 @@ class tidelink_scoreboard extends uvm_scoreboard;
     // Final comparison if any data remains
     compare_packet_data();
 
-    `uvm_info("SB_REPORT", $sformatf("\n---------- TideLink Scoreboard Summary ----------\n  FIFO writes:          %0d\n  FIFO reads:           %0d\n  Packet word matches:  %0d\n  Packet word mismatches: %0d\n  Returner transactions: %0d\n  Returner addr errors:  %0d\n  APB transactions:      %0d\n-------------------------------------------------",
+    `uvm_info("SB_REPORT", $sformatf("\n---------- TideLink Scoreboard Summary ----------\n  FIFO writes:          %0d\n  FIFO reads:           %0d\n  Packet word matches:  %0d\n  Packet word mismatches: %0d\n  Packet count mismatches (loss/dup): %0d\n  Returner transactions: %0d\n  Returner addr errors:  %0d\n  APB transactions:      %0d\n-------------------------------------------------",
       fifo_write_count, fifo_read_count,
       packet_match_count, packet_mismatch_count,
+      packet_count_mismatches,
       returner_txn_count, returner_addr_errors,
       apb_txn_count), UVM_LOW)
 
     if (packet_mismatch_count > 0)
       `uvm_error("SB_REPORT", $sformatf("%0d packet data mismatches detected", packet_mismatch_count))
+    // Backstop on a COUNTER, not on the queues: compare_packet_data() delete()s
+    // the queues, so any report_phase check that inspects .size() is dead code.
+    if (packet_count_mismatches > 0)
+      `uvm_error("SB_REPORT", $sformatf(
+        "%0d packet word-count mismatches detected (words lost or duplicated)",
+        packet_count_mismatches))
     if (returner_addr_errors > 0)
       `uvm_error("SB_REPORT", $sformatf("%0d returner address errors detected", returner_addr_errors))
   endfunction

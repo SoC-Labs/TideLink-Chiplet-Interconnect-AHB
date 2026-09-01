@@ -46,6 +46,22 @@ MODULE  ?= test_v2_pair_data
 # tidelink python package (packet encoding helpers)
 export PYTHONPATH := $(TIDELINK_HOME)/python:$(PYTHONPATH)
 
+# ── ONCHIP pair applicability (test_v2_onchip_pair.py) ──────────────────────
+# test_v2_onchip_pair decides at DECORATION time whether it applies to this
+# compile, so cocotb records SKIP rather than PASS for the cases it cannot run
+# (false-green B4: it used to `return` early, which cocotb 1.7.2 counts as a
+# PASS — 5 PASS at 0.00 ns simulated time).
+#
+# Neither knob does anything on this tree yet: the phase-offset slave
+# ref-clock (`s_ref_clk`) does not exist in tb_top.sv, so ONCHIP=1 will make
+# that module FAIL with "the runner and the compile disagree" rather than
+# silently pass. That is the intended honest outcome — do not set ONCHIP=1
+# until tb_top.sv actually carries the second reference clock.
+ONCHIP  ?= 0
+MASK_HS ?= 0
+export TIDELINK_SIM_ONCHIP           := $(ONCHIP)
+export TIDELINK_SIM_ONCHIP_MASK_HS   := $(MASK_HS)
+
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 
 # ── Pre-fix fc_adapter swap (sim-only, wip/txoveradvance-simrepro) ──────────

@@ -111,10 +111,19 @@ IMP="$WT/imp/fpga"
 GEN="$IMP/gen_v2"
 [ -d "$IMP" ] || { echo "FAIL  setup    no build tree at $IMP"; exit 1; }
 
-NFAIL=0; NWARN=0
+NFAIL=0; NWARN=0; NUNKNOWN=0
 pass(){ printf 'PASS  (%s) %s\n      %s\n' "$1" "$2" "$3"; }
 fail(){ printf 'FAIL  (%s) %s\n      %s\n' "$1" "$2" "$3"; NFAIL=$((NFAIL+1)); }
 warn(){ printf 'WARN  (%s) %s\n      %s\n' "$1" "$2" "$3"; NWARN=$((NWARN+1)); }
+# COULD-NOT-EVALUATE: the artefact this check needs is missing or unparseable,
+# so the check did not run. That is NOT a warning and it is NOT a pass — it is
+# the absence of a result. Blocks the gate unless explicitly waived.
+#
+# This distinction is why the gate exists at all. The (i) block below records
+# that a build shipped at WNS -2.427 ns with 1673 failing endpoints and passed
+# verify_build; a check that "could not verify timing closure" printed WARN and
+# the run still exited 0. An unverifiable build is not a verified build.
+unknown(){ printf 'UNKNOWN (%s) %s\n      %s\n' "$1" "$2" "$3"; NUNKNOWN=$((NUNKNOWN+1)); }
 mtime(){ stat -c %Y "$1" 2>/dev/null || echo 0; }
 tstr(){ date -d "@$1" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "@$1"; }
 
@@ -381,7 +390,11 @@ for t in "${TARGETS[@]}"; do
   # log alongside the clean 07-14 one and failed a build that was actually correct.
   log=$(ls -t "$IMP"/run/farm/"$t"@*.log \
                "$IMP"/project/"$t"/*.runs/impl_1/runme.log 2>/dev/null | head -1)
-  [ -z "$log" ] && { warn "g" "no impl log for $t" "cannot check for dropped constraints"; continue; }
+  # No impl log => the dropped-constraint scan did not run. The block comment
+  # above is explicit that a constraint binding to nothing must FAIL however
+  # Vivado phrases it; not being able to look is not the same as looking and
+  # finding nothing.
+  [ -z "$log" ] && { unknown "g" "no impl log for $t" "cannot check for dropped constraints — check did not run"; continue; }
   hits=$(grep -cE "$DROP_RE" "$log" 2>/dev/null)
   if [ "$hits" -gt 0 ]; then
     ev=$(grep -hE "$DROP_RE" "$log" 2>/dev/null | head -1 | cut -c1-140)
@@ -411,7 +424,7 @@ BENIGN_FF_RE='clk_gat|/latch/'
 for t in "${TARGETS[@]}"; do
   ooc=$(ls -t "$IMP"/project/"$t"/*.runs/tidelink_design_tidelink_0_0_synth_1/runme.log 2>/dev/null | head -1)
   if [ -z "$ooc" ] || [ ! -f "$ooc" ]; then
-    warn h "OOC synth log ($t)" "no tidelink_0_0_synth_1/runme.log under $IMP/project/$t/*.runs/ — cannot check FF removal"
+    unknown h "OOC synth log ($t)" "no tidelink_0_0_synth_1/runme.log under $IMP/project/$t/*.runs/ — cannot check FF removal; check did not run"
     continue
   fi
   # element name is inside the parens of each 8-3332 warning
@@ -441,14 +454,14 @@ done
 for t in "${TARGETS[@]}"; do
   rpt="$IMP/output/$t/tidelink_design_wrapper_timing_summary_routed.rpt"
   if [ ! -f "$rpt" ]; then
-    warn i "routed timing WNS ($t)" "missing $rpt — cannot verify timing closure"
+    unknown i "routed timing WNS ($t)" "missing $rpt — CANNOT VERIFY TIMING CLOSURE; this is the exact hole the WNS -2.427 ns build went through"
     continue
   fi
   read -r wns whs <<EOF
 $(awk '/Design Timing Summary/{s=1} s && /WNS\(ns\)/{h=1;next} h && /^[[:space:]]*-?[0-9]/{print $1, $5; exit}' "$rpt")
 EOF
   if [ -z "$wns" ]; then
-    warn i "routed timing WNS ($t)" "could not parse WNS from $(basename "$rpt")"
+    unknown i "routed timing WNS ($t)" "could not parse WNS from $(basename "$rpt") — report format drift; timing closure UNVERIFIED"
   elif awk -v w="$wns" 'BEGIN{exit !(w+0 < 0)}'; then
     fail i "routed timing NOT MET ($t)" \
       "########## WNS = $wns ns < 0 — SETUP TIMING VIOLATED (WHS=$whs ns) — DO NOT DEPLOY ##########  [$(basename "$rpt")]"
@@ -458,11 +471,31 @@ EOF
 done
 
 # ----- verdict --------------------------------------------------------------------
+# THREE outcomes, never two. "Could not evaluate" used to be folded into the
+# warning count and exit 0, which is how an unverifiable build got staged.
+#   exit 0  PASS                every check ran and passed
+#   exit 1  FAIL                at least one check ran and failed
+#   exit 2  COULD-NOT-EVALUATE  no failures, but at least one check could not run
+# VERIFY_BUILD_ALLOW_UNVERIFIED=1 downgrades UNKNOWN to a warning. It is a
+# waiver for someone who has established why the artefact is missing, not a
+# default, and it is announced in the verdict line so it cannot pass unnoticed.
 echo "-------------------------------------------------------------------"
-if [ $NFAIL -eq 0 ]; then
-  echo "VERIFY_BUILD: PASS (warnings=$NWARN) — provenance gate clean"
-  exit 0
+if [ "${VERIFY_BUILD_ALLOW_UNVERIFIED:-0}" = 1 ] && [ $NUNKNOWN -gt 0 ]; then
+  echo "NOTE: VERIFY_BUILD_ALLOW_UNVERIFIED=1 — downgrading $NUNKNOWN unevaluable check(s) to warnings."
+  NWARN=$((NWARN + NUNKNOWN)); NUNKNOWN=0
+  WAIVED=" [UNVERIFIED CHECKS WAIVED]"
 else
-  echo "VERIFY_BUILD: FAIL ($NFAIL check(s) failed, warnings=$NWARN) — DO NOT STAGE THIS BUILD"
+  WAIVED=""
+fi
+if [ $NFAIL -gt 0 ]; then
+  echo "VERIFY_BUILD: FAIL ($NFAIL check(s) failed, unevaluable=$NUNKNOWN, warnings=$NWARN) — DO NOT STAGE THIS BUILD"
   exit 1
+elif [ $NUNKNOWN -gt 0 ]; then
+  echo "VERIFY_BUILD: COULD-NOT-EVALUATE ($NUNKNOWN check(s) could not run, warnings=$NWARN) — DO NOT STAGE THIS BUILD"
+  echo "              A check that did not run has not passed. See the UNKNOWN lines above."
+  echo "              Waive deliberately with VERIFY_BUILD_ALLOW_UNVERIFIED=1 once you know why."
+  exit 2
+else
+  echo "VERIFY_BUILD: PASS (warnings=$NWARN)$WAIVED — provenance gate clean"
+  exit 0
 fi

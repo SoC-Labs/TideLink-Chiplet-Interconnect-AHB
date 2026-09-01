@@ -151,44 +151,14 @@ hr
 # ---------------------------------------------------------------------------
 # Generic RATCHET: run a lint, reduce findings to stable "path:line: CODE" keys,
 # and fail ONLY on keys not already in the accepted baseline. This keeps the
-# gate green on today's known/accepted debt yet red on any NEW finding.
+# gate green on today's known/accepted debt yet red on any NEW finding — and
+# red on a lint that CRASHED rather than reporting nothing.
 #
-#   Finding lines : <path>:<line>: <CODE> <message...>
-#   Baseline lines: <path>:<line>: <CODE>            (message dropped)
+# extract_keys / lint_evaluable / ratchet_lint live in fpga/lint_ratchet.sh so
+# ci/checker_controls/control_farm_gate_ratchet.sh can grade them directly.
 # ---------------------------------------------------------------------------
-extract_keys() {
-    # $1 = file of raw lint/baseline text -> stdout: sorted-uniq "path:line: CODE"
-    sed -nE 's#^([^:[:space:]]+:[0-9]+):[[:space:]]+([A-Z_]+).*$#\1: \2#p' "$1" \
-        | sort -u
-}
-
-# ratchet_lint <label> <raw-output-log> <baseline-file>
-ratchet_lint() {
-    local label="$1" rawlog="$2" baseline="$3"
-    local cur="$LOG_DIR/${label}_cur.$STAMP.txt"
-    local base="$LOG_DIR/${label}_base.$STAMP.txt"
-    extract_keys "$rawlog" >"$cur"
-    if [ -f "$baseline" ]; then
-        extract_keys "$baseline" >"$base"
-    else
-        : >"$base"
-        say "WARNING: baseline $baseline absent — treating all $label findings as NEW"
-    fi
-    local newf gone
-    newf="$(comm -23 "$cur" "$base")"
-    gone="$(comm -13 "$cur" "$base")"   # in baseline, no longer found -> retire
-    if [ -n "$newf" ]; then
-        fail "$label — NEW finding(s) not in $baseline:"
-        printf '%s\n' "$newf" | sed 's/^/[farm_gate]     + /' >&2
-        say "(full $label output: $rawlog)"
-    else
-        pass "$label (no new findings vs baseline; $(grep -c . "$base" 2>/dev/null || echo 0) accepted)"
-    fi
-    if [ -n "$gone" ]; then
-        say "note: $label baseline entry(ies) no longer found — retire from $baseline:"
-        printf '%s\n' "$gone" | sed 's/^/[farm_gate]     - /'
-    fi
-}
+# shellcheck source=fpga/lint_ratchet.sh
+. "$SCRIPT_DIR/lint_ratchet.sh"
 
 # ===========================================================================
 # Tier-0.0  PROVENANCE stamp  (cheapest; never blocks — it is the record)
@@ -284,9 +254,12 @@ if [ "${FARM_GATE_SKIP_XDC:-0}" = 1 ]; then
 else
     say "Tier-0.b  xdc_lint fpga/targets/ (ratcheted) ..."
     XDC_LOG="$LOG_DIR/xdc_lint.$STAMP.log"
-    # '|| true': the tool exits 1 when findings exist; the ratchet decides pass/fail.
-    python3 "$LINT_DIR/xdc_lint.py" fpga/targets/ >"$XDC_LOG" 2>&1 || true
-    ratchet_lint "xdc_lint" "$XDC_LOG" "$XDC_BASELINE"
+    # Exit 1 means "findings exist" and the ratchet, not the exit code, decides
+    # pass/fail — but 2 / 127 / a crash mean the lint did not run, and that is
+    # NOT the same as finding nothing. Keep the status; ratchet_lint grades it.
+    python3 "$LINT_DIR/xdc_lint.py" fpga/targets/ >"$XDC_LOG" 2>&1
+    XDC_RC=$?
+    ratchet_lint "xdc_lint" "$XDC_LOG" "$XDC_BASELINE" "$XDC_RC"
 fi
 
 # ===========================================================================
@@ -297,8 +270,9 @@ if [ "${FARM_GATE_SKIP_SV:-0}" = 1 ]; then
 else
     say "Tier-0.c  sv_anti_pattern lint (ratcheted) ..."
     SV_LOG="$LOG_DIR/sv_anti_pattern.$STAMP.log"
-    python3 "$LINT_DIR/sv_anti_pattern_lint.py" src/rtl >"$SV_LOG" 2>&1 || true
-    ratchet_lint "sv_anti_pattern" "$SV_LOG" "$SV_BASELINE"
+    python3 "$LINT_DIR/sv_anti_pattern_lint.py" src/rtl >"$SV_LOG" 2>&1
+    SV_RC=$?
+    ratchet_lint "sv_anti_pattern" "$SV_LOG" "$SV_BASELINE" "$SV_RC"
 fi
 
 # ===========================================================================

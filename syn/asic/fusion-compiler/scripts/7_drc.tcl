@@ -118,6 +118,27 @@ if {$icv_runset ne "" && [file exists $icv_runset]} {
 #-----------------------------------------------------------------------------
 # Per-check violation-count summary.
 #-----------------------------------------------------------------------------
+# >>> DRC-SCORING-REGION BEGIN >>>
+# Everything from here to the matching END marker is pure Tcl with no
+# fc_shell dependency, so ci/checker_controls/control_fc_drc.sh can extract
+# and execute it against fabricated reports. Keep it that way: no fc_shell
+# commands (save_block, current_design, ...) inside the region.
+#
+# WHY grep_count IS NOT ENOUGH ON ITS OWN
+#
+# grep_count returns its default (-1) for TWO different situations: the
+# report file is absent, and the report exists but the count line did not
+# match. Every call site then did `if {$x == -1} { set x 0 }` and scored 0
+# as PASS — so a DRC stage whose reports never got written, or whose report
+# format drifted, graded CLEAN. A check that did not run is not a check that
+# passed. grep_count_status keeps the three cases apart; the sites below use
+# it and route the unevaluable case to `indeterminate`, which blocks CLEAN
+# without inventing a violation count it does not have.
+#
+# This is the same fail-closed shape the check_legality block below already
+# used (default to FAIL, upgrade to PASS only on positive evidence) — the
+# one its own comment calls THE check that would have caught the scen_slow
+# zero-uncertainty defect.
 proc grep_count {file re {default -1}} {
     if {![file exists $file]} { return $default }
     set fp [open $file r]
@@ -125,6 +146,28 @@ proc grep_count {file re {default -1}} {
     close $fp
     if {[regexp $re $txt -> n]} { return $n }
     return $default
+}
+
+# Returns {status value}:
+#   {ok      <n>}  count parsed
+#   {nofile  -1}   report absent / unreadable
+#   {noparse -1}   report present but the count line did not match
+proc grep_count_status {file re} {
+    if {![file exists $file]}   { return [list nofile  -1] }
+    if {[catch {open $file r} fp]} { return [list nofile -1] }
+    set txt [read $fp]
+    close $fp
+    if {[regexp $re $txt -> n]} { return [list ok $n] }
+    return [list noparse -1]
+}
+
+# Human-readable reason for an unevaluable check.
+proc cnf_reason {status file} {
+    switch -- $status {
+        nofile  { return "report not produced ([file tail $file]) — check did not run" }
+        noparse { return "count line absent in [file tail $file] — report format drift or truncated run" }
+        default { return "unevaluable ([file tail $file])" }
+    }
 }
 
 set summary_rpt ${fc_reports}/07_summary.rep
@@ -136,11 +179,22 @@ puts $sfp [format "  %-22s  %-7s  %s" "Check" "Status" "Detail"]
 puts $sfp "  ----------------------  -------  --------------------------------"
 
 set total_violations 0
+set total_indeterminate 0
 
 proc summarise {name status detail count} {
     global sfp total_violations
     puts $sfp [format "  %-22s  %-7s  %s" $name $status $detail]
     incr total_violations $count
+}
+
+# A check whose result COULD NOT BE EVALUATED. It contributes no violation
+# count (none is known) but it does block the CLEAN verdict and the
+# FC_STAGE_OK marker. PASS / FAIL / COULD-NOT-EVALUATE — three outcomes,
+# never two. Collapsing the third into PASS is the whole defect class here.
+proc indeterminate {name detail} {
+    global sfp total_indeterminate
+    puts $sfp [format "  %-22s  %-7s  %s" $name "UNKNOWN" $detail]
+    incr total_indeterminate
 }
 
 proc summarise_check {name hard} {
@@ -172,6 +226,10 @@ proc summarise_check {name hard} {
         return
     }
     if {$rc == 0} {
+        if {![file exists $rpt]} {
+            indeterminate $name "returned rc=0 but wrote no [file tail $rpt] — nothing to grade"
+            return
+        }
         summarise $name "PASS" "completed — see [file tail $rpt]" 0
     } else {
         summarise $name [expr {$hard ? "FAIL" : "WARN"}] \
@@ -180,36 +238,44 @@ proc summarise_check {name hard} {
 }
 
 # check_design — EMS message summary line.
-set ems_errors [grep_count ${fc_reports}/07_check_design.rep \
-                {Total \d+ EMS messages\s*:\s*(\d+) errors?}]
-if {$ems_errors == -1} {
-    summarise "check_design" "n/a"  "no EMS-summary line found" 0
+lassign [grep_count_status ${fc_reports}/07_check_design.rep \
+                {Total \d+ EMS messages\s*:\s*(\d+) errors?}] \
+        cd_st ems_errors
+if {$cd_st ne "ok"} {
+    indeterminate "check_design" [cnf_reason $cd_st ${fc_reports}/07_check_design.rep]
 } elseif {$ems_errors == 0} {
     summarise "check_design" "PASS" "0 EMS errors"             0
 } else {
     summarise "check_design" "FAIL" "$ems_errors EMS errors"   $ems_errors
 }
 
+# check_legality was already fail-closed (default FAIL, upgrade to PASS only
+# on positive evidence) — the shape the rest of this summary now follows. It
+# still collapsed two different situations into FAIL, though: "the report says
+# it did not succeed" and "there is no report to read". The first is a real
+# violation; the second is unevaluable. Keep them apart.
 set leg_rpt ${fc_reports}/07_check_legality.rep
-set leg_pass 0
-if {[file exists $leg_rpt]} {
+if {![file exists $leg_rpt]} {
+    indeterminate "check_legality" [cnf_reason nofile $leg_rpt]
+} else {
     set fp [open $leg_rpt r]
     set txt [read $fp]; close $fp
-    if {[string match "*succeeded*" $txt]} { set leg_pass 1 }
-}
-if {$leg_pass} {
-    summarise "check_legality" "PASS" "succeeded" 0
-} else {
-    summarise "check_legality" "FAIL" "see report" 1
+    if {[string match "*succeeded*" $txt]} {
+        summarise "check_legality" "PASS" "succeeded" 0
+    } else {
+        summarise "check_legality" "FAIL" "see report" 1
+    }
 }
 
 # check_pg_connectivity — floating std cells + macros.
-set float_cells [grep_count ${fc_reports}/07_check_pg_connectivity.rep \
-                {Number of floating std cells:\s*(\d+)}]
-set float_macros [grep_count ${fc_reports}/07_check_pg_connectivity.rep \
-                 {Number of floating hard macros:\s*(\d+)}]
-if {$float_cells == -1} { set float_cells 0 }
-if {$float_macros == -1} { set float_macros 0 }
+set pg_conn_rpt ${fc_reports}/07_check_pg_connectivity.rep
+lassign [grep_count_status $pg_conn_rpt \
+                {Number of floating std cells:\s*(\d+)}]   pgc_st  float_cells
+lassign [grep_count_status $pg_conn_rpt \
+                {Number of floating hard macros:\s*(\d+)}] pgm_st  float_macros
+# Either count unreadable => the check is unevaluable. It does NOT become 0.
+set pg_conn_evaluable [expr {$pgc_st eq "ok" && $pgm_st eq "ok"}]
+if {!$pg_conn_evaluable} { set float_cells 0; set float_macros 0 }
 set total_float [expr {$float_cells + $float_macros}]
 
 # check_pg_connectivity's "floating std-cell" count tracks the wire-
@@ -233,7 +299,10 @@ set pg_waiver    [expr {[info exists ::env(FC_PG_CONN_WAIVER)] ? $::env(FC_PG_CO
 set pg_float_max [expr {[info exists ::env(FC_PG_CONN_FLOAT_MAX)] ? $::env(FC_PG_CONN_FLOAT_MAX) : 5500}]
 set pg_waived 0
 
-if {$total_float == 0} {
+if {!$pg_conn_evaluable} {
+    indeterminate "check_pg_connectivity" \
+        [cnf_reason [expr {$pgc_st ne "ok" ? $pgc_st : $pgm_st}] $pg_conn_rpt]
+} elseif {$total_float == 0} {
     summarise "check_pg_connectivity" "PASS" "0 floating cells/macros" 0
 } elseif {$pg_waiver && $float_macros == 0 && $float_cells <= $pg_float_max} {
     set pg_waived 1
@@ -246,23 +315,30 @@ if {$total_float == 0} {
               $total_float
 }
 
-set pg_errs [grep_count ${fc_reports}/07_check_pg_drc.rep \
-            {Total number of errors found:\s*(\d+)}]
-if {$pg_errs == -1} { set pg_errs 0 }
-if {$pg_errs == 0} {
+lassign [grep_count_status ${fc_reports}/07_check_pg_drc.rep \
+            {Total number of errors found:\s*(\d+)}] pgd_st pg_errs
+if {$pgd_st ne "ok"} {
+    indeterminate "check_pg_drc" [cnf_reason $pgd_st ${fc_reports}/07_check_pg_drc.rep]
+} elseif {$pg_errs == 0} {
     summarise "check_pg_drc" "PASS" "0 errors" 0
 } else {
     summarise "check_pg_drc" "FAIL" "$pg_errs PG-DRC errors" $pg_errs
 }
 
-set rt_drcs [grep_count ${fc_reports}/07_check_routes.rep \
-            {Total number of DRCs\s*=\s*(\d+)}]
-set rt_opens [grep_count ${fc_reports}/07_check_routes.rep \
-             {Total number of open nets\s*=\s*(\d+)}]
-if {$rt_drcs == -1}  { set rt_drcs 0 }
-if {$rt_opens == -1} { set rt_opens 0 }
-set rt_total [expr {$rt_drcs + $rt_opens}]
-if {$rt_total == 0} {
+set rt_rpt ${fc_reports}/07_check_routes.rep
+lassign [grep_count_status $rt_rpt {Total number of DRCs\s*=\s*(\d+)}]      rtd_st rt_drcs
+lassign [grep_count_status $rt_rpt {Total number of open nets\s*=\s*(\d+)}] rto_st rt_opens
+if {$rtd_st ne "ok" || $rto_st ne "ok"} {
+    indeterminate "check_routes" \
+        [cnf_reason [expr {$rtd_st ne "ok" ? $rtd_st : $rto_st}] $rt_rpt]
+    set rt_drcs 0; set rt_opens 0
+    set rt_total -1
+} else {
+    set rt_total [expr {$rt_drcs + $rt_opens}]
+}
+if {$rt_total == -1} {
+    # already reported as UNKNOWN above
+} elseif {$rt_total == 0} {
     summarise "check_routes" "PASS" "0 DRCs / 0 open nets" 0
 } else {
     summarise "check_routes" "FAIL" \
@@ -270,10 +346,12 @@ if {$rt_total == 0} {
 }
 
 if {[info exists drc_results(signoff_drc)]} {
-    set icv_errs [grep_count ${fc_reports}/07_signoff_drc.rep \
-                 {(\d+) violations?}]
-    if {$icv_errs == -1} { set icv_errs 0 }
-    if {$icv_errs == 0} {
+    lassign [grep_count_status ${fc_reports}/07_signoff_drc.rep \
+                 {(\d+) violations?}] icv_st icv_errs
+    if {$icv_st ne "ok"} {
+        indeterminate "signoff_drc (ICV)" \
+            [cnf_reason $icv_st ${fc_reports}/07_signoff_drc.rep]
+    } elseif {$icv_errs == 0} {
         summarise "signoff_drc (ICV)" "PASS" "0 violations" 0
     } else {
         summarise "signoff_drc (ICV)" "FAIL" "$icv_errs violations" $icv_errs
@@ -327,7 +405,16 @@ summarise_check check_pin_placement 1
 summarise_check check_clock_trees   0
 
 puts $sfp "================================================================="
-if {$total_violations == 0} {
+if {$total_indeterminate > 0} {
+    puts $sfp " RESULT: COULD-NOT-EVALUATE — $total_indeterminate check(s) produced no"
+    puts $sfp "         gradeable result (see UNKNOWN rows above). This is NOT a pass:"
+    puts $sfp "         a check that did not run has not been passed."
+    if {$total_violations > 0} {
+        puts $sfp "         Additionally $total_violations violation(s) were found."
+    }
+    puts $sfp "         Set FC_DRC_ALLOW_INDETERMINATE=1 to downgrade UNKNOWN to a"
+    puts $sfp "         warning ONLY after establishing why the report is missing."
+} elseif {$total_violations == 0} {
     if {$pg_waived} {
         puts $sfp " RESULT: CLEAN — partition ready for chip-top integration"
         puts $sfp "         (check_pg_connectivity PASS* — $float_cells wire-stub"
@@ -343,9 +430,28 @@ if {$total_violations == 0} {
 puts $sfp "================================================================="
 close $sfp
 
+# Stage verdict. THREE outcomes: PASS / FAIL / INDETERMINATE. Only PASS may
+# emit the FC_STAGE_OK marker the Makefile gates on.
+set drc_allow_indet [expr {[info exists ::env(FC_DRC_ALLOW_INDETERMINATE)]
+                           && $::env(FC_DRC_ALLOW_INDETERMINATE) == 1}]
+if {$total_violations > 0} {
+    set drc_stage_verdict FAIL
+} elseif {$total_indeterminate > 0 && !$drc_allow_indet} {
+    set drc_stage_verdict INDETERMINATE
+} else {
+    set drc_stage_verdict PASS
+}
+# <<< DRC-SCORING-REGION END <<<
+
 set fp [open $summary_rpt r]
 puts [read $fp]
 close $fp
+
+if {$total_indeterminate > 0 && $drc_allow_indet} {
+    puts "WARN: \[fc_drc\] $total_indeterminate check(s) COULD NOT BE EVALUATED;"
+    puts "WARN:            FC_DRC_ALLOW_INDETERMINATE=1 is downgrading them to a"
+    puts "WARN:            warning. This is a WAIVER, not a clean result."
+}
 
 puts "INFO: \[fc_drc\] full summary at $summary_rpt"
 puts "INFO: \[fc_drc\] run 'make drc_summary' to re-display it"
@@ -354,5 +460,25 @@ save_block
 save_lib $design_lib_name
 save_block -as ${design_lib_name}:${top_module}/drc.design
 
-puts "FC_STAGE_OK: drc"
-exit
+# The stage marker is the Makefile's ONLY gate (fusion-compiler/Makefile
+# greps '^FC_STAGE_OK: drc' and fails the target when it is absent). It used
+# to be emitted unconditionally, right past the branch that had just printed
+# "RESULT: N violation(s)" — so `make fc_drc` could not fail, whatever the
+# summary said. Emit it only for a genuine PASS.
+switch -- $drc_stage_verdict {
+    PASS {
+        puts "FC_STAGE_OK: drc"
+        exit 0
+    }
+    INDETERMINATE {
+        puts "FC_STAGE_FAIL: drc — $total_indeterminate check(s) COULD NOT BE EVALUATED"
+        puts "ERROR: \[fc_drc\] see the UNKNOWN rows in $summary_rpt."
+        puts "ERROR: \[fc_drc\] a check that produced no report has not passed."
+        exit 1
+    }
+    default {
+        puts "FC_STAGE_FAIL: drc — $total_violations violation(s)"
+        puts "ERROR: \[fc_drc\] see $summary_rpt."
+        exit 1
+    }
+}

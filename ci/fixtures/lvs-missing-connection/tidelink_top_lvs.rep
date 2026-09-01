@@ -1,0 +1,46 @@
+                    ###############################################################
+                    ##                                                           ##
+                    ##                   CALIBRE SYSTEM                          ##
+                    ##                                                           ##
+                    ###############################################################
+
+CELL COMPARISON RESULTS ( TOP LEVEL )
+
+                    ###############################################################
+                    ##                                                           ##
+                    ##                    ---  INCORRECT  ---                    ##
+                    ##                                                           ##
+                    ###############################################################
+
+                          LAYOUT CELL NAME:      tidelink_top
+                          SOURCE CELL NAME:      tidelink_top
+
+ INITIAL NUMBERS OF OBJECTS
+ --------------------------
+
+              Layout    Source            Component Type
+              ------    ------            --------------
+ Ports:          412       412
+ Nets:         38104     38107  *         Nets
+ Instances:    54868     54868            MN (4 pins)
+
+ * = number of objects differs between layout and source
+
+ NUMBERS OF OBJECTS AFTER TRANSFORMATION
+ ---------------------------------------
+
+ Discrepancy summary:
+
+   3 Nets in source with no matching layout net:
+       tidelink_top/u_d2d/hsel_peer_n
+       tidelink_top/u_d2d/wr_hold_clr
+       tidelink_top/u_phy/lane_locked_7
+
+   INCORRECT Nets: 3
+   Incorrect Instances: 0
+   Incorrect Ports: 0
+
+OVERALL COMPARISON RESULTS:  INCORRECT
+
+ Total CPU Time:    412 s
+ Total Elapsed Time: 431 s

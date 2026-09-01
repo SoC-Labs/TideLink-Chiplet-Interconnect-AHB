@@ -293,3 +293,10 @@ syn/asic/*/outputs_*/
 
 # UVM scoreboard self-test build dir (uvm/tidelink_top_system/sb_selftest)
 sim_build_sb_selftest/
+# ---------------------------------------------------------------------------
+# Checker-control fixtures are test INPUTS, not build output. They must be
+# tracked or ci/checker_controls/ silently grades nothing in a fresh clone —
+# which is the exact fail-open class those controls exist to catch. The
+# blanket '*.rep' above would otherwise swallow every LVS fixture.
+# ---------------------------------------------------------------------------
+!ci/fixtures/**

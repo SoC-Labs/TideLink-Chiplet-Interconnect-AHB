@@ -1,0 +1,92 @@
+{
+  "counts": {
+    "FAIL": 0,
+    "INCONCLUSIVE": 0,
+    "PASS": 6,
+    "SKIPPED": 0
+  },
+  "duration_s": 16.5,
+  "ended_utc": "2026-08-25T08:58:09Z",
+  "exit_code": 0,
+  "overall": "PASS",
+  "provenance": {
+    "die_a": "ubuntu@10.22.24.159",
+    "die_b": "ubuntu@10.22.24.153",
+    "host": "srv03335",
+    "params": {
+      "endur_beats": 2000,
+      "read_chunk": 50,
+      "read_n": 128,
+      "soak_n": 128
+    },
+    "tidelink_branch": "rev2/harness-repair",
+    "tidelink_dirty": false,
+    "tidelink_sha": "575e352897ebde50d0d0c50cd83ad9add0c61173"
+  },
+  "schema": "kr260_sysval/2",
+  "started_utc": "2026-08-25T08:57:53Z",
+  "tests": [
+    {
+      "detail": "board eth_sysval_board.py == repo (both dies)",
+      "info": {},
+      "name": "T1_provenance",
+      "verdict": "PASS"
+    },
+    {
+      "detail": "both dies FCSM=4 + Region-F healthy",
+      "info": {},
+      "name": "T2_obs_probe",
+      "verdict": "PASS"
+    },
+    {
+      "detail": "VERIFY 8/8 byte-exact",
+      "info": {
+        "attempts": 1,
+        "cmd": "cd td && echo '***' | sudo -S python3 ~/td/scripts/eth_sysval_board.py verify 8 0xEE110000",
+        "host": "ubuntu@10.22.24.153",
+        "kind": "OK",
+        "rc": 0,
+        "reached_dut": true,
+        "retries": 0,
+        "stderr": "",
+        "stdout": "VERIFY 8/8 byte-exact"
+      },
+      "name": "T2b_good_eye_canary",
+      "verdict": "PASS"
+    },
+    {
+      "detail": "128 writes: VERIFY 128/128 byte-exact",
+      "info": {
+        "attempts": 1,
+        "cmd": "cd td && echo '***' | sudo -S python3 ~/td/scripts/eth_sysval_board.py verify 128 0xB6B60000",
+        "host": "ubuntu@10.22.24.153",
+        "kind": "OK",
+        "rc": 0,
+        "reached_dut": true,
+        "retries": 0,
+        "stderr": "",
+        "stdout": "VERIFY 128/128 byte-exact"
+      },
+      "name": "T3_delivery_soak",
+      "verdict": "PASS"
+    },
+    {
+      "detail": "128/128 cross-die reads byte-exact, no wedge",
+      "info": {},
+      "name": "T10_read_soak",
+      "verdict": "PASS"
+    },
+    {
+      "detail": "2000 beats, die_a alive, Region-F healthy throughout",
+      "info": {},
+      "name": "T6_endurance",
+      "verdict": "PASS"
+    }
+  ],
+  "transport": {
+    "control_master": true,
+    "ssh_retries_configured": 3,
+    "transport_errors": 0,
+    "transport_retries_recorded": 0
+  }
+}

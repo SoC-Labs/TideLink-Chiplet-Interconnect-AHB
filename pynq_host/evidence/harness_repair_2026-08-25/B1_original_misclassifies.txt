@@ -1,0 +1,19 @@
+B1 -- BEFORE. The PRISTINE pre-repair kr260_sysval.py (sha256
+748c0bf3048f6abe0cd2ec7091ed3f1d55c6ee2a207858f09a6d19d96f8deca7, identical in
+all four working copies) driven through its own t10_read_soak() while 140
+pre-auth TCP connections saturated die_a's sshd MaxStartups.
+
+The far-side data was VERIFIED BYTE-EXACT immediately before and after this run.
+
+  [FAIL        ] T10_read_soak read mismatch @0:
+  [driver] por_die_a() SUPPRESSED -- the ORIGINAL would have POR'd a healthy die_a here
+  t10_read_soak returned: False
+  RESULTS: [["T10_read_soak", "FAIL", "read mismatch @0: "]]
+
+Verdict FAIL, detail "read mismatch @0: " -- an empty string. Same shape as the
+archived RESCUE_2026-08-22/evidence/sysval_a{4,5,6}.json "read mismatch @100: ".
+The board was healthy and the data was correct; the harness never reached it.
+It would also have reset a healthy board.
+
+Compare B2_repaired_transport.json: same flood, same function, verdict
+INCONCLUSIVE / TRANSPORT_ERROR, rc=255 recorded, ssh stderr preserved, exit 3.

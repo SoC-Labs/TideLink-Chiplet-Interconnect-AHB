@@ -96,10 +96,40 @@ proc tl_submodule_pin {root subpath} {
 proc tl_phy_marker {} {
     set v2 0
     if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } { set v2 1 }
+    # TD_ASIC_FILESET=1 (fpga/filelist.tcl) packages the TAPEOUT file list
+    # instead of the FPGA one. Before this branch tl_phy_marker returned
+    # "tidelink_fpga_v2.flist" unconditionally on any V2 build, which made this
+    # proc fail OPEN in the most damaging possible way for an ASIC-file-set
+    # image: the manifest would have NAMED THE WRONG FILE LIST - asserting the
+    # image contained the recovery-bearing FPGA FCSMs when it contains the
+    # recovery-stripped tapeout ones - and tl_verify_packaged_ip (which resolves
+    # its comparison set through this same proc) would have hash-compared the
+    # packaged ASIC copies against the FPGA sources and hard-failed the build as
+    # "stale IP". The marker is what names the artefact, so it must be distinct.
+    set asic 0
+    if { [info exists ::env(TD_ASIC_FILESET)] && $::env(TD_ASIC_FILESET) == 1 } { set asic 1 }
+    if { $asic } {
+        if { !$v2 } {
+            error "TD_ASIC_FILESET=1 without TIDELINK_PHY_V2=1 - refusing to stamp\
+                   a marker for a combination fpga/filelist.tcl rejects."
+        }
+        return [list "V2-ASICFILESET" "tidelink_top_full_asic_v2.flist"]
+    }
     if { $v2 } {
         return [list "V2" "tidelink_fpga_v2.flist"]
     }
     return [list "V1" "tidelink_fpga.flist"]
+}
+
+# Basenames that fpga/filelist.tcl MATERIALISES on the ASIC-file-set path (a
+# standalone copy with `define TIDELINK_PHY_V2 prepended, because no
+# project-level define survives ipx::package_project into the IP's OOC synth).
+# The packaged copy therefore legitimately differs from the on-disk source, in
+# exactly the same way and for exactly the same reason as the */v2shims/* lines
+# tl_flist_sources already skips on the FPGA path. Without this they would
+# false-positive as STALE and block every ASIC-file-set build.
+proc tl_asic_materialised_basenames {} {
+    return [list tidelink_top.sv Wlink.v axi_chiplet_controller.sv]
 }
 
 # Resolve the flist to the list of REAL on-disk RTL source files it references.
@@ -139,6 +169,11 @@ proc tl_flist_sources {root} {
         if { [string match "+incdir+*" $resolved] } { continue }
         if { [string match "+define+*" $resolved] } { continue }
         if { [string match "*/v2shims/*" $resolved] } { continue }
+        if { [info exists ::env(TD_ASIC_FILESET)] && $::env(TD_ASIC_FILESET) == 1 &&
+             [lsearch -exact [tl_asic_materialised_basenames] [file tail $resolved]] >= 0 } {
+            # Materialised on the ASIC path - see tl_asic_materialised_basenames.
+            continue
+        }
         lappend sources $resolved
     }
     close $fh

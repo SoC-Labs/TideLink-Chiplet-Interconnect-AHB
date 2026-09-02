@@ -291,7 +291,7 @@ endef
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
 	sim_gate_axi_datanode_recovery sim_gate_axi_datanode_gaps sim_gate_tl044_hol_write_age \
 	sim_gate_n1_read_backstop sim_gate_tl044_read_deadgate \
-	sim_gate_tl044_park_recipe sim_gate_xdie_exclusive \
+	sim_gate_tl044_park_recipe sim_gate_xdie_exclusive sim_gate_xdie_exclusive_redproof \
 	sim_gate_axinode_obs \
 	sim_gate_i1_selfarm sim_gate_i1_fixe_training_release sim_gate_v2_isolated_write \
 	sim_gate_v2_mbox_writeprotect \
@@ -1056,21 +1056,40 @@ sim_gate_tl044_park_recipe:
 	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_tl044_park && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery tl044_park)
 
-# CROSS-DIE EXCLUSIVES (2026-09-01): an AXI exclusive cannot be expressed across
-# this die boundary at all.
+# CROSS-DIE EXCLUSIVES / TL-045 (2026-09-02): an exclusive access across this
+# die boundary is REFUSED, and can no longer silently appear to have succeeded.
 #
-# tidelink_top's AHB subordinate port has no HEXCL and no HEXOKAY pin
-# (src/rtl/tidelink_top.sv:273-284); u_xhb_sub ties .hexcl(1'b0) (:3171) and
-# .hmaster(12'd0) (:3172), so core_addr.sv:253/268/248/263 emit (AxLOCK=0,
-# AxID=0) for EVERY outbound transaction; u_xhb_mng leaves .hexcl() unconnected
-# (:3313) and ties .hexokay(1'b0) (:3319). Wlink itself carries axlock fine
-# (AXI4ToWlink.v:454/473) — every break is in the integration. Consequence,
-# demonstrated: two initiators both complete a store-exclusive to the same
-# cross-die address, both answered OKAY, second silently overwriting the first.
+# THE DEFECT (measured on rev2/integration): tidelink_top's AHB subordinate port
+# had no HEXCL and no HEXOKAY pin; u_xhb_sub tied .hexcl(1'b0) and
+# .hmaster(12'd0), so core_addr.sv:253/268/248/263 emitted (AxLOCK=0, AxID=0)
+# for EVERY outbound transaction — the exclusive marker did not merely go
+# unanswered across the boundary, IT NEVER CROSSED IT. Two initiators both
+# completed a store-exclusive to the same cross-die address, both answered OKAY,
+# the second silently overwriting the first. Wlink was never at fault (it
+# carries axlock as AW/AR payload bit 13, AXI4ToWlink.v:454/473).
+#
+# THE FIX: tidelink_top gains ahb_sub_hexcl (in) / ahb_sub_hexokay (out,
+# constant 0). A transfer marked exclusive is NEVER ISSUED to XHB500 (so peer
+# memory is not modified) and is answered with a two-cycle AHB ERROR. Supporting
+# exclusives properly needs a far-side GLOBAL EXCLUSIVE MONITOR that does not
+# exist and a per-initiator AxID that collides with the Fix K hazard-list BID
+# override; see the TL-045 block in src/rtl/tidelink_top.sv.
 sim_gate_xdie_exclusive:
 	$(call sim_gate_run,xdie_exclusive,\
 	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_xdie_excl && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery xdie_exclusive)
+
+# TL-045 RED PROOF. The three suites above are green against the fixed RTL; on
+# their own that is consistent with tests that would be green against ANY RTL.
+# This one compiles the refusal OUT (+define+TIDELINK_XDIE_EXCL_LEGACY_MUTANT)
+# and asserts the ORIGINAL DEFECT POSITIVELY — both stores commit, far memory
+# ends up holding A's value. It fails if the mutant does not reproduce the
+# defect, so it cannot pass by accident, and the test refuses to run at all
+# unless the RTL's own excl_enforce bit says it got the mutant build.
+sim_gate_xdie_exclusive_redproof:
+	$(call sim_gate_run,xdie_exclusive_redproof,\
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_xdie_excl_red && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery xdie_exclusive_redproof)
 
 # F-1 (KNOWN DEFECT, 2026-08-02): I5's AHB ERROR is driven with NO transfer in
 # its data phase on the POSTED-write path. I5 is deliberately HREADYOUT-blind so
@@ -1819,7 +1838,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
 	axi_datanode_recovery axi_datanode_gaps tl044_hol_write_age n1_read_backstop \
-	tl044_read_deadgate tl044_park_recipe xdie_exclusive \
+	tl044_read_deadgate tl044_park_recipe xdie_exclusive xdie_exclusive_redproof \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
 	xhb500_bridge \
@@ -1860,7 +1879,8 @@ sim_gate_clean_builds:
 	@# The weekend-2026-07-18 benches get the SAME treatment — each has its own
 	@# gate-owned SIM_BUILD (sim_build_gate_*), and each would otherwise reuse a
 	@# simv that cocotb only rebuilds on tb_top.sv changes.
-	@rm -rf cocotb/tidelink_top_pair/sim_build* \
+	@rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_xdie_excl* \
+	        cocotb/tidelink_top_pair/sim_build* \
 	        cocotb/tidelink_top_pair_v2/sim_build* \
 	        cocotb/tidechart_tidelink_pair/sim_build_gate* \
 	        cocotb/eth_tidelink_pair/sim_build_gate* \
@@ -1889,6 +1909,16 @@ sim_gate_clean_builds:
 sim_gate_integrity:
 	@python3 $(TIDELINK_HOME)/scripts/ci/sim_gate_integrity.py \
 	  --makefile $(TIDELINK_HOME)/Makefile
+	@# TL-045 (2026-09-02): the OTHER structural false-green in this family. The
+	@# cross-die-exclusive refusal hangs off one new input pin; an instantiation
+	@# that leaves ahb_sub_hexcl unconnected gets 1'b0 = "not an exclusive" and
+	@# silently restores the double-commit, with a green gate and a clean
+	@# synthesis. Not detectable by running tests, so it is checked structurally
+	@# and BLOCKS the gate here, next to its sibling.
+	@# Deliberately a prerequisite of this target rather than of `sim_gate:` —
+	@# scripts/ci/tests/test_sim_gate_integrity.py pins the `sim_gate:` line
+	@# verbatim to build its own mutations.
+	@$(MAKE) --no-print-directory check_excl_ports
 
 sim_gate: sim_gate_integrity sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
@@ -1935,10 +1965,14 @@ sim_gate: sim_gate_integrity sim_gate_env_check sim_gate_clean_builds
 	@# link with the far die healthy) with one signature, and all three exit
 	@# branches driven with no Force — the arm the deadgate suite has to author.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_tl044_park_recipe
-	@# CROSS-DIE EXCLUSIVES: the exclusive marker never leaves the die
-	@# (.hexcl(1'b0)) and every initiator is AxID=0 (.hmaster(12'd0)), so two
-	@# initiators both commit a store-exclusive to the same cross-die address.
+	@# CROSS-DIE EXCLUSIVES (TL-045): an exclusive is refused with a two-cycle
+	@# AHB ERROR and never issued, so it cannot modify peer memory; ordinary
+	@# cross-die traffic is unchanged.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_xdie_exclusive
+	@# ...and the red proof: with the refusal compiled out, the original
+	@# double-commit defect must come back. A green suite above whose red proof
+	@# does not reproduce the defect is not evidence.
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_xdie_exclusive_redproof
 	@# I1 eth-chiplet bring-up regressions (SELF_ARM + FIX-E + isolated-write).
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_i1_selfarm
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_i1_fixe_training_release
@@ -2224,6 +2258,19 @@ coverage_check:
 	  --log $(COV_ROOT)/urg_merge.log \
 	  --out $(COV_REPORTS)/merge_dropped.txt \
 	  $(if $(COV_ALLOW_MERGE_DROPS),--allow-drops,)
+
+# TL-045 (2026-09-02): every tidelink_top / tidelink_dft_wrapper instantiation
+# must CONNECT ahb_sub_hexcl. The refusal of a cross-die exclusive hangs off that
+# one input; an instantiation that omits it gets 1'b0 = "not an exclusive", which
+# silently restores the pre-TL-045 double-commit with no indication anywhere.
+# Neither a green sim gate nor a clean synthesis can see that, so it is checked
+# structurally. 1'b0 is an acceptable connection; OMISSION is not.
+#   EXCL_ROOTS may add parent-chiplet trees, e.g.
+#     make check_excl_ports EXCL_ROOTS="--root ../nanosoc-ethernet-chiplet"
+.PHONY: check_excl_ports
+check_excl_ports:
+	@python3 $(TIDELINK_HOME)/scripts/ci/check_excl_port_wired.py \
+	  --root $(TIDELINK_HOME) $(EXCL_ROOTS)
 
 # ── controls for the checkers themselves (false-green register, 2026-08-26) ──
 # Every checker fixed under the false-green register ships with a control that

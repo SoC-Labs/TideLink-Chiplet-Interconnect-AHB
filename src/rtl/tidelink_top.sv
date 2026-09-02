@@ -283,6 +283,32 @@ module tidelink_top #(
     output wire                     ahb_sub_hresp,
     output wire                     ahb_sub_hreadyout,
 
+    // ── TL-045 (2026-09-02): AHB5 EXCLUSIVE-ACCESS pins ─────────────────────
+    // These two pins exist so that a cross-die exclusive can be REFUSED. They
+    // do NOT make exclusives work; see the "CROSS-DIE EXCLUSIVE ACCESS" block
+    // below the address pipeline for why supporting them is not TideLink's to
+    // give, and what would have to be true first.
+    //
+    //   ahb_sub_hexcl    AHB5 exclusive marker from the SoC interconnect,
+    //                    valid in the address phase alongside HTRANS/HADDR.
+    //                    Any transfer presented with this HIGH is REFUSED with
+    //                    a two-cycle AHB ERROR and is NEVER issued to XHB500,
+    //                    so it never crosses the die and never modifies peer
+    //                    memory.
+    //   ahb_sub_hexokay  AHB5 exclusive response. CONSTANT 0: this subordinate
+    //                    never grants an exclusive. Tied off in the body, not
+    //                    here, so it is greppable.
+    //
+    // INTEGRATION HAZARD, stated where an integrator will read it: an
+    // instantiation that leaves ahb_sub_hexcl UNCONNECTED gets 1'b0, which is
+    // "no exclusive was requested" — TideLink then cannot tell an exclusive
+    // from an ordinary access and the pre-TL-045 silent-double-commit is back,
+    // with no indication. That is not detectable from inside this module.
+    // It is checked mechanically instead, over every instantiation in the tree:
+    //   scripts/ci/check_excl_port_wired.py   (make check_excl_ports)
+    input  wire                     ahb_sub_hexcl,
+    output wire                     ahb_sub_hexokay,
+
     // BURST FIX (2026-08-18): per-BEAT W-consumption strobe for the chiplet's
     // peer-write data-hold re-arm. = internal s_axi_wvalid & s_axi_wready (the
     // XHB500 u_xhb_sub W handshake). Replaces a downward hierarchical reference
@@ -1524,8 +1550,136 @@ module tidelink_top #(
     // hready term is safe for this single-master port: pipe_valid_r blocks
     // re-latch of a held NONSEQ, and the pipe clears exactly at the master's
     // address-phase completion edge (hreadyout==raw whenever pipe_valid_r).
-    wire ext_addr_phase = ahb_sub_hsel & ahb_sub_htrans[1];
+    // =========================================================================
+    // TL-045 (2026-09-02) — CROSS-DIE EXCLUSIVE ACCESS: REFUSE, DO NOT PRETEND
+    // =========================================================================
+    // THE DEFECT (measured, cocotb/tidelink_axi_datanode_recovery/
+    // test_xdie_exclusive.py on rev2/integration, and reproduced here before
+    // this block was written):
+    //
+    //   LDREX-A, LDREX-B, STREX-B, STREX-A on ONE cross-die address —
+    //   BOTH stores commit, BOTH are answered OKAY, A's store silently
+    //   overwrites B's committed value. Software gets no mutual exclusion AND
+    //   no indication that it has none. That silence is the actual defect.
+    //
+    // The pre-fix path had three independent breaks, all in the integration
+    // (Wlink itself carries axlock as AW/AR payload bit 13, AXI4ToWlink.v:
+    // 454/473 — the link is not at fault):
+    //   1. tidelink_top's own AHB subordinate port had no HEXCL and no HEXOKAY
+    //      pin, so the marker was already gone at TideLink's pins.
+    //   2. u_xhb_sub .hexcl(1'b0) forced awlock/arlock to 0 for EVERY outbound
+    //      transaction (core_addr.sv:253/268) — the exclusive did not merely go
+    //      unanswered across the boundary, IT NEVER CROSSED IT.
+    //   3. u_xhb_mng .hexokay(1'b0) means the inbound bridge can never produce
+    //      AXI_RESP_EXOKAY (core_h_xout.sv:180).
+    //
+    // WHY THIS IS A REFUSAL AND NOT A REPAIR — the option that was evaluated
+    // and rejected, so the next engineer does not have to re-derive it:
+    //
+    //   Wiring hexcl/hmaster through and returning a real hexokay does not
+    //   produce mutual exclusion; it produces a LONGER path to the same
+    //   silence, because the thing an exclusive actually needs is a GLOBAL
+    //   EXCLUSIVE MONITOR at the far terminus, and there is none:
+    //     (a) the near bridge only reports HEXOKAY when the returning BRESP is
+    //         EXOKAY (core_resp.sv:236), and the far bridge only produces
+    //         EXOKAY when the far AHB subordinate raises HEXOKAY
+    //         (core_h_xout.sv:180). tidelink_top's ahb_mng port has no HEXOKAY
+    //         pin, and nothing downstream of it in either parent chiplet is a
+    //         monitor. Adding the pins yields EXOKAY-never, i.e. every STREX
+    //         reports failure forever — a livelock, not exclusion.
+    //     (b) the far bridge distinguishes exclusive owners by
+    //         (axid == hmaster) (core_xin.sv:208/209). Our AxID comes from
+    //         u_xhb_sub .hmaster, which is tied 12'd0 — every initiator is
+    //         bit-identical on the wire. Making it per-master is NOT free: the
+    //         XHB500 hazard list frees a bufferable write only when the
+    //         returning bid matches the stored AWID (hazard_list.sv:86/138),
+    //         and Fix K below force-presents sub_wr_awid_r — a SINGLE register
+    //         holding the LAST accepted AWID — as the bid for a 4-deep list.
+    //         That is only correct while AWID is constant. Varying HMASTER
+    //         breaks Fix K, which is one of the protections that keeps die_a's
+    //         PS alive. Coupling this fix to it is exactly what sank an earlier
+    //         fix on silicon.
+    //   So: option (a) is not one module's change. It needs a far-side global
+    //   monitor and an AWID rework, and until BOTH exist a "supported"
+    //   exclusive would be a granted-but-unmonitored exclusive — strictly worse
+    //   than today, because software would then TRUST it.
+    //
+    // WHAT THIS BLOCK DOES INSTEAD. An exclusive presented on ahb_sub is:
+    //   * NEVER ISSUED — xhb_sub_hsel is gated below, so XHB500 never latches
+    //     it (its own admit term is hsel & hready & ~hmastlock & htrans,
+    //     core_addr.sv:167), nothing reaches the link, and PEER MEMORY IS NOT
+    //     MODIFIED. This is the half that matters: a store-exclusive that must
+    //     fail must also not write.
+    //   * ANSWERED WITH A TWO-CYCLE AHB ERROR on ahb_sub_hresp.
+    //   * ANSWERED WITH ahb_sub_hexokay = 0.
+    //
+    // WHY THE ERROR RIDES ON HRESP AND NOT ON HEXOKAY ALONE. AHB5 would let a
+    // non-exclusive-capable subordinate answer OKAY + HEXOKAY=0. That is
+    // spec-clean and USELESS here: HEXOKAY is a NEW pin, and the failure mode
+    // this fix exists to remove is precisely an integration that does not wire
+    // the new pins. HRESP is already wired in every instantiation that exists,
+    // so the refusal is visible even to an integration that ignored TL-045
+    // entirely (as long as it wired hexcl in — which is what
+    // scripts/ci/check_excl_port_wired.py enforces). Both are driven.
+    //
+    // NO COMB LOOP — the load-bearing wrapper invariant (cb33c9f). Every term
+    // below reads ahb_sub_hsel, ahb_sub_htrans and ahb_sub_hexcl ONLY, plus its
+    // own registers. ahb_sub_hready is NEVER read, so ahb_sub_hreadyout gains
+    // no combinational dependence on ahb_sub_hready.
+    //
+    // NO COUPLING — this path shares no signal with wr_hold_r,
+    // synth_b_pending, the TL-042 head-of-line watchdog or the TL-044 dead-gate
+    // containment. It sits AHEAD of all of them: a refused exclusive never
+    // becomes an outstanding transaction, so none of those mechanisms ever sees
+    // it. excl_err{1,2}_r are read by exactly two expressions (the
+    // ahb_sub_hreadyout and ahb_sub_hresp muxes) and by the obs word.
+`ifdef TIDELINK_XDIE_EXCL_LEGACY_MUTANT
+    // Reproduce-first control build ONLY (make -C
+    // cocotb/tidelink_axi_datanode_recovery xdie_exclusive_redproof): restore the
+    // pre-TL-045 behaviour — the exclusive marker is discarded and the transfer
+    // executes as an ordinary access, so both stores commit. The post-fix tests
+    // must FAIL against this build. NEVER set in the shipping flow.
+    wire excl_enforce = 1'b0;
+`else
+    wire excl_enforce = 1'b1;
+`endif
+
+    // Raw AHB address phase, before the exclusive refusal.
+    wire ext_addr_phase_raw = ahb_sub_hsel & ahb_sub_htrans[1];
+
+    // An exclusive transfer is being presented. Covers NONSEQ and SEQ: AHB5
+    // exclusives are single transfers, so a SEQ beat carrying HEXCL is
+    // malformed and is refused too rather than let through.
+    wire excl_refuse = ext_addr_phase_raw & ahb_sub_hexcl & excl_enforce;
+
+    // Everything downstream of ext_addr_phase — the address pipeline latch,
+    // rd_pipe_r, wr_hold_set, sub_mst_dphase_r, both stall backstops and
+    // xhb_sub_hready — is fed from these two, so gating here is what makes the
+    // refusal total rather than cosmetic.
+    wire ext_addr_phase = ext_addr_phase_raw & ~excl_refuse;
     wire ext_is_nonseq  = ext_addr_phase & (ahb_sub_htrans == 2'b10);
+
+    // Two-cycle AHB ERROR for the refused transfer: cy1 HREADYOUT=0 HRESP=1,
+    // cy2 HREADYOUT=1 HRESP=1. Same shape as the sub_err{1,2}_r backstop
+    // response, driven from its own registers so the two never interact.
+    // ~excl_err2_r in the set term stops a master that keeps driving the same
+    // address phase through the second cycle from chaining a third error cycle
+    // onto the same response; it re-arms one cycle later if the exclusive is
+    // genuinely still being presented.
+    logic excl_err1_r, excl_err2_r;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn) begin
+            excl_err1_r <= 1'b0;
+            excl_err2_r <= 1'b0;
+        end else begin
+            excl_err1_r <= excl_refuse & ~excl_err1_r & ~excl_err2_r;
+            excl_err2_r <= excl_err1_r;
+        end
+    end
+
+    // AHB5 exclusive response: this subordinate NEVER grants an exclusive.
+    // Constant by construction, not by omission — see the port comment.
+    assign ahb_sub_hexokay = 1'b0;
 
     // XHB500 hreadyout / hresp (raw, before pipeline + timeout insertion)
     wire xhb_sub_hreadyout_raw;
@@ -2149,15 +2303,39 @@ module tidelink_top #(
     //   developed independently against the same spare-bit pool and BOTH claimed
     //   bit[12]. Allocated here by landing order on this branch: TL-042 keeps [12]
     //   (as committed), TL-044 shifts up one to [13]/[14], keeping its two bits
-    //   adjacent and in their original relative order. Bits [23:15] remain spare.
+    //   adjacent and in their original relative order. (TL-045 has since taken
+    //   [15] and [16]; the live spare range is stated below.)
     //   Neither suite reads the packed word -- both probe the RTL signals by name
     //   -- so this reallocation is a SILICON/APB contract change only.
+    //   [15]   excl_refused_sticky             TL-045: an OUTBOUND cross-die exclusive was
+    //                                          refused (two-cycle ERROR, never issued).
+    //                                          Also the integration witness: if software is
+    //                                          using cross-die exclusives, this reads 1.
+    //   [16]   excl_inbound_sticky             TL-045: the PEER die sent an exclusive at us
+    //                                          (m_axi_ar/awlock high on an accepted
+    //                                          handshake). See the inbound note below —
+    //                                          this bit is the only thing that reports it.
+    //   Bits [23:17] remain spare.
     //   [31:24] 0xB5 presence marker
+    //
+    // INBOUND EXCLUSIVES ARE OBSERVED, NOT BLOCKED — stated plainly because the
+    // asymmetry is deliberate. u_xhb_mng ties .hexokay(1'b0) and leaves .hexcl()
+    // unconnected, so an inbound AxLOCK=1 write reaches local memory and is
+    // answered OKAY (= "exclusive failed") — the remote initiator is told it
+    // failed while the store landed. Blocking that would mean intercepting the
+    // shipping m_axi AR/AW path into u_xhb_mng, which is the live cross-die data
+    // path; the outbound refusal above makes a TideLink peer incapable of
+    // emitting AxLOCK=1 in the first place, so on a TideLink<->TideLink pair the
+    // inbound case is unreachable and this sticky must read 0. If it ever reads
+    // 1 on silicon, something upstream is emitting exclusives that this analysis
+    // says cannot exist, and the inbound block becomes a real work item.
     reg [11:0] xhb_stall_ctr_w;
     reg        xhb_stall_stuck_sticky;
     reg [2:0]  sub_wr_os_hwm;
     reg        sub_wr_stuck_sticky;
     reg        sub_err_sticky;
+    reg        excl_refused_sticky;
+    reg        excl_inbound_sticky;
     always_ff @(posedge hclk or negedge hresetn) begin
         if (!hresetn) begin
             xhb_stall_ctr_w        <= 12'h0;
@@ -2165,7 +2343,14 @@ module tidelink_top #(
             sub_wr_os_hwm          <= 3'd0;
             sub_wr_stuck_sticky    <= 1'b0;
             sub_err_sticky         <= 1'b0;
+            excl_refused_sticky    <= 1'b0;
+            excl_inbound_sticky    <= 1'b0;
         end else begin
+            // TL-045 witnesses. SET-ONLY, read nowhere in the datapath.
+            if (excl_err1_r)                        excl_refused_sticky <= 1'b1;
+            if ((m_axi_awvalid & m_axi_awready & m_axi_awlock)
+              | (m_axi_arvalid & m_axi_arready & m_axi_arlock))
+                                                    excl_inbound_sticky <= 1'b1;
             if (xhb_sub_hreadyout_raw)              xhb_stall_ctr_w <= 12'h0;
             else if (xhb_stall_ctr_w != 12'hFFF)    xhb_stall_ctr_w <= xhb_stall_ctr_w + 12'd1;
             if (xhb_stall_ctr_w == 12'hFFF)         xhb_stall_stuck_sticky <= 1'b1;
@@ -2175,7 +2360,9 @@ module tidelink_top #(
             if (sub_err1_r)                         sub_err_sticky <= 1'b1;
         end
     end
-    wire [31:0] xhb_sub_obs_word = { 8'hB5, 9'h0,
+    wire [31:0] xhb_sub_obs_word = { 8'hB5, 7'h0,
+                                     excl_inbound_sticky,      // [16] TL-045: peer die sent an exclusive AT us (must read 0)
+                                     excl_refused_sticky,      // [15] TL-045: an outbound cross-die exclusive was REFUSED
                                      xhb_dead_perm_r,          // [14] TL-044: containment latched PERMANENTLY (intermittent port)
                                      xhb_dead_r,               // [13] TL-044: XHB500 declared DEAD, bounded-error containment engaged
                                      sub_wr_hol_stuck_sticky,  // [12] TL-042: head-of-line write-age watchdog EXPIRED (was spare 0; additive)
@@ -2195,7 +2382,15 @@ module tidelink_top #(
     wire                    xhb_sub_hwrite = pipe_valid_r ? pipe_hwrite_r : ahb_sub_hwrite;
     wire              [2:0] xhb_sub_hburst = pipe_valid_r ? pipe_hburst_r : ahb_sub_hburst;
     wire              [3:0] xhb_sub_hprot  = pipe_valid_r ? pipe_hprot_r  : ahb_sub_hprot;
-    wire                    xhb_sub_hsel   = pipe_valid_r ? pipe_hsel_r   : ahb_sub_hsel;
+    // TL-045: the pass-through arm hands ahb_sub_hsel STRAIGHT to XHB500. Its
+    // admit term is hsel & hready & ~hmastlock & htrans (core_addr.sv:167), and
+    // on the pass-through arm xhb_sub_hready is XHB500's own hreadyout (1 on an
+    // idle bus) — so without this gate a refused exclusive would still be
+    // latched by the bridge, with the UNTRANSLATED address, and would cross the
+    // die. Killing ext_is_nonseq alone is NOT sufficient; this is the gate that
+    // makes "never issued" true.
+    wire                    xhb_sub_hsel   = pipe_valid_r ? pipe_hsel_r
+                                                          : (ahb_sub_hsel & ~excl_refuse);
     // HREADY to XHB500: during pipeline fill cycle, hold low so XHB500 ignores
     // the stale address; once pipeline is valid, pass through XHB500's own hreadyout
     // (comb-loop fix, part 2): the else-arm used ahb_sub_hready — the last
@@ -2388,7 +2583,15 @@ module tidelink_top #(
                                               | sub_wr_hol_b_drive) ? sub_wr_awid_r
                                                                     : s_axi_bid_ctrl;
 
-    assign ahb_sub_hreadyout = (sub_err1_r & ~synth_b_pending) ? 1'b0 :
+    // TL-045: the exclusive-refusal ERROR takes PRIORITY. It is the only term
+    // that describes the transfer the master is actually in: a refused
+    // exclusive never entered the address pipeline, so it never armed a
+    // backstop, never set wr_hold_r and never became an outstanding write —
+    // every term below it belongs to some OTHER (posted, or already-abandoned)
+    // transaction. Two ordered registers, no dependence on any of them.
+    assign ahb_sub_hreadyout = excl_err1_r                      ? 1'b0 :   // TL-045 exclusive refusal, cy1
+                               excl_err2_r                      ? 1'b1 :   // TL-045 exclusive refusal, cy2
+                               (sub_err1_r & ~synth_b_pending) ? 1'b0 :
                                (sub_err2_r & ~synth_b_pending) ? 1'b1 :
                                dg_act_err1                      ? 1'b0 :   // TL-044 containment ERROR cy1
                                dg_act_err2                      ? 1'b1 :   // TL-044 containment ERROR cy2
@@ -2399,7 +2602,8 @@ module tidelink_top #(
                                xhb_sub_hreadyout_raw;             // terminal fallback (TL-044: unreachable while xhb_dead_r)
     // External hresp: XHB500's own hresp, overridden to ERROR for the two-cycle
     // backstop response. (XHB500 normally holds hresp=OKAY on the window path.)
-    assign ahb_sub_hresp     = ((sub_err1_r | sub_err2_r) & ~synth_b_pending) ? 1'b1 :
+    assign ahb_sub_hresp     = (excl_err1_r | excl_err2_r)                     ? 1'b1 :   // TL-045 exclusive refusal
+                               ((sub_err1_r | sub_err2_r) & ~synth_b_pending) ? 1'b1 :
                                (dg_act_err1 | dg_act_err2)                    ? 1'b1 :
                                xhb_sub_hresp_raw;
 
@@ -3168,7 +3372,20 @@ module tidelink_top #(
         .hburst            (xhb_sub_hburst),
         .hmastlock         (1'b0),
         .hwdata            (ahb_sub_hwdata),
+        // TL-045 (2026-09-02): these two tie-offs STAY, and are now correct BY
+        // CONSTRUCTION rather than by omission. An exclusive can no longer reach
+        // this instance at all — xhb_sub_hsel is gated by excl_refuse above — so
+        // there is no transfer left for which .hexcl could be anything but 0.
+        // Wiring ahb_sub_hexcl to this pin instead would emit AxLOCK=1 onto a
+        // path with no far-side global monitor; see the TL-045 block above the
+        // address pipeline for why that is worse, not better.
         .hexcl             (1'b0),
+        // .hmaster STAYS 12'd0 DELIBERATELY. It sets AxID (core_addr.sv:248/263),
+        // and Fix K below force-presents sub_wr_awid_r (ONE register, the LAST
+        // accepted AWID) as the bid for a 4-deep XHB500 hazard list whose free
+        // condition is hazard_list_id[i]==bid (hazard_list.sv:86/138). That
+        // override is only correct while AWID is CONSTANT. Making HMASTER
+        // per-initiator is therefore a Fix K rework, not a wiring change.
         .hmaster           (12'd0),
         .hrdata            (ahb_sub_hrdata),
         .hreadyout         (xhb_sub_hreadyout_raw),
@@ -3316,6 +3533,14 @@ module tidelink_top #(
         .hready            (ahb_mng_hready),
         .hresp             (ahb_mng_hresp),
 
+        // TL-045: STAYS 1'b0. This is the INBOUND (peer -> our AHB manager) half.
+        // 1'b0 means "the local terminus never grants an exclusive", which is
+        // true: tidelink_top's ahb_mng port has no HEXOKAY pin and nothing
+        // downstream of it is a global exclusive monitor. Raising it would be
+        // manufacturing an EXOKAY nobody checked. The inbound case is WITNESSED
+        // by obs 0x21F8 bit[16] (excl_inbound_sticky) and must read 0 on a
+        // TideLink<->TideLink pair, because the outbound refusal above means
+        // neither die can emit AxLOCK=1.
         .hexokay           (1'b0),
         .hwstrb            (),
         .hqos              (),

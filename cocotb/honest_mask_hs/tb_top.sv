@@ -41,7 +41,10 @@ module tb_top (
         .hresetn            (hresetn),
         .poresetn           (poresetn),
         .apb_debug_unlock_i (apb_debug_unlock_i),
-        .mask_hs_bypass_i   (mask_hs_bypass_i)
+        .mask_hs_bypass_i   (mask_hs_bypass_i),
+        // TL-045 (2026-09-02): explicit even in the dangle-everything probe, so
+        // that scripts/ci/check_excl_port_wired.py needs no exception for it.
+        .ahb_sub_hexcl      (1'b0)
         // everything else intentionally dangling (targeted reset-state probe)
     );
 endmodule

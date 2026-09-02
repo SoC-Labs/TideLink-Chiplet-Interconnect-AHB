@@ -358,6 +358,11 @@ module tb_top #(
     wire    [SYS_DATA_W-1:0]       m_ahb_sub_hrdata;
     wire                           m_ahb_sub_hresp;
     wire                           m_ahb_sub_hreadyout;
+    // TL-045 (2026-09-02): AHB5 exclusive marker, DRIVABLE from cocotb. This is
+    // the only bench that issues cross-die exclusives; every other tb ties it 0.
+    // Defaults 0 so every pre-existing test in this suite is bit-identical.
+    logic                          m_ahb_sub_hexcl  = 1'b0;
+    wire                           m_ahb_sub_hexokay;
 
     // -------------------------------------------------------------------------
     // Per-die AHB-Mng BRAM terminus (behavioural AHB-Lite slave).
@@ -449,6 +454,8 @@ module tb_top #(
         .ahb_sub_hrdata    (m_ahb_sub_hrdata),
         .ahb_sub_hresp     (m_ahb_sub_hresp),
         .ahb_sub_hreadyout (m_ahb_sub_hreadyout),
+        .ahb_sub_hexcl     (m_ahb_sub_hexcl),      // TL-045: driven by test_xdie_exclusive.py
+        .ahb_sub_hexokay   (m_ahb_sub_hexokay),    // TL-045: constant 0, asserted by the test
 
         // AHB TX aperture — driven by cocotbext-ahb
         .ahb_tx_hsel       (m_ahb_tx_hsel),
@@ -672,6 +679,8 @@ module tb_top #(
         .ahb_sub_hrdata    (/* unused */),
         .ahb_sub_hresp     (/* unused */),
         .ahb_sub_hreadyout (/* unused */),
+        .ahb_sub_hexcl     (1'b0),                 // TL-045: the peer die's own AHB sub port is unused here
+        .ahb_sub_hexokay   (/* unused */),
 
         .ahb_tx_hsel       (s_ahb_tx_hsel),
         .ahb_tx_haddr      (s_ahb_tx_haddr),

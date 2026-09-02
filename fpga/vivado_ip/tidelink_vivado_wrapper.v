@@ -633,6 +633,16 @@ module tidelink_vivado_wrapper #(
         .ahb_sub_hrdata             (ahb_sub_hrdata),
         .ahb_sub_hresp              (ahb_sub_hresp),
         .ahb_sub_hreadyout          (sub_hreadyout_int),
+        // TL-045 (2026-09-02): TIED OFF, and this one is justified rather than
+        // lazy. This wrapper's ahb_sub port is a Xilinx `ahblite:2.0` interface
+        // (see the X_INTERFACE_INFO attributes on the port list above). AHB-Lite
+        // has no HEXCL: the upstream axi_ahblite_bridge cannot express an
+        // exclusive, so no exclusive can ever be presented here and 1'b0 is the
+        // true value, not a default. If this port is ever re-declared as AHB5,
+        // this tie-off becomes the defect TL-045 removed and must be replaced by
+        // a real wrapper input.
+        .ahb_sub_hexcl              (1'b0),
+        .ahb_sub_hexokay            (/* unused: AHB-Lite has no HEXOKAY */),
 
         // AHB Subordinate — ahb_tx (HSEL hardwired 1, HREADY loopback)
         .ahb_tx_hsel                (1'b1),

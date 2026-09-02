@@ -162,6 +162,8 @@ module tb_top #(
         .ahb_sub_hrdata    (m_ahb_sub_hrdata),
         .ahb_sub_hresp     (m_ahb_sub_hresp),
         .ahb_sub_hreadyout (m_ahb_sub_hreadyout),
+        .ahb_sub_hexcl      (1'b0),   // TL-045: no exclusives issued by this bench
+        .ahb_sub_hexokay    (/* unused */),  // TL-045: never granted
 
         // Everything else tied off (this test only needs APB + ahb_sub)
         .ahb_tx_hsel       (1'b0), .ahb_tx_haddr      (14'h0),
@@ -296,6 +298,8 @@ module tb_top #(
         .ahb_sub_hrdata    (/*unused*/),
         .ahb_sub_hresp     (/*unused*/),
         .ahb_sub_hreadyout (/*unused*/),
+        .ahb_sub_hexcl      (1'b0),   // TL-045: no exclusives issued by this bench
+        .ahb_sub_hexokay    (/* unused */),  // TL-045: never granted
 
         .ahb_tx_hsel       (1'b0), .ahb_tx_haddr  (14'h0),
         .ahb_tx_htrans     (2'b00),.ahb_tx_hsize  (3'h0),

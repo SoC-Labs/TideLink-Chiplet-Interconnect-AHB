@@ -449,16 +449,40 @@ $(TL044_PARK_TESTS):
 tl044_park: ; @for t in $(TL044_PARK_TESTS); do $(MAKE) $$t || exit 1; done
 
 # =============================================================================
-# CROSS-DIE EXCLUSIVES (2026-09-01) — test_xdie_exclusive.py
+# CROSS-DIE EXCLUSIVES / TL-045 (2026-09-02) — test_xdie_exclusive.py
 #
-# What an AXI exclusive actually does across the die boundary. No special
-# defines: the point is the SHIPPING wiring.
-XDIE_EXCL_TESTS := test_xdie_exclusive_marker_never_reaches_axi \
-               test_xdie_two_initiators_both_commit
+# What an AXI exclusive does across the die boundary, and that it can no longer
+# do it silently. No special defines: the point is the SHIPPING wiring.
+#   is_refused                  one exclusive read + one exclusive write are
+#                               ERRORed, neither reaches the outbound AXI port,
+#                               far memory untouched, HEXOKAY never granted.
+#   two_initiators_cannot_...   the four-transaction LDREX/LDREX/STREX/STREX
+#                               sequence: all four ERROR, far memory unchanged.
+#                               Pre-fix BOTH stores committed silently.
+#   ordinary_traffic_unaffected REGRESSION GUARD: the same four transactions
+#                               with HEXCL LOW still behave exactly as before.
+XDIE_EXCL_TESTS := test_xdie_exclusive_is_refused \
+               test_xdie_two_initiators_cannot_both_commit \
+               test_xdie_ordinary_traffic_unaffected
 .PHONY: xdie_exclusive $(XDIE_EXCL_TESTS)
 $(XDIE_EXCL_TESTS):
 	$(MAKE) SIM_BUILD=sim_build_xdie_excl MODULE=test_xdie_exclusive TESTCASE=$@
 xdie_exclusive: ; @for t in $(XDIE_EXCL_TESTS); do $(MAKE) $$t || exit 1; done
+
+# TL-045 RED PROOF — the reproduce-first control, in its OWN sim_build.
+# +define+TIDELINK_XDIE_EXCL_LEGACY_MUTANT compiles the refusal out
+# (excl_enforce == 0), restoring the pre-TL-045 path bit-for-bit. The test
+# asserts the DEFECT POSITIVELY (all four transactions complete, both stores
+# commit, far memory ends up holding A's value) rather than inverting an exit
+# code, so a build that fails to compile or fails bring-up cannot masquerade as
+# a red proof. It also reads excl_enforce and REFUSES to run against the
+# shipping build, which is the guard against the stale-simv false green.
+XDIE_EXCL_RED_TESTS := test_xdie_prefix_control_double_commit_returns
+.PHONY: xdie_exclusive_redproof $(XDIE_EXCL_RED_TESTS)
+$(XDIE_EXCL_RED_TESTS):
+	$(MAKE) SIM_BUILD=sim_build_xdie_excl_red MODULE=test_xdie_exclusive \
+	        EXTRA_DEFINES=+define+TIDELINK_XDIE_EXCL_LEGACY_MUTANT TESTCASE=$@
+xdie_exclusive_redproof: ; @for t in $(XDIE_EXCL_RED_TESTS); do $(MAKE) $$t || exit 1; done
 
 # Per-node injection (AW/W/AR/R). Default 2^16 I5 timeout — these must recover
 # via NACK/replay long before any backstop is relevant.

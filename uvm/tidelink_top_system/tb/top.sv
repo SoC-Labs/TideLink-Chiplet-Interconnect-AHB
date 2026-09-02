@@ -514,6 +514,8 @@ module test_top;
     .ahb_sub_hrdata    (a_dut_sub_hrdata),
     .ahb_sub_hresp     (a_dut_sub_hresp),
     .ahb_sub_hreadyout (a_dut_sub_hreadyout),
+    .ahb_sub_hexcl      (1'b0),   // TL-045: no exclusives issued by this bench
+    .ahb_sub_hexokay    (/* unused */),  // TL-045: never granted
 
     // AHB TX aperture
     .ahb_tx_hsel       (1'b1),
@@ -713,6 +715,8 @@ module test_top;
     .ahb_sub_hrdata    (b_dut_sub_hrdata),
     .ahb_sub_hresp     (b_dut_sub_hresp),
     .ahb_sub_hreadyout (b_dut_sub_hreadyout),
+    .ahb_sub_hexcl      (1'b0),   // TL-045: no exclusives issued by this bench
+    .ahb_sub_hexokay    (/* unused */),  // TL-045: never granted
 
     // AHB TX aperture
     .ahb_tx_hsel       (1'b1),

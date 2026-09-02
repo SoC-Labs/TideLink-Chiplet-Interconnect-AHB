@@ -238,6 +238,8 @@ module tb_top #(
         .ahb_sub_hrdata    (/* unused */),
         .ahb_sub_hresp     (/* unused */),
         .ahb_sub_hreadyout (/* unused */),
+        .ahb_sub_hexcl      (1'b0),   // TL-045: no exclusives issued by this bench
+        .ahb_sub_hexokay    (/* unused */),  // TL-045: never granted
 
         // AHB TX aperture — driven by cocotbext-ahb
         .ahb_tx_hsel       (m_ahb_tx_hsel),
@@ -460,6 +462,8 @@ module tb_top #(
         .ahb_sub_hrdata    (/* unused */),
         .ahb_sub_hresp     (/* unused */),
         .ahb_sub_hreadyout (/* unused */),
+        .ahb_sub_hexcl      (1'b0),   // TL-045: no exclusives issued by this bench
+        .ahb_sub_hexokay    (/* unused */),  // TL-045: never granted
 
         .ahb_tx_hsel       (s_ahb_tx_hsel),
         .ahb_tx_haddr      (s_ahb_tx_haddr),

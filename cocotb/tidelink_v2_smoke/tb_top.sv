@@ -79,6 +79,8 @@ module tb_top #(
         .ahb_sub_hrdata    (/* unused */),
         .ahb_sub_hresp     (/* unused */),
         .ahb_sub_hreadyout (/* unused */),
+        .ahb_sub_hexcl      (1'b0),   // TL-045: no exclusives issued by this bench
+        .ahb_sub_hexokay    (/* unused */),  // TL-045: never granted
 
         // AHB TX aperture — tied off
         .ahb_tx_hsel       (1'b0),

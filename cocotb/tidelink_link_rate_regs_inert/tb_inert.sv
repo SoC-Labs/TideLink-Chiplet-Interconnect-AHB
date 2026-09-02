@@ -236,6 +236,8 @@ module tb_inert;
         .ahb_sub_hrdata (ahb_sub_hrdata),
         .ahb_sub_hresp (ahb_sub_hresp),
         .ahb_sub_hreadyout (ahb_sub_hreadyout),
+        .ahb_sub_hexcl      (1'b0),   // TL-045: no exclusives issued by this bench
+        .ahb_sub_hexokay    (/* unused */),  // TL-045: never granted
         .ahb_tx_hsel (ahb_tx_hsel),
         .ahb_tx_haddr (ahb_tx_haddr),
         .ahb_tx_htrans (ahb_tx_htrans),

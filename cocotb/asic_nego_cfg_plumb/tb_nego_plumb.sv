@@ -27,7 +27,10 @@ module tb_nego_plumb;
     logic hclk = 0;
 
     tidelink_dft_wrapper `NCR_PARAM u_wrap (
-        .hclk (hclk)
+        .hclk (hclk),
+        // TL-045 (2026-09-02): explicit even in this elaboration probe, so
+        // scripts/ci/check_excl_port_wired.py needs no exception for it.
+        .ahb_sub_hexcl (1'b0)
         // all other ports intentionally left unconnected (elaboration probe)
     );
 

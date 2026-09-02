@@ -235,6 +235,21 @@ module tidelink_dft_wrapper #(
     output wire  [SYS_DATA_W-1:0]        ahb_sub_hrdata,
     output wire                          ahb_sub_hresp,
     output wire                          ahb_sub_hreadyout,
+    // TL-045 (2026-09-02): AHB5 exclusive pins, PROPAGATED (not tied off).
+    // Tying ahb_sub_hexcl off in a wrapper silently re-creates the very defect
+    // TL-045 removes -- the exclusive marker would be discarded one level above
+    // tidelink_top and a cross-die exclusive would again look like an ordinary
+    // access -- so this wrapper forwards it instead.
+    // NOTE, so nobody over-reads this file's importance: this wrapper is NOT the
+    // ASIC boundary today. It is in NO flist (only sim_gate_dftelab adds it
+    // explicitly, for an elaboration check); the chip instantiates tidelink_top
+    // DIRECTLY from nanosoc-ethernet-chiplet/src/rtl/nanosoc_eth_chiplet.sv:925.
+    // That instantiation is where ahb_sub_hexcl actually has to be driven, and
+    // it currently cannot be: nanosoc_multicore_soc's D2D manager port
+    // (nanosoc_multicore_soc.sv:77-87) is AHB-Lite and carries no HEXCL at all.
+    // See the TL-045 block in src/rtl/tidelink_top.sv.
+    input  wire                          ahb_sub_hexcl,
+    output wire                          ahb_sub_hexokay,
 
     // AHB TX aperture
     input  wire                          ahb_tx_hsel,
@@ -630,6 +645,8 @@ module tidelink_dft_wrapper #(
         .ahb_sub_hrdata             (ahb_sub_hrdata),
         .ahb_sub_hresp              (ahb_sub_hresp),
         .ahb_sub_hreadyout          (ahb_sub_hreadyout),
+        .ahb_sub_hexcl              (ahb_sub_hexcl),      // TL-045: pass through, do NOT tie off
+        .ahb_sub_hexokay            (ahb_sub_hexokay),    // TL-045: constant 0 inside tidelink_top
 
         // AHB tx
         .ahb_tx_hsel                (ahb_tx_hsel),

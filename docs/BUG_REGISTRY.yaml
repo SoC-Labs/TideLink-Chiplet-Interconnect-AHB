@@ -2021,3 +2021,115 @@ bugs:
         - "src/rtl/tidelink_top.sv:1826-1827 (HEAD) `wr_hold_clr = (s_axi_wvalid & s_axi_wready & s_axi_wlast) | synth_b_pending` — re-read at merge time, md5 b75d391b0f659d808ac0a4cb37310643"
       approved: false
     related: [TL-002, TL-005, TL-035, TL-037]
+
+  - id: TL-045
+    title: cross-die exclusive access silently succeeded — no mutual exclusion AND no failure indication
+    severity: high
+    area: xhb500-integration
+    status: sim_proven
+    summary: >
+      Two initiators could both complete a store-exclusive to the SAME cross-die
+      address, both answered OKAY, the second silently overwriting the first.
+      Measured on rev2/integration with the four-transaction sequence
+      LDREX-A / LDREX-B / STREX-B / STREX-A: outcomes
+      {A_ldrex:0xBAD, B_ldrex:0xBAD, B_strex:OK, A_strex:OK}, far memory left
+      holding A's value 0x1111AAAA over B's committed 0x2222BBBB. Software using
+      cross-die exclusives for mutual exclusion had NO mutual exclusion and NO
+      indication that it had none. The silence is the defect: a loud failure is
+      recoverable, a silent one is not.
+    root_cause: >
+      Three independent breaks, all in the INTEGRATION. Wlink was never at fault
+      — it carries axlock as AW/AR payload bit 13 (AXI4ToWlink.v:454/473).
+        1. tidelink_top's AHB subordinate port had no HEXCL and no HEXOKAY pin,
+           so an AHB5 manager's exclusive marker was already gone at TideLink's
+           own pins, one level above any tie-off.
+        2. u_xhb_sub .hexcl(1'b0) forced awlock/arlock to 0 for EVERY outbound
+           transaction (core_addr.sv:253/268). The exclusive did not merely go
+           unanswered across the die boundary — IT NEVER CROSSED IT.
+        3. u_xhb_sub .hmaster(12'd0) forced AxID=0 (core_addr.sv:248/263), so all
+           five initiators were bit-identical on the wire, and u_xhb_mng
+           .hexokay(1'b0) made AXI_RESP_EXOKAY unreachable inbound
+           (core_h_xout.sv:180).
+      With no marker on the wire and no monitor anywhere on the path, a
+      "cross-die exclusive" executed as an ordinary read followed by an ordinary,
+      unconditional write.
+    fix:
+      approach: >
+        REFUSE, do not pretend. tidelink_top gains ahb_sub_hexcl (input) and
+        ahb_sub_hexokay (output, constant 0). A transfer presented with HEXCL
+        high is (a) NEVER ISSUED — xhb_sub_hsel is gated so XHB500 never latches
+        it, nothing reaches the link and PEER MEMORY IS NOT MODIFIED; (b)
+        answered with a two-cycle AHB ERROR; (c) answered with HEXOKAY=0.
+        Supporting exclusives properly (option a) was evaluated and REJECTED: it
+        requires a GLOBAL EXCLUSIVE MONITOR at the far terminus, which does not
+        exist and which tidelink_top's ahb_mng port has no HEXOKAY pin to reach
+        (core_resp.sv:236 + core_h_xout.sv:180 make EXOKAY unreachable without
+        one), AND a per-initiator AxID, which collides with the Fix K hazard-list
+        BID override (hazard_list.sv:86/138 frees a bufferable write only when
+        the returning bid matches the stored AWID; Fix K presents sub_wr_awid_r,
+        a SINGLE register, for a 4-deep list — correct only while AWID is
+        constant). A granted-but-unmonitored exclusive would be WORSE than the
+        original defect because software would then trust it.
+        The ERROR deliberately rides on HRESP, which is already wired in every
+        instantiation, rather than on HEXOKAY alone (spec-clean but a NEW pin,
+        and an integration that ignored this fix is precisely the case that
+        must still see the refusal).
+      files:
+        - src/rtl/tidelink_top.sv
+        - src/rtl/asic/tidelink_dft_wrapper.sv
+        - fpga/vivado_ip/tidelink_vivado_wrapper.v
+        - scripts/ci/check_excl_port_wired.py
+      branch: rev2/fix-exclusives
+      netlist_affecting: true
+    verification:
+      sim_test: "sim_gate_xdie_exclusive"
+      in_sim_gate: true
+      hw_tested: false
+      notes: >
+        THREE shipping tests plus a RED PROOF, all in
+        cocotb/tidelink_axi_datanode_recovery/test_xdie_exclusive.py.
+        POST-FIX (measured):
+          test_xdie_exclusive_is_refused — outcomes {excl_read:ERROR,
+            excl_write:ERROR}, ar=[] aw=[] (nothing reached the outbound AXI
+            port), far_mem=0x00000BAD (untouched), excl_err_fires=2,
+            hexokay_high=0.
+          test_xdie_two_initiators_cannot_both_commit — all four transactions
+            ERROR, ar=[] aw=[], after_B=0x00000BAD, final=0x00000BAD,
+            excl_err_fires=4. Pre-fix the same sequence left 0x1111AAAA.
+          test_xdie_ordinary_traffic_unaffected — the same four transactions
+            with HEXCL LOW still complete and both stores still commit
+            (final=0x1111AAAA), 2 AR + 2 AW, excl_err_fires=0.
+        RED PROOF (sim_gate_xdie_exclusive_redproof, own sim_build,
+        +define+TIDELINK_XDIE_EXCL_LEGACY_MUTANT): the DEFECT is asserted
+        POSITIVELY and reproduces — {A_ldrex:0xBAD, B_ldrex:0xBAD, B_strex:OK,
+        A_strex:OK}, after_B=0x2222BBBB, final=0x1111AAAA, excl_err_fires=0. A
+        positive assertion, not an inverted exit code, so a build that fails to
+        compile cannot masquerade as a red proof. Every test also reads
+        dut.u_master.excl_enforce and REFUSES to run against the wrong build.
+    action_items:
+      - "PARENT-CHIPLET WIRING IS OUTSTANDING AND IS THE ONLY THING BETWEEN THIS FIX AND A SILENT REVERT: nanosoc-ethernet-chiplet/src/rtl/nanosoc_eth_chiplet.sv:925 (u_tidelink) must drive ahb_sub_hexcl from its AHB interconnect. Unconnected reads 0 = 'not an exclusive' = the original defect, with a green gate."
+      - "Run `make check_excl_ports EXCL_ROOTS=\"--root <parent-chiplet>\"` in the parent repo's CI once its wrapper is updated."
+      - "DECISION for David: is refusing (this fix) the right policy, or must cross-die exclusives be SUPPORTED? Supporting them is a far-side global-monitor + AxID/Fix-K workstream, not a wiring change."
+      - "INBOUND exclusives are OBSERVED, not blocked (obs 0x21F8 bit[16], excl_inbound_sticky). Unreachable on a TideLink<->TideLink pair because neither die can now emit AxLOCK=1; if that bit ever reads 1 on silicon the inbound block becomes real work."
+      - "HW validation outstanding: no rig run has been made. obs 0x21F8 bit[15] latches on a refusal and is the on-silicon witness."
+    signoff:
+      claude_verdict: >
+        The measured defect is real and its refusal is measured, with a red proof
+        that reproduces the defect when the fix is compiled out. The fix is
+        deliberately NARROW: it adds no coupling to wr_hold_r, synth_b_pending,
+        the TL-042 head-of-line watchdog or the TL-044 dead-gate containment, it
+        never reads ahb_sub_hready (so ahb_sub_hreadyout gains no combinational
+        dependence on it), and it sits AHEAD of every one of those mechanisms —
+        a refused exclusive never becomes an outstanding transaction, so none of
+        them can see it. What it does NOT do is make exclusives work; that is a
+        DECISION, recorded above, not an oversight.
+      evidence:
+        - "PRE-FIX, measured on rev2/integration: [xdie] TWO INITIATORS: outcomes={'A_ldrex': 2989, 'B_ldrex': 2989, 'B_strex': 'OK', 'A_strex': 'OK'} after_B=0x2222bbbb final=0x1111aaaa"
+        - "POST-FIX: [xdie] TWO INITIATORS (post-TL-045): outcomes={'A_ldrex': 'ERROR', 'B_ldrex': 'ERROR', 'B_strex': 'ERROR', 'A_strex': 'ERROR'} after_B=0x00000bad final=0x00000bad ar=[] aw=[] excl_err_fires=4"
+        - "RED PROOF (mutant): [xdie] RED PROOF (mutant, pre-TL-045): outcomes={'A_ldrex': 2989, 'B_ldrex': 2989, 'B_strex': 'OK', 'A_strex': 'OK'} after_B=0x2222bbbb final=0x1111aaaa excl_err_fires=0"
+        - "core_addr.sv:253/268 (awlock/arlock = hexcl), :248/263 (awid/arid = hmaster), :167 (admit term is hsel & hready & ~hmastlock & htrans)"
+        - "core_resp.sv:236 (hexokay only on BRESP==EXOKAY), core_h_xout.sv:180 (EXOKAY only on far HEXOKAY), core_xin.sv:208/209 (exclusive owner is (axid==hmaster))"
+        - "hazard_list.sv:86/138 (bufferable write freed only on hazard_list_id[i]==bid) — why HMASTER stays 12'd0"
+        - "scripts/ci/check_excl_port_wired.py + scripts/ci/tests/test_check_excl_port_wired.py: 45/45 instantiations in this repo connect .ahb_sub_hexcl; the checker's own red/green control passes, including the fail-open case where a macro parameter list caused a whole instantiation to be SKIPPED"
+      approved: false
+    related: [TL-042, TL-043, TL-044]

@@ -215,6 +215,7 @@ module tb_tc_pair #(
         .ahb_sub_hprot(4'h0), .ahb_sub_hsize(3'h0), .ahb_sub_htrans(2'b00),
         .ahb_sub_hwdata(32'h0), .ahb_sub_hwrite(1'b0), .ahb_sub_hready(1'b1),
         .ahb_sub_hrdata(), .ahb_sub_hresp(), .ahb_sub_hreadyout(),
+        .ahb_sub_hexcl(1'b0), .ahb_sub_hexokay(),   // TL-045: no exclusives issued by this bench
         .ahb_tx_hsel(m_ahb_tx_hsel), .ahb_tx_haddr(m_ahb_tx_haddr), .ahb_tx_htrans(m_ahb_tx_htrans),
         .ahb_tx_hsize(m_ahb_tx_hsize), .ahb_tx_hwrite(m_ahb_tx_hwrite), .ahb_tx_hwdata(m_ahb_tx_hwdata),
         .ahb_tx_hready(m_ahb_tx_hready_loop), .ahb_tx_hrdata(m_ahb_tx_hrdata),
@@ -288,6 +289,7 @@ module tb_tc_pair #(
         .ahb_sub_hprot(4'h0), .ahb_sub_hsize(3'h0), .ahb_sub_htrans(2'b00),
         .ahb_sub_hwdata(32'h0), .ahb_sub_hwrite(1'b0), .ahb_sub_hready(1'b1),
         .ahb_sub_hrdata(), .ahb_sub_hresp(), .ahb_sub_hreadyout(),
+        .ahb_sub_hexcl(1'b0), .ahb_sub_hexokay(),   // TL-045: no exclusives issued by this bench
         .ahb_tx_hsel(s_ahb_tx_hsel), .ahb_tx_haddr(s_ahb_tx_haddr), .ahb_tx_htrans(s_ahb_tx_htrans),
         .ahb_tx_hsize(s_ahb_tx_hsize), .ahb_tx_hwrite(s_ahb_tx_hwrite), .ahb_tx_hwdata(s_ahb_tx_hwdata),
         .ahb_tx_hready(s_ahb_tx_hready_loop), .ahb_tx_hrdata(s_ahb_tx_hrdata),

@@ -1,0 +1,297 @@
+# ASIC-file-set FPGA image
+
+An FPGA bitstream built from **the RTL that tapes out**, so the tapeout sources
+can be exercised on real hardware for the first time.
+
+Branch `rev2/asic-fpga`. Target `kr260-pair-onchip` (two TideLink dies in one
+bitstream, cross-connected entirely in fabric — no PHY or I2C signal reaches a
+pin, so there is no bring-up lottery and no ribbon).
+
+Build it with:
+
+```sh
+source ./set_env.sh
+export TIDELINK_PHY_V2=1 TD_ASIC_FILESET=1
+make -C fpga package_ip   TARGET=kr260-pair-onchip
+make -C fpga build_design TARGET=kr260-pair-onchip
+fpga/scripts/verify_asic_fileset_image.sh kr260-pair-onchip   # <- the proof
+```
+
+Without `TD_ASIC_FILESET=1` you get the ordinary FPGA image. The knob is
+refused unless `TIDELINK_PHY_V2=1` is also set.
+
+---
+
+## Why this image exists
+
+`flists/tidelink_top_full_asic_v2.flist` (what tapes out) and
+`flists/tidelink_fpga_v2.flist` (what every FPGA image and every cocotb suite
+has ever compiled) resolve **ten module files to different sources**. Five of
+them are the AXI flow-control state machines:
+
+| module | ASIC copy | FPGA copy | `socl_` in ASIC | `socl_` in FPGA |
+|---|---|---|---|---|
+| `WlinkGenericFCSM.v`   | `deps/…/wlink/` 1159 ln | `src/rtl/local_overrides/` 1357 ln | 0 | 73 |
+| `WlinkGenericFCSM_1.v` | `deps/…/wlink/` 1159 ln | `src/rtl/local_overrides/` 1332 ln | 0 | 72 |
+| `WlinkGenericFCSM_2.v` | `deps/…/wlink/` 1159 ln | `src/rtl/local_overrides/` 1337 ln | 0 | 72 |
+| `WlinkGenericFCSM_3.v` | `deps/…/wlink/` 1159 ln | `src/rtl/local_overrides/` 1332 ln | 0 | 72 |
+| `WlinkGenericFCSM_4.v` | `deps/…/wlink/` 1159 ln | `src/rtl/local_overrides/` 1332 ln | 0 | 72 |
+| `WlinkGenericFCReplayAddrSync_18.v` | `deps/…/wlink/` 99 ln | `src/rtl/local_overrides/` 170 ln | 0 | 0 |
+| `WlinkGenericFCReplayV2_7.v` | `deps/…/wlink/` 175 ln | `src/rtl/local_overrides/` 226 ln | 0 | 0 |
+| `WlinkGenericFCReplayV2_9.v` | `deps/…/wlink/` 175 ln | `src/rtl/local_overrides/` 226 ln | 0 | 0 |
+| `i2c_master.v` | `deps/…/i2c/rtl/` 905 ln | `src/rtl/local_overrides/` 902 ln | 0 | 0 |
+| `tidelink_sram.sv` | `src/rtl/fifo/asic/` 61 ln | `src/rtl/fifo/fpga/` 112 ln | 0 | 0 |
+| **total** | **7210 ln** | **8326 ln** | | |
+
+The five FCSM copies differ by five named recovery features — the L6 CR-emit
+gate, the L7 CRACK-emit gate, the sticky-NACK bring-up forgive, the TL-033
+state-7 emit-starvation watchdog, and periodic re-ACK — all present on the FPGA
+side, **all absent from the files that tape out**. `_7`/`_9` were re-pointed at
+the hardened overrides on the FPGA side only, by `bf813a74`, which is why they
+are divergent as well; the AddrSync_18 override carries the a2l ACK-pointer
+reset-skew fix.
+
+This divergence is proven in simulation on `rev2/integration`
+(`ASIC_FLIST=1` on `tidelink_top_pair_v2`;
+`test_asic_l7_starvation_backstop` shows the ASIC arm wedging at FCSM state 7
+where the FPGA arm escapes). **It had never been run on hardware.**
+
+---
+
+## What is ASIC-sourced, and what is not
+
+### ASIC-sourced — every module in the design except one
+
+All **186 file entries** of `flists/tidelink_top_full_asic_v2.flist` are
+compiled. Ten of them are the divergent modules above, and every one is
+byte-identical (sha256) to the tapeout source, verified at two hops: the copy
+`ipx::package_project` imported, and the copy the synthesiser actually opened.
+
+Three ASIC sources are **materialised** rather than read in place —
+`tidelink_top.sv`, `Wlink.v`, `axi_chiplet_controller.sv`. A standalone copy is
+emitted under `imp/fpga/gen_v2/` with `` `define TIDELINK_PHY_V2 `` (and the
+FPGA-only `TD_AUTO_LANE_MASK_E4` lane-mask knob) textually prepended; the body
+below that header is byte-identical to the ASIC source, and the header records
+the path it came from. This is not a source change: the ASIC flist delivers
+`TIDELINK_PHY_V2` as a flist-level `+define+`, which is one of the four
+mechanisms proven (2026-06-11) **not** to survive `ipx::package_project` into
+the packaged IP's out-of-context synthesis. The FPGA flist solves the identical
+problem the identical way, via `src/rtl/v2shims/`. The list of three is derived,
+not guessed: it is exactly the set of ASIC-flist files carrying a live
+`` `ifdef `` on either macro.
+
+### NOT ASIC-sourced — one module
+
+| module | supplied by | why |
+|---|---|---|
+| `rf_16k` | `fpga/asic_fileset/rf_16k_fpga.v` | **substituted** |
+
+`src/rtl/fifo/asic/tidelink_sram.sv` instantiates `rf_16k`, a TSMC 65nm
+compiled register file. It is a **hard macro with no RTL anywhere in the ASIC
+file set** — Fusion Compiler binds it from the memory compiler's
+`.lib`/`.lef`/`.gds` at `read_design` time, the ASIC flist contains no `rf_16k`
+line at all, and `syn/asic/sim_stubs/rf_16k_stub.v` is explicitly marked *"DO
+NOT add this file to any synthesis / PnR flist"*.
+
+So the substituted thing is the **leaf memory macro**, not the wrapper:
+`tidelink_sram.sv` is compiled verbatim from `src/rtl/fifo/asic/`, and the
+substitute stands in for a file that does not exist in the ASIC sources to
+begin with. **Say it plainly anyway: one module in this image is not the ASIC
+source.**
+
+The substitute is port-identical and its byte-lane write template is
+syntax-identical to `cmsdk_fpga_sram.v`, so the inferred BRAM structure matches
+a normal FPGA build. Three deviations, all in the file's header:
+
+* **Read-during-write to the same address is undefined.** Matches every
+  previous TideLink FPGA image (they all used `cmsdk_fpga_sram`); does **not**
+  match the read-first ordering of the ASIC sim stub.
+* `EMA` / `EMAW` / `RET1N` are accepted and ignored — margin and retention
+  controls with no FPGA analogue. `tidelink_sram.sv` ties them to nominal.
+* No timing, margin or retention modelling. **This image proves FUNCTION, not
+  timing.**
+
+`rf_16k`'s `WEN` is per-**bit**; this model is per-**byte**. That is exact for
+the sole caller, which drives `WEN` byte-replicated at `tidelink_sram.sv:47`, and
+a simulation-only assertion fires if any future caller does otherwise.
+
+### Skipped
+
+`deps/tidelink-phy/rtl/tidelink_sync_word.svh` — a header, listed as a source
+in the ASIC flist because VCS compiles the whole flist as one compilation unit.
+Vivado compiles each source separately and the header is `` `include ``-guarded,
+so the modules that need it resolve it through the `+incdir+` the same flist
+already carries. **Headers define no modules: zero netlist impact.**
+
+---
+
+## Coverage of the divergence
+
+**All 7,210 lines of divergent ASIC source are in this image — 100%.**
+
+Every one of the ten divergent files is compiled verbatim, proven by sha256 at
+two hops. Nothing was substituted *for* an ASIC file. The one substituted
+module, `rf_16k`, contributes **zero** ASIC lines because it has no ASIC RTL to
+contribute: it is a compiled hard macro. All 61 lines of the ASIC
+`tidelink_sram.sv` wrapper that instantiates it — including the
+`CEN`/`GWEN`/per-bit-`WEN` polarity adaptation, which is the part that could
+actually be wrong — are present and synthesised. The 5,795 lines of
+recovery-stripped FCSM that motivated the whole exercise are present at 100%.
+
+Measured line counts (`wc -l`, this branch):
+
+```
+             ASIC side   FPGA side
+5x FCSM         5795        6690
+AddrSync_18       99         170
+ReplayV2_7/_9    350         452
+i2c_master       905         902
+tidelink_sram     61         112
+             ---------   ---------
+total           7210        8326
+```
+
+The 6,542 figure this work was commissioned against predates `bf813a74`, which
+made `WlinkGenericFCReplayV2_7/_9` divergent (+350 ASIC lines) and took the
+count from eight files to ten. The conclusion is unchanged and stronger: the
+image contains the divergent tapeout sources in full.
+
+## Proving it — do not take this file's word for it
+
+```sh
+fpga/scripts/verify_asic_fileset_image.sh kr260-pair-onchip --netlist
+```
+
+Vivado does **not** name the `WlinkGenericFCSM*` files in its synthesis log
+(checked, not assumed: `grep -oE "/[^ ]*WlinkGenericFCSM[^ ]*\.v" runme.log`
+returns nothing — it emits `8-6157` for only ~101 of the modules). So the proof
+is built from what the tools *do* say:
+
+1. **Vivado names the source directory.** Its own
+   `[Synth 8-6157] synthesizing module 'tidelink_sram' [<path>:<line>]`,
+   and the same for `i2c_master`, `rf_16k` and `tidelink_top`, all resolve to
+   `…/tidelink_project.gen/sources_1/bd/tidelink_design/ipshared/0b70/src`.
+   That is the directory this synthesis run read.
+2. **sha256 of every divergent file in that directory** against the ASIC
+   source — and against the FPGA twin, so a mismatch says *which* it is rather
+   than merely "not equal". All ten match the ASIC source.
+3. **sha256 at the packaging hop** as well, so a divergence is localised.
+4. **`grep -c socl_` in both directions.** 0 on the synthesised copy; the same
+   grep on the FPGA twin must return non-zero (73/72/72/72/72) or it is a dead
+   grep proving nothing.
+5. **The netlist itself** (`--netlist`), which is the only check that inspects
+   the actual hardware:
+
+```
+CENSUS_CONTROL wlink_axiawFC.state_reg = 3     <- control: the path is right
+CENSUS_CONTROL wlink_axiwFC.state_reg  = 7
+CENSUS_CONTROL wlink_axibFC.state_reg  = 3
+CENSUS_CONTROL wlink_axiarFC.state_reg = 4
+CENSUS_CONTROL wlink_axirFC.state_reg  = 3
+CENSUS_MARKER socl_l7_wdog_cnt        in_axi_nodes=0  anywhere_in_design=45
+CENSUS_MARKER socl_l6_cr_emit_count   in_axi_nodes=0  anywhere_in_design=20
+CENSUS_MARKER socl_l7_crack_emit_count in_axi_nodes=0 anywhere_in_design=20
+CENSUS_MARKER socl_l7_bringup_forgive in_axi_nodes=0  anywhere_in_design=0
+CENSUS_MARKER socl_reack_idle_cnt     in_axi_nodes=0  anywhere_in_design=43
+CENSUS_XCHECK FCSM_6(wlink_tidelinktl) socl_* cells = 145
+CENSUS_SRAM   u_rf_cells=12  RAMB_primitives=4
+```
+
+Read it in this order:
+
+* The **controls pass** — `state_reg` exists in all five AXI FC nodes, so the
+  hierarchy filter is right and the zeros below are real absences rather than
+  typos.
+* The **cross-check passes** — the identical search strings find 145 `socl_`
+  cells in `wlink_tidelinktl` (FCSM_6), which *both* flists take from
+  `local_overrides`. The search is alive.
+* Therefore **`in_axi_nodes=0` means the recovery logic is genuinely not in the
+  hardware** for AW/W/B/AR/R. That is the whole point of this image.
+* `socl_l7_bringup_forgive` reads 0 *everywhere*, including FCSM_6. It is a
+  combinational `wire`, and synthesis collapses combinational names — **a
+  netlist grep for a wire is an unconditional zero.** It is printed for
+  completeness and carries **no** evidential weight; the other four are
+  counters, i.e. real flops, and they are the ones that count.
+* `u_rf_cells=12` confirms the ASIC wrapper's `rf_16k` instance is in the
+  netlist, and `RAMB_primitives=4` confirms the substitute inferred block RAM
+  as intended rather than collapsing into thousands of LUTs.
+
+## Provenance — read this before quoting the manifest
+
+`fpga/scripts/build_provenance.tcl` was made ASIC-aware here: the manifest now
+records `phy_marker: "V2-ASICFILESET"` and
+`flist: "tidelink_top_full_asic_v2.flist"`. Before that it returned
+`tidelink_fpga_v2.flist` unconditionally on any V2 build, so the manifest would
+have **named the wrong file list** — asserting the recovery-bearing FPGA FCSMs
+in an image that holds the recovery-stripped tapeout ones.
+
+**`git_dirty` on this branch is still FAIL-OPEN and must not be trusted.**
+`tl_git_sha` returns a bare `"unknown"` on `rev-parse` failure (early return,
+the dirty check never runs) and its `git status` `catch` short-circuits, so an
+indeterminate tree is stamped `git_dirty: false`. The fix exists as `df0f1f24`
+but lives **only** on `rev2/hygiene` and is **not an ancestor** of this branch:
+
+```
+$ git merge-base --is-ancestor df0f1f24 HEAD  ->  rc=1 (NOT an ancestor)
+$ git branch -a --contains df0f1f24
+  rev2/hygiene
+  remotes/origin/rev2/hygiene
+```
+
+It was deliberately not cherry-picked here. **Pin this image by the artefact
+sha256** recorded below, not by the manifest's dirty flag.
+
+---
+
+## Exercising the divergence on hardware
+
+`fpga/hw_regression/asic_l7_starvation_hwtest.py` (+ its board agent and its
+offline unit test) asks whether the AXI FC nodes recover from the state-7
+starvation the sim test drives. **It has never been run.** Read its docstring
+first — in particular the part explaining that FCSM `state` for the five
+divergent nodes is **not observable on hardware at all**, so the test is
+behavioural and its most likely honest outcome is COULD-NOT-EVALUATE.
+
+---
+
+## This build
+
+| | |
+|---|---|
+| target | `kr260-pair-onchip` (xck26-sfvc784-2LV-c) |
+| source commit | `a585a2f5` (branch `rev2/asic-fpga`, off `rev2/integration` `bf813a74`) |
+| `tidelink.bit` sha256 | `9465208f3dcaf063e781f7daf2b144e813389283160b590ca3eb13fc52f2d442` |
+| `tidelink.bin` sha256 | `fbeca52424f5390de39a963d607de0e460b1af81cf99e9ec45dae270953c4fd7` |
+| manifest `phy_marker` | `V2-ASICFILESET` |
+| manifest `flist` | `tidelink_top_full_asic_v2.flist` |
+| verification | `VERIFIED` — all 6 checks, netlist census included |
+
+Named copies live in `imp/fpga/output/kr260-pair-onchip/artefact/`:
+`tidelink_ASICFILESET_9465208f3dca.bit`,
+`tidelink_ASICFILESET_fbeca52424f5.bin`, plus the `.hwh`, the manifest, the
+census output and this README. `.bin` is the ZynqMP/`fpgautil` form — produced
+by `bit2bin_zynqmp.py`, which strips the 127-byte field header and does **not**
+byte-swap. Never feed a KR260 a `bit2bin.py` output.
+
+**Timing is clean.** WNS **+27.934 ns**, TNS 0.000, WHS **+0.010 ns**, THS
+0.000 — **0 failing endpoints of 148,403**. Utilisation 57.1% CLB LUTs, 31.1%
+registers, 12 of 144 block-RAM tiles. Removing five copies of the recovery
+logic makes the tapeout file set *smaller* than the FPGA one, so this is not a
+build that was squeezed in.
+
+### The manifest on this build says `git_dirty: true`. Here is exactly why.
+
+Three files were edited *after* the build launched, and all three are
+documentation or verification tooling that no build step reads:
+`fpga/asic_fileset/README.md`, `fpga/scripts/verify_asic_fileset_image.sh`,
+`fpga/scripts/asic_fileset_netlist_census.tcl`. Every actual build input —
+`fpga/filelist.tcl`, `fpga/asic_fileset/rf_16k_fpga.v`,
+`flists/tidelink_top_full_asic_v2.flist`, `fpga/build_design.tcl`,
+`fpga/vivado_ip/package_tidelink_ip.tcl`, `fpga/scripts/build_provenance.tcl` —
+has an mtime **before** the launch and was committed at `526e0ab8`/`9a713177`.
+
+That flag is behaving correctly here (dirty is the fail-*closed* direction).
+It is recorded in full because the *reason* matters and because, on this
+branch, a `git_dirty: false` would have been the reading you could not trust.
+**Identity of this image rests on the sha256 above and on the verification
+script's own output, not on the manifest.**

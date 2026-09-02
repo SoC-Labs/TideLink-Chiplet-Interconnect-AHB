@@ -42,6 +42,63 @@ set _phy_v2 0
 if { [info exists ::env(TIDELINK_PHY_V2)] && $::env(TIDELINK_PHY_V2) == 1 } { set _phy_v2 1 }
 set _flist_name [expr { $_phy_v2 ? "tidelink_fpga_v2.flist" : "tidelink_fpga.flist" }]
 
+# ââ ASIC FILE-SET BUILD (TD_ASIC_FILESET=1, 2026-09-01) ââââââââââââââââââââ
+# Packages the TAPEOUT file list - flists/tidelink_top_full_asic_v2.flist -
+# instead of the FPGA one. This is the Vivado twin of the ASIC_FLIST=1 knob in
+# cocotb/tidelink_top_pair_v2/Makefile (which does the same swap for VCS), and
+# it exists for the same reason: the two flists resolve TEN module files to
+# DIFFERENT sources, five of them the AXI flow-control state machines
+# WlinkGenericFCSM{,_1.._4} whose FPGA copies carry five named recovery
+# features (L6 CR-emit gate, L7 CRACK-emit gate, sticky-NACK bring-up forgive,
+# TL-033 state-7 watchdog, periodic re-ACK) that the tapeout copies DO NOT.
+# Every FPGA image ever built has carried the recovery-bearing FPGA copies, so
+# nothing that tapes out has ever run on hardware.
+#
+# TWO deliberate deviations from the ASIC flist, both narrow and both loud in
+# the log (see the ASIC FILE-SET banner emitted below):
+#   1. rf_16k. The ASIC tidelink_sram.sv instantiates the TSMC65 rf_16k
+#      compiled macro, which has NO RTL in the ASIC file set at all (FC binds
+#      it from the memory compiler). fpga/asic_fileset/rf_16k_fpga.v supplies a
+#      port-identical BRAM-inferring model. tidelink_sram.sv ITSELF is compiled
+#      verbatim from src/rtl/fifo/asic/ - the substitution is the leaf macro,
+#      not the wrapper.
+#   2. .svh header lines. The ASIC flist lists tidelink_sync_word.svh as a
+#      SOURCE (VCS compiles the whole flist as one compilation unit, so its
+#      $unit-scope localparams are visible everywhere). Vivado compiles each
+#      source file separately and the header is `include-guarded, so reading it
+#      standalone is at best a no-op and at worst a $unit-scope parse error,
+#      while the modules that `include it resolve it through the +incdir+ the
+#      same flist already carries. Headers define no modules: zero netlist
+#      impact either way.
+# Nothing else is swapped, added or removed.
+set _asic_fileset 0
+if { [info exists ::env(TD_ASIC_FILESET)] && $::env(TD_ASIC_FILESET) == 1 } { set _asic_fileset 1 }
+if { $_asic_fileset } {
+    if { !$_phy_v2 } {
+        error "TD_ASIC_FILESET=1 requires TIDELINK_PHY_V2=1 -\
+               flists/tidelink_top_full_asic_v2.flist is a V2 file list and carries\
+               +define+TIDELINK_PHY_V2 inline. Export TIDELINK_PHY_V2=1."
+    }
+    set _flist_name "tidelink_top_full_asic_v2.flist"
+}
+
+# Files in the ASIC flist that contain `ifdef TIDELINK_PHY_V2 / TD_AUTO_LANE_MASK_E4
+# and therefore MUST be materialised with those defines textually prepended.
+# The FPGA flist delivers the same defines to the same three modules through
+# src/rtl/v2shims/; the ASIC flist delivers them as a flist-level +define+,
+# which is one of the FOUR mechanisms proven (2026-06-11) NOT to survive
+# ipx::package_project into the packaged IP's OOC synthesis. Materialising is
+# the only mechanism that does. Derived, not guessed: these are exactly the
+# files in the ASIC flist that grep TIDELINK_PHY_V2 / TD_AUTO_LANE_MASK_E4 as a
+# live `ifdef (src/rtl/fifo/tidelink_apb_regs.sv mentions TIDELINK_PHY_V2 only
+# in a comment at :612 - its Region-10 decode is unconditional - so it is
+# correctly NOT in this list, exactly as on the FPGA path).
+set _asic_materialise {
+    tidelink_top.sv
+    Wlink.v
+    axi_chiplet_controller.sv
+}
+
 # ── 8-LANE KNOB (2026-07-17) ─────────────────────────────────────────────────
 # TD_AUTO_LANE_MASK_E4 gates the 0xE4 (4-lane, bridge1 good-lane) POR default
 # for the Wlink tx/rx lane masks in local_overrides/Wlink.v. It USED to be
@@ -69,6 +126,14 @@ if { [info exists ::env(TD_AUTO_LANE_MASK_E4)] && $::env(TD_AUTO_LANE_MASK_E4) =
 # byte-identical to the prior build. Make the selection impossible to miss in
 # the package_ip / build_design logs so a silent V1 fallback is caught by eye.
 puts "============================================================"
+if { $_asic_fileset } {
+    puts "  *** ASIC FILE SET *** TD_ASIC_FILESET=1"
+    puts "  This build packages flists/tidelink_top_full_asic_v2.flist -"
+    puts "  the TAPEOUT sources - NOT the FPGA file list. The five"
+    puts "  WlinkGenericFCSM{,_1..4} copies here carry NO socl_ recovery."
+    puts "  Substituted (not ASIC-sourced): rf_16k  <- fpga/asic_fileset/rf_16k_fpga.v"
+    puts "  Skipped (headers, define no modules): *.svh flist entries"
+}
 puts [format "  TIDELINK filelist: %s  (TIDELINK_PHY_V2=%s -> %s)" \
         [expr {$_phy_v2 ? "V2 (PHY-v2 / autonomous-winscan FSM PRESENT)" \
                         : "V1 (PHY-v1 / NO autonomous-winscan FSM)"}] \
@@ -159,6 +224,37 @@ proc tidelink_materialise_v2_shim {shim incdirs gen_dir} {
     return $out
 }
 
+###-----------------------------------------------------------------------------
+### ASIC file-set define materialisation.
+###
+### Same problem and same fix as tidelink_materialise_v2_shim above, but driven
+### from a plain source path instead of a `include shim: emit a standalone copy
+### of the ASIC source with `define TIDELINK_PHY_V2 (+ the FPGA-only 0xE4 lane
+### mask knob) textually prepended. The generated file is byte-identical to the
+### ASIC source below the prepended lines, and the header records the source
+### path so `grep "Source:"` on imp/fpga/gen_v2/ proves what was copied.
+###-----------------------------------------------------------------------------
+proc tidelink_materialise_asic_source {src gen_dir} {
+    global _lane_mask_e4
+    set out [file join $gen_dir [file tail $src]]
+    set fh [open $src r]; set body [read $fh]; close $fh
+    set fo [open $out w]
+    puts $fo "// AUTO-GENERATED by fpga/filelist.tcl (TD_ASIC_FILESET=1 build) - DO NOT EDIT."
+    puts $fo "// Source: $src"
+    puts $fo "// Body below this header is a VERBATIM copy of that ASIC-file-set source."
+    puts $fo "`define TIDELINK_PHY_V2"
+    if { $_lane_mask_e4 } {
+        puts $fo "`define TD_AUTO_LANE_MASK_E4"
+    } else {
+        puts $fo "// TD_AUTO_LANE_MASK_E4 OMITTED (TD_AUTO_LANE_MASK_E4=0) -> LANE_MASK_RESET = 8'hFF (8 lanes)"
+    }
+    puts -nonewline $fo $body
+    close $fo
+    puts "INFO: tidelink ASIC file set: materialised [file tail $src] -> $out"
+    puts "INFO:   from $src"
+    return $out
+}
+
 if { $_phy_v2 } {
     set _v2_gen_dir [file join $TIDELINK_HOME imp fpga gen_v2]
     file delete -force $_v2_gen_dir
@@ -184,6 +280,8 @@ set_property include_dirs [list \
 set fh [open $fpga_flist r]
 set extra_incdirs {}
 set extra_defines {}
+set _asic_materialised {}
+set _asic_skipped_headers {}
 while { [gets $fh line] >= 0 } {
     set line [string trim $line]
     if { $line eq "" } { continue }
@@ -204,11 +302,46 @@ while { [gets $fh line] >= 0 } {
         # the top of the flist, so extra_incdirs is fully populated by the
         # time the first shim entry appears.
         read_verilog -sv [tidelink_materialise_v2_shim $resolved $extra_incdirs $_v2_gen_dir]
+    } elseif { $_asic_fileset && [string equal [file extension $resolved] ".svh"] } {
+        # Header, not a module. See the TD_ASIC_FILESET note at the top.
+        puts "INFO: tidelink ASIC file set: SKIPPED header (reached via +incdir+): $resolved"
+        lappend _asic_skipped_headers $resolved
+    } elseif { $_asic_fileset && [lsearch -exact $_asic_materialise [file tail $resolved]] >= 0 } {
+        read_verilog -sv [tidelink_materialise_asic_source $resolved $_v2_gen_dir]
+        lappend _asic_materialised $resolved
     } else {
         read_verilog -sv $resolved
     }
 }
 close $fh
+
+# ---------------------------------------------------------------------------
+# ASIC file set: supply the ONE leaf the tapeout file list cannot provide - the
+# rf_16k compiled macro (a hard macro; no RTL exists for it anywhere in the
+# ASIC sources). Added AFTER the flist so it can never mask a same-named file
+# the flist itself provided.
+# ---------------------------------------------------------------------------
+if { $_asic_fileset } {
+    set _rf16k_sub [file join $TIDELINK_HOME fpga asic_fileset rf_16k_fpga.v]
+    if { ![file exists $_rf16k_sub] } {
+        error "TD_ASIC_FILESET=1: rf_16k FPGA substitute not found at $_rf16k_sub"
+    }
+    read_verilog -sv $_rf16k_sub
+    puts "INFO: tidelink ASIC file set: SUBSTITUTED rf_16k (TSMC65 compiled macro,\
+ no RTL in the ASIC file set) -> $_rf16k_sub"
+
+    puts "============================================================"
+    puts "  ASIC FILE SET - SUBSTITUTION / DEVIATION LEDGER"
+    puts "    ASIC sources materialised with `define (byte-identical body):"
+    foreach f $_asic_materialised { puts "      $f" }
+    puts "    Headers skipped (define no modules):"
+    foreach f $_asic_skipped_headers { puts "      $f" }
+    puts "    Modules NOT from the ASIC file set:"
+    puts "      rf_16k  <- $_rf16k_sub"
+    puts "    EVERYTHING ELSE is compiled verbatim from"
+    puts "      flists/tidelink_top_full_asic_v2.flist"
+    puts "============================================================"
+}
 
 # Apply any +define+ entries found in the flist
 if { [llength $extra_defines] > 0 } {

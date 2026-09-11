@@ -542,8 +542,8 @@ bugs:
       CONSEQUENCE (sustained ahb_sub_hreadyout low), not on a proxy the wedge
       suppresses.
       IF IT IS EVER REVISITED: wrapper-side, beside synth-B in tidelink_top. XHB500
-      itself is under /research/AAA/ip_library/ (shared vendor IP, MUST NOT be
-      modified). Gate any build on a die_a ILA showing BOTH synth_b_pending never
+      itself is shared vendor IP outside this repo (rooted at $XHB500_IP_DIR; see
+      site.env.example) and MUST NOT be modified. Gate any build on a die_a ILA showing BOTH synth_b_pending never
       asserting AND sub_osr_ctr_r being reset by sibling Bs. Probe set:
       synth_b_pending, sub_osr_ctr_r, sub_axi_progress, sub_r_done and sub_b_done
       SEPARATELY, sub_wr_os_ctr, hazard occupancy, s_axi aw/b. Trigger on sustained
@@ -2147,7 +2147,7 @@ bugs:
         within a bound — NOT on an intermediate signal that the wedge suppresses.
         Concretely: a watchdog keyed on sustained PS-facing stall, independent of
         sub_wr_os_ctr, sub_axi_progress and synth_b_pending. Wrapper-side; XHB500
-        is read-only vendor IP under /research/AAA/ip_library/.
+        is read-only shared vendor IP outside this repo ($XHB500_IP_DIR).
       files: [src/rtl/tidelink_top.sv]
       commit: null
       netlist_affecting: true

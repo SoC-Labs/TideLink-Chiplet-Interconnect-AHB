@@ -350,17 +350,38 @@ endef
 	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5 \
 	sim_gate_v2_auto_anchor
 
+# WHAT THIS CHECKS, AND WHY IT IS NOT JUST TWO `command -v` LINES.
+# Until 2026-09-11 it was exactly the two tool checks below and nothing else. A
+# shell with VCS on PATH but WITHOUT `source ./set_env.sh` passed, and then every
+# suite died at parse in 3-5 s with
+#     Error-[SFCOR] Source file "${CMSDK_FPGA_SRAM_V}" cannot be opened
+# while sim_gate_run wrote a correctly-stamped, clean-stamped FAIL for each one:
+# a full red table that measured nothing. The Python checker below adds the three
+# launch faults that produced that, each named and actionable:
+#   * a ${VAR} token used by the flists the gate consumes that is unset, or set
+#     to a path that does not exist (the list is EXTRACTED from the flist closure,
+#     not hard-coded, so it cannot rot when a flist is added);
+#   * an uninitialised submodule ('-' prefix in `git submodule status --recursive`);
+#   * a dirty tree at launch, which stamps every .status `-dirty` and makes
+#     sim_gate_summary refuse PASS after 45-95 minutes of real work.
+# It also refuses to pass when it CANNOT tell (git unreadable, empty closure).
+# SIM_GATE_ENV_CHECK_ARGS=--allow-dirty downgrades only the dirty-tree check.
+#
+# The two tool checks are kept AHEAD of it deliberately: they are the cheapest
+# and by far the commonest failure, and their message is the one users know.
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
 	  { echo "sim_gate: vcs not in PATH — run 'source ./set_env.sh' first"; exit 1; }
 	@command -v cocotb-config >/dev/null 2>&1 || \
 	  { echo "sim_gate: cocotb-config not in PATH — run 'source ./set_env.sh' first"; exit 1; }
-	@# NOTE: the weekend-2026-07-18 suites additionally need three SIBLING repo
-	@# checkouts (tidechart, nanosoc-ethernet-chiplet, ethernet-subsystem-ahb).
-	@# Those are checked PER-SUITE (SIM_GATE_REQUIRE below), NOT here: a missing
-	@# sibling must fail its own suites loudly while the other 15 still run —
-	@# aborting the whole gate on one absent checkout would be worse than the
-	@# gap it reports. See docs/SIM_GATE_COVERAGE.md §"CI prerequisite".
+	@python3 $(TIDELINK_HOME)/scripts/ci/sim_gate_env_check.py \
+	  --repo $(TIDELINK_HOME) --skip-tools $(SIM_GATE_ENV_CHECK_ARGS)
+	@# The three SIBLING repo checkouts (tidechart, nanosoc-ethernet-chiplet,
+	@# ethernet-subsystem-ahb) are REPORTED by the checker but do NOT fail it.
+	@# They stay checked PER-SUITE (SIM_GATE_REQUIRE below): a missing sibling
+	@# must fail its own suites loudly while the other 15 still run — aborting
+	@# the whole gate on one absent checkout would be worse than the gap it
+	@# reports. See docs/SIM_GATE_COVERAGE.md §"CI prerequisite".
 
 # --- tidelink_top_pair autonomy suites (V2 flist, shared sim_build_l4) ------
 sim_gate_t31:

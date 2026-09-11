@@ -1890,7 +1890,16 @@ sim_gate_integrity:
 	@python3 $(TIDELINK_HOME)/scripts/ci/sim_gate_integrity.py \
 	  --makefile $(TIDELINK_HOME)/Makefile
 
-sim_gate: sim_gate_integrity sim_gate_env_check sim_gate_clean_builds
+# selfcheck_gates is a PREREQUISITE, exactly like sim_gate_integrity: the controls
+# that prove the checkers can go red take well under two minutes, and running a
+# 45-95 minute gate whose checkers might be incapable of reporting failure is how
+# every entry in the false-green register got there. A broken control now stops
+# the gate before any suite simulates.
+# It is placed AFTER sim_gate_env_check on purpose: selfcheck_gates compiles the
+# three UVM scoreboard controls, so without `source ./set_env.sh` it would fail
+# with a VCS-not-found spew instead of env_check's one-line "run set_env.sh
+# first" — and that exact confusion is a documented time sink here.
+sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
 	@echo " sim_gate — full aggregate sim gate"
@@ -2023,7 +2032,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check sim_gate_clean_builds
 	  SIM_GATE_SUITES="$(SIM_GATE_ALL_SUITES)" \
 	  SIM_GATE_SENTINELS="$(SIM_GATE_SENTINELS)"
 
-sim_gate_quick: sim_gate_integrity sim_gate_env_check sim_gate_clean_builds
+sim_gate_quick: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
 	@echo "========================================"
 	@echo " sim_gate_quick — smoke gate (skips t31/t32)"
@@ -2231,16 +2240,72 @@ coverage_check:
 # seconds — so there is no excuse for them not to run. A checker whose own
 # control is never executed is back to being decoration.
 #
-#   make selfcheck_gates      run them all; first failure aborts
+#   make selfcheck_gates      run them all; reports every failure, exits non-zero
+#
+# 2026-09-11: this used to run ONLY the pure-Python controls under
+# scripts/ci/tests/. Two other families of control existed and were run by
+# nothing at all:
+#
+#   ci/checker_controls/run_all.sh   five SIGN-OFF checker controls (LVS verdict,
+#       fc_drc, farm-gate ratchet, verify_build, Vivado message gate). The script
+#       existed, worked, and was referenced by NO Makefile target and NO CI job.
+#
+#   the UVM scoreboard self-tests    three controls that prove a scoreboard can
+#       report packet loss at all (the B1/B2 false-green family). They were listed
+#       in their own TESTS variables and run by no gate. Note that wiring them in
+#       through `make run` / `make run_all` would NOT have fixed that: both decide
+#       on simv's exit code, and simv exits 0 with UVM_ERROR > 0 — MEASURED here
+#       2026-09-11, `simv +UVM_TESTNAME=no_such_test_at_all` exited 0 with
+#       "UVM_FATAL : 1". They are therefore run through targets that grade the LOG
+#       (scripts/ci/grade_uvm_selftest_log.sh).
+#
+# NO first-failure abort: every family runs, every failure is named, and the
+# exit code is non-zero if any of them failed. Aborting at the first red hides
+# how much is red, and these are seconds-to-a-minute each.
+#
+#   make selfcheck_gates       run every control
+#   SELFCHECK_SKIP_UVM=1       Python + shell controls only (~15 s, no simulator).
+#                              Prints a loud line saying the UVM controls were NOT
+#                              run, so a skipped run can never be mistaken for a
+#                              clean one.
 .PHONY: selfcheck_gates
 selfcheck_gates:
-	@rc=0; \
+	@rc=0; red=""; \
+	echo "########## selfcheck_gates: pure-Python checker controls ##########"; \
 	for t in $(TIDELINK_HOME)/scripts/ci/tests/test_*.py; do \
 	  echo "=== $$(basename $$t)"; \
-	  if python3 "$$t"; then :; else rc=1; echo "  ^ CONTROL FAILED"; fi; \
+	  if python3 "$$t"; then :; else rc=1; red="$$red $$(basename $$t)"; echo "  ^ CONTROL FAILED"; fi; \
 	done; \
+	echo; \
+	echo "########## selfcheck_gates: sign-off checker controls ##########"; \
+	if [ -x $(TIDELINK_HOME)/ci/checker_controls/run_all.sh ]; then \
+	  if $(TIDELINK_HOME)/ci/checker_controls/run_all.sh; then :; \
+	  else rc=1; red="$$red checker_controls/run_all.sh"; echo "  ^ CONTROL FAILED"; fi; \
+	else \
+	  rc=1; red="$$red checker_controls/run_all.sh(MISSING)"; \
+	  echo "  ^ ci/checker_controls/run_all.sh is missing or not executable — that is"; \
+	  echo "    a COULD-NOT-EVALUATE, not a pass"; \
+	fi; \
+	echo; \
+	if [ -n "$(SELFCHECK_SKIP_UVM)" ]; then \
+	  echo "########## selfcheck_gates: UVM scoreboard controls SKIPPED ##########"; \
+	  echo "  SELFCHECK_SKIP_UVM=1 — the three scoreboard self-tests did NOT run."; \
+	  echo "  This run does NOT clear them. Do not read it as a clean selfcheck."; \
+	else \
+	  echo "########## selfcheck_gates: UVM scoreboard controls ##########"; \
+	  for d in uvm/tidelink uvm/tidelink_integration; do \
+	    echo "=== $$d sb_loss_selftest"; \
+	    if $(MAKE) --no-print-directory -C $(TIDELINK_HOME)/$$d sb_loss_selftest; then :; \
+	    else rc=1; red="$$red $$d/sb_loss_selftest"; echo "  ^ CONTROL FAILED"; fi; \
+	  done; \
+	  echo "=== uvm/tidelink_top_system sb_selftest"; \
+	  if $(MAKE) --no-print-directory -C $(TIDELINK_HOME)/uvm/tidelink_top_system sb_selftest; then :; \
+	  else rc=1; red="$$red uvm/tidelink_top_system/sb_selftest"; echo "  ^ CONTROL FAILED"; fi; \
+	fi; \
+	echo; \
 	if [ $$rc -eq 0 ]; then echo "selfcheck_gates: ALL CONTROLS PASS"; \
-	else echo "selfcheck_gates: FAILURES — a checker cannot produce its failing verdict"; fi; \
+	else echo "selfcheck_gates: FAILURES —$$red"; \
+	     echo "selfcheck_gates: a checker cannot produce its failing verdict"; fi; \
 	exit $$rc
 # ── registry-driven regression harness (durable, "run for all bugs") ─────────
 .PHONY: sim_gate_registry_coverage sim_gate_regressions sim_gate_one

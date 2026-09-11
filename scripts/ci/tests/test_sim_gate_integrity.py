@@ -42,9 +42,16 @@ def mutate(text, kind):
     if kind == "scored_not_invoked":
         # Add a suite to the scored list that nothing invokes. This is the
         # 71dde385 polarity: the summary reports MISS forever.
-        out = text.replace(
-            "\ta2l_wready_tear \\\n",
-            "\ta2l_wready_tear a_suite_nothing_invokes \\\n", 1)
+        #
+        # Anchored on the VARIABLE, not on one suite's line. This mutator used
+        # to splice after the literal "\ta2l_wready_tear \\\n" line, and broke
+        # the moment another suite was registered next to it (2026-09-11,
+        # a2l_replay_cdc_deps_mustfail): the assert fired and the control went
+        # red for a reason that had nothing to do with the guard it tests. A
+        # control that breaks when the thing it watches is edited normally is
+        # a control people learn to ignore.
+        out = re.sub(r"^(SIM_GATE_ALL_SUITES\s*:=)",
+                     r"\1 a_suite_nothing_invokes", text, count=1, flags=re.M)
         assert out != text, "could not add a phantom suite to the scored list"
         return out
     if kind == "unparseable":
@@ -57,9 +64,14 @@ def mutate(text, kind):
     if kind == "no_recipe":
         # Rename the gate target itself. Parsing zero invoked suites must not
         # read as a pass.
-        out = text.replace(
-            "\nsim_gate: sim_gate_integrity sim_gate_env_check sim_gate_clean_builds\n",
-            "\nsim_gate_renamed: sim_gate_env_check sim_gate_clean_builds\n", 1)
+        #
+        # Matched on the RULE HEAD only, not on the full prerequisite list: the
+        # old form spelled out "sim_gate: sim_gate_integrity sim_gate_env_check
+        # sim_gate_clean_builds" and broke the moment a prerequisite was added
+        # (2026-09-11, selfcheck_gates). Nothing about this specimen depends on
+        # which prerequisites the gate has.
+        out = re.sub(r"^sim_gate:(\s)", r"sim_gate_renamed:\1", text,
+                     count=1, flags=re.M)
         assert out != text, "could not rename the sim_gate target"
         return out
     raise AssertionError("unknown mutation %r" % kind)

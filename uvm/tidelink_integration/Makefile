@@ -200,3 +200,33 @@ coverage:
 
 clean:
 	rm -rf $(SIM_DIR) $(COV_DIR) csrc *.log ucli.key vc_hdrs.h
+
+# ===========================================================================
+# SCOREBOARD PACKET-LOSS SELF-TEST, GATE-GRADED (false-green register B1)
+# ---------------------------------------------------------------------------
+# `tidelink_integration_scoreboard_loss_selftest` has been in TESTS since 24cb2cba,
+# and NOTHING has ever run it in a gate. Worse, wiring it in through `make run`
+# or `make run_all` would have been a FALSE GREEN: both decide on simv's exit
+# code, and simv EXITS 0 when the run raised UVM_ERRORs. MEASURED 2026-09-11 in
+# this very directory:
+#     ./simv +UVM_TESTNAME=no_such_test_at_all  ->  exit 0, "UVM_FATAL :    1"
+# A control that cannot report failure is decoration; a control wired in through
+# a target that cannot report failure is worse, because it looks wired in.
+#
+# This target decides on the LOG (scripts/ci/grade_uvm_selftest_log.sh), the
+# same rule uvm/tidelink_top_system/Makefile's sb_selftest already applies:
+# missing log, no UVM report summary, or no [SB_SELFTEST] output at all are all
+# COULD-NOT-EVALUATE (exit 2), never PASS.
+#
+#   make sb_loss_selftest        - compile, run, grade; nonzero on any UVM_ERROR
+# ===========================================================================
+SB_LOSS_TEST  = tidelink_integration_scoreboard_loss_selftest
+SB_LOSS_LOG   = $(SIM_DIR)/$(SB_LOSS_TEST).log
+SB_LOSS_GRADE = $(PROJ_HOME)/scripts/ci/grade_uvm_selftest_log.sh
+
+.PHONY: sb_loss_selftest
+sb_loss_selftest: compile
+	@rm -f $(SB_LOSS_LOG)
+	@cd $(SIM_DIR) && ./simv +UVM_TESTNAME=$(SB_LOSS_TEST) +UVM_VERBOSITY=UVM_LOW \
+	    -l $(SB_LOSS_TEST).log
+	@bash $(SB_LOSS_GRADE) $(SB_LOSS_LOG) "SB_LOSS_SELFTEST(tidelink_integration)" SB_SELFTEST

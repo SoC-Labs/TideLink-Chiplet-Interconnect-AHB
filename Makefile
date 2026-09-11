@@ -290,6 +290,7 @@ endef
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen sim_gate_txgen_ext_hijack \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
 	sim_gate_axi_datanode_recovery sim_gate_axi_datanode_gaps sim_gate_tl044_hol_write_age \
+	sim_gate_tl044_hol_prefix \
 	sim_gate_n1_read_backstop sim_gate_tl044_read_deadgate \
 	sim_gate_tl044_park_recipe sim_gate_xdie_exclusive \
 	sim_gate_axinode_obs \
@@ -298,7 +299,7 @@ endef
 	sim_gate_calibrator_wrap \
 	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5 \
 	sim_gate_a2l_replay_cdc_7 sim_gate_a2l_replay_cdc_9 \
-	sim_gate_a2l_wready_tear \
+	sim_gate_a2l_wready_tear sim_gate_a2l_replay_cdc_deps_mustfail \
 	sim_gate_v2_auto_anchor
 
 sim_gate_env_check:
@@ -675,6 +676,59 @@ sim_gate_a2l_wready_tear:
 	      COCOTB_RESULTS_FILE=sim_build_tear_$$n/res_tear_$$n.xml || exit 1; \
 	  done)
 
+# THE RED ARM OF THE a2l A/B, WHICH NOTHING RAN (wired 2026-09-11).
+# Every one of the seven a2l suites above is a reproduce-and-heal pair, and every
+# one of them documents its red arm as `USE_DEPS_DUT=1` -- the pristine deps node
+# with the edge-triggered w_inc, which MUST fail. The gate ran only the green
+# halves. Seven green suites whose attributability rested entirely on an A/B that
+# no gate performed.
+#
+# This runs both red arms, on all five data-plane nodes:
+#   test_a2l_replay_cdc_<n>   the lap-ahead-ACK self-latch    (a2l_full sticks)
+#   test_a2l_wready_tear      the w_inc continuous-resend arm (ACK never arrives)
+# and requires each of the TEN to FAIL. A pass on any of them means the matching
+# green suite is not evidence about the override.
+#
+# NOT a blanket "make must exit non-zero" check: a build error, a mistyped MODULE
+# or a missing flist would exit non-zero too, and grading that as "mutant killed"
+# is a false green in a red coat. Each arm must leave a cocotb results XML
+# CONTAINING a recorded failure -- i.e. the test compiled, ran, and reported.
+sim_gate_a2l_replay_cdc_deps_mustfail:
+	@# NOTE TO EDITORS: the body below must contain NO COMMAS and NO UNBALANCED
+	@# PARENTHESES. $(call ...) splits its arguments on commas and stops at an
+	@# unbalanced ')' -- either one truncates the recipe MID-STRING and make hands
+	@# /bin/sh a fragment. Both were hit while writing this target on 2026-09-11.
+	$(call sim_gate_run,a2l_replay_cdc_deps_mustfail,\
+	  cd cocotb/tidelink_a2l_replay_cdc && \
+	  esc=0; nogo=0; ok=0; \
+	  for n in 1 3 5 7 9; do \
+	    for spec in replay: wready:test_a2l_wready_tear; do \
+	      m=$${spec%%:*}; mod=$${spec#*:}; \
+	      d=sim_build_deps_mf_$${m}_$$n; x=$$d/res.xml; \
+	      rm -rf $$d; \
+	      echo "=== MUST-FAIL arm: NODE=$$n $$m USE_DEPS_DUT=1 [pristine deps]"; \
+	      if $(MAKE) NODE=$$n USE_DEPS_DUT=1 $${mod:+MODULE=$$mod} \
+	           SIM_BUILD=$$d COCOTB_RESULTS_FILE=$$d/res.xml; then \
+	        echo "!!! MUTANT ESCAPED: NODE=$$n $$m PASSED on the pristine deps node."; \
+	        echo "!!! The matching green suite is therefore NOT evidence that the"; \
+	        echo "!!! local_overrides self-heal does anything at all."; \
+	        esc=1; \
+	      elif [ ! -s $$x ] || ! grep -q '<failure' $$x; then \
+	        echo "??? COULD-NOT-EVALUATE: NODE=$$n $$m failed WITHOUT recording a"; \
+	        echo "??? cocotb failure in $$x. That is a broken build and NOT a killed"; \
+	        echo "??? mutant. It must not be graded as one."; \
+	        nogo=1; \
+	      else \
+	        echo "    killed: NODE=$$n $$m FAILS on pristine deps [required]"; \
+	        ok=$$((ok+1)); \
+	      fi; \
+	    done; \
+	  done; \
+	  echo "a2l deps must-fail arms killed: $$ok/10"; \
+	  if [ $$esc -ne 0 ]; then echo "FAIL: a must-fail arm PASSED"; exit 1; fi; \
+	  if [ $$nogo -ne 0 ]; then echo "FAIL: an arm could not be evaluated"; exit 1; fi; \
+	  if [ $$ok -ne 10 ]; then echo "FAIL: only $$ok/10 arms were graded"; exit 1; fi)
+
 # ---------------------------------------------------------------------------
 # Rescued from the link-survey line (analysis/link-survey-2026-08-01, folded
 # 2026-08-10). These four suites had NO definition anywhere else on the trunk;
@@ -941,6 +995,25 @@ sim_gate_tl044_hol_write_age:
 	$(call sim_gate_run,tl044_hol_write_age,\
 	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_tl044_hol && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery tl044_hol)
+
+# THE RED ARM OF THE SAME A/B, WHICH NOTHING RAN (wired 2026-09-11).
+# cocotb/tidelink_axi_datanode_recovery/Makefile has carried tl044_hol_prefix --
+# the +define+TIDELINK_DISABLE_SUB_WR_HOL isolation build, documented in its own
+# comment as "The PRIMARY test must FAIL here" -- since TL-042 landed, and NO gate
+# target invoked it. So the suite above has been green for weeks with nothing
+# checking that its green is attributable to the head-of-line watchdog at all. If
+# the watchdog were neutered tomorrow, sim_gate_tl044_hol_write_age would very
+# likely stay green (the aggregate backstops are still there) and the gate would
+# not notice.
+#
+# tl044_hol_prefix_mustfail INVERTS the verdict: the isolation run must FAIL, a
+# PASS is the error, and a failure that never reached a cocotb verdict is
+# COULD-NOT-EVALUATE rather than "mutant killed" -- so a broken build cannot
+# impersonate a dead mutant.
+sim_gate_tl044_hol_prefix:
+	$(call sim_gate_run,tl044_hol_prefix_mustfail,\
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_tl044_hol_prefix && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery tl044_hol_prefix_mustfail)
 
 # ── N1 (TAPEOUT BLOCKER, fixed @e008c58, 2026-08-14) regression ─────────────
 # Both ahb_sub backstops shared ONE age timer (sub_osr_ctr_r) and ONE
@@ -1827,7 +1900,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	wlink_tx_pstate \
 	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \
 	a2l_replay_cdc_7 a2l_replay_cdc_9 \
-	a2l_wready_tear \
+	a2l_wready_tear a2l_replay_cdc_deps_mustfail \
+	tl044_hol_prefix_mustfail \
 	v2_auto_anchor
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
@@ -1936,6 +2010,8 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@# 71dde385 but never INVOKED here — the gate reported it MISS. Wired
 	@# 2026-08-24 during the rev2/consolidated integration.)
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_tl044_hol_write_age
+	@# ... and its isolation build, where the PRIMARY test must FAIL.
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_tl044_hol_prefix
 	@# TL-044: READ DEAD-GATE CONTAINMENT — after the read backstop has fired,
 	@# the port must not fall through to the known-wedged xhb_sub_hreadyout_raw
 	@# and hold HREADYOUT low on an IDLE bus (whole-bus PS wedge, JTAG-POR only).
@@ -1983,6 +2059,8 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_9
 	@# TL-027 w_inc continuous-resend CDC-tearing regression (all 5 data-plane nodes).
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_wready_tear
+	@# ... and the RED halves of both a2l A/Bs, which no gate ran until 2026-09-11.
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_deps_mustfail
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_perf
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_reduced_lane
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_epoch_silicon

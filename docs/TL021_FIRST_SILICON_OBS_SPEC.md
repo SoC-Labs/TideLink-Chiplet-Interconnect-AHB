@@ -61,12 +61,74 @@ Bit-identical when the bit=0 (`role_is_master & ~0 == role_is_master`). Master w
 
 ## Sub-item (3) — ext_stall_err_q → APB (one word, V2-only)
 
-`ext_stall_err_q` (tidelink_top.sv:944-961, POR-cleared, not APB-mapped). It and `xhb_sub_obs_word` (tidelink_top.sv:1724, has 13 spare bits [23:11]) are in the SAME module → no threading:
+`ext_stall_err_q` (tidelink_top.sv:944-961, POR-cleared, not APB-mapped). It and `xhb_sub_obs_word` (then at tidelink_top.sv:1724, then with 13 spare bits [23:11]) are in the SAME module → no threading:
+
+> ⚠ **The snippet below is the 2026-08 sketch and is now STALE.** `ext_stall_err_q` did land at `[11]`, but `[12]`/`[13]`/`[14]` have since been allocated to TL-042/TL-044 and the word is built at `:2178`. Decode against the table in "0x21F8 WITNESS WORD — CURRENT LAYOUT" below, not against this line.
 ```
 // tidelink_top.sv:1724
 wire [31:0] xhb_sub_obs_word = { 8'hB5, 12'h0, ext_stall_err_q /*[11]*/, xhb_stall_stuck_sticky /*[10]*/, ... };
 ```
 Path: ext_stall_err_q → xhb_sub_obs_word[11] → `.xhb_sub_obs_word_i` (:3086) → regionF slot 3'h6 (:3036) → SoC 0x4403_21F8 bit[11]. V2-only (0x21F8 is `ifdef TIDELINK_PHY_V2`); for V1 visibility a different (controller-internal) slot + a new port would be needed — out of scope for a V2 first-silicon debug build.
+
+## 0x21F8 WITNESS WORD — CURRENT LAYOUT (updated 2026-09-11, rev2/integration)
+
+`xhb_sub_obs_word` has moved on since the sketch above: it is now built at
+`src/rtl/tidelink_top.sv:2178`, the spare pool is `[23:15]`, and the word carries
+the TL-042/TL-044 containment plane. This is the authoritative layout for
+anything decoding SoC `0x4403_21F8` / `0x8403_21F8` / `0x4_2E03_21F8`:
+
+| bits | signal | meaning |
+|---|---|---|
+| `[31:24]` | `8'hB5` | presence marker. Absent -> the plane is not in this bitstream; decode NOTHING and report could-not-evaluate. |
+| `[23:15]` | spare `9'h0` | |
+| `[14]` | `xhb_dead_perm_r` | **TL-044**: containment latched PERMANENTLY after `XHB_DEAD_RELAPSE_MAX` clear/re-arm cycles. The port will never re-arm. |
+| `[13]` | `xhb_dead_r` | **TL-044**: XHB500 declared DEAD; the port is in BOUNDED-ERROR containment (live, not sticky). |
+| `[12]` | `sub_wr_hol_stuck_sticky` | **TL-042**: head-of-line WRITE-age watchdog EXPIRED (the starvation-immune watchdog fired). |
+| `[11]` | `ext_stall_err_q` | TL-021 bounded-ext-stall sticky (sub-item (3) above). |
+| `[10]` | `xhb_stall_stuck_sticky` | bridge `hreadyout` stuck low >= 2^12 hclk == XHB500 hazard-list-full / deadlock witness. |
+| `[9]` | `sub_err_sticky` | 2-cycle ERROR backstop fired (read). |
+| `[8]` | `sub_wr_stuck_sticky` | synth-B backstop fired (write). |
+| `[7:5]` | `sub_wr_os_hwm` | outstanding-write high-water mark. |
+| `[4]` | `pipe_hprot_r[2]` | bufferable / EWR. |
+| `[3:1]` | `sub_wr_os_ctr` | outstanding-write count (live). |
+| `[0]` | `xhb_sub_hreadyout_raw` | live bridge-ready. |
+
+**Bit-allocation note (2026-08-24, carried from the RTL).** TL-042 and TL-044 were
+developed independently against the same spare pool and both originally claimed
+`[12]`. Landing order on this branch gave TL-042 `[12]`; TL-044 shifted up to
+`[13]`/`[14]`. Neither simulation suite reads the packed word — both probe the RTL
+signals by name — so this is a SILICON/APB contract change only, and the host
+decoders are the only thing that can get it wrong.
+
+### Why `[12]`/`[13]`/`[14]` had to be decoded on the host
+
+Until 2026-09-11 `grep -rl 'sub_wr_hol\|xhb_dead' pynq_host` returned **nothing**.
+Two watchdogs and a permanent containment latch shipped with no host tool able to
+report that they had fired. The consequence is not cosmetic: TL-044's premise is
+an XHB500 port parked behind *healthy* FC nodes, so **Region F (`0x21E0`) reads
+clean right through it** and `health_snapshot.py` printed `RESULT: HEALTHY
+(exit 0)` for a die that was retiring every transfer with a bounded AHB ERROR.
+`0x21F8` is the only place that state is visible.
+
+### Host decoders (all marker-gated on `0xB5`)
+
+| tool | what it does with the plane |
+|---|---|
+| `pynq_host/scripts/health_snapshot.py` | reads `0x21F8`, renders every field, and FAULTs (exit 1) on any of `[8]`..`[14]`. An absent marker is COULD-NOT-EVALUATE (exit 2), never HEALTHY; `--allow-missing-witness` is the explicit opt-out, mirroring `--allow-missing-regionf`. |
+| `pynq_host/scripts/eth_sysval_board.py` | `obs` mode emits `ext_stall_err` / `wr_hol_stuck` / `xhb_dead` / `xhb_dead_perm`; absent marker -> `None`, never `0`. |
+| `pynq_host/scripts/kr260_sysval.py` | `healthy()` requires the marker present and the containment triple all-zero; `witness_faults()` renders the reason in words. A *missing key* (board script older than this decode) is also not-healthy — T1_provenance is the test that names that cause. |
+| `pynq_host/scripts/kr260_recover_gate.py` | `link_healthy()` and the wedge inducer both gate on the full set `stall_stuck / synth_b / wr_hol_stuck / xhb_dead / xhb_dead_perm`; an absent marker is not-healthy. |
+| `pynq_host/scripts/kr260_reliability_sweep.py` | records all three in the JSONL/CSV artefacts (report-only). |
+| `pynq_host/scripts/kr260_afi.sh` | prints the bits alongside the deploy-time marker canary (report-only). |
+
+**Control:** `scripts/ci/tests/test_obs_witness_decode.py` — 50 checks over
+synthetic register words: each bit at the position the RTL packs it, no bleed
+between adjacent fields, the marker gate producing `None` rather than `0`, the
+verdict FAULTing on a clean Region F with a containment bit set, and
+`health_snapshot` / `kr260_sysval` agreeing on the same words. Runs in
+`make selfcheck_gates`. Proven red two ways on 2026-09-11: transposing the
+`[13]`/`[14]` expectation gives 4 failures, and mutating the production decode to
+fail open on an absent marker gives 3.
 
 ## Sim-proof plan (before David lands)
 - (1) cocotb APB-read: drive slv_apb_* at paddr 0x1A0 and 0x1F8; assert rdata = rxcap0 / xhb_sub_obs (not regionC). Negative: pre-edit the same reads return Region C. Model on `cocotb/tidelink_apb_regs/test_perf_region_decode.py`.

@@ -11,7 +11,9 @@
 #       would leave a board bricked; so we refuse to induce a wedge otherwise).
 #   1. drive a WEDGE-SAFE write soak on die_a until a wedge is detected
 #        - a write-chunk ssh timeout          (== PS-bus WEDGE), or
-#        - 0x21F8 witness bit10 (stall_stuck) | bit8 (synth_b), IF witness_present, or
+#        - 0x21F8 witness bit10 (stall_stuck) | bit8 (synth_b) |
+#          bit12 (wr_hol_stuck, TL-042) | bit13 (xhb_dead, TL-044) |
+#          bit14 (xhb_dead_perm, TL-044), IF witness_present, or
 #        - Region-F (0x21E0) fault (data_healthy=0 / wedge-sticky), IF regf_present
 #      or until WEDGE_CAP beats with no wedge.
 #   2. JTAG-POR the wedged die (por_recover.sh -> fpgahub socket; flock, MAX_POR,
@@ -45,6 +47,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "cov
 import cov_common as cc
 
 WITNESS_OFF = 0x21F8              # marker 0xB5: [8]synth_b [10]stall_stuck
+                                  #              [12]wr_hol_stuck (TL-042)
+                                  #              [13]xhb_dead      (TL-044)
+                                  #              [14]xhb_dead_perm (TL-044)
 WITNESS_MARKER = 0xB5
 
 
@@ -90,7 +95,30 @@ def read_witness(ip):
     present = ((v >> 24) & 0xFF) == WITNESS_MARKER
     return {"raw": v, "present": present,
             "stall_stuck": (v >> 10) & 1 if present else None,
-            "synth_b": (v >> 8) & 1 if present else None}
+            "synth_b": (v >> 8) & 1 if present else None,
+            # TL-042 / TL-044 containment plane (rev2). Same 0xB5 marker gate:
+            # absent marker -> None ("could not read"), never 0 ("quiet").
+            "wr_hol_stuck": (v >> 12) & 1 if present else None,
+            "xhb_dead": (v >> 13) & 1 if present else None,
+            "xhb_dead_perm": (v >> 14) & 1 if present else None}
+
+
+# The witness bits that mean "this die is NOT recovered". xhb_dead / xhb_dead_perm
+# are TL-044 containment: the XHB500 port is parked and every transfer to it is
+# being retired with a bounded AHB ERROR *by design*. Region F reads healthy right
+# through it -- the FC nodes are fine -- so this word is the only place a POR gate
+# can see it. wr_hol_stuck is the TL-042 head-of-line write-age watchdog.
+WITNESS_WEDGE_BITS = ("stall_stuck", "synth_b", "wr_hol_stuck",
+                      "xhb_dead", "xhb_dead_perm")
+
+
+def witness_set(w, bits):
+    """The named bits that are SET. Marker-gated: an absent plane reports nothing
+    set, and the callers below test `present` separately, so 'unreadable' is never
+    silently the same as 'quiet'."""
+    if not w.get("present"):
+        return []
+    return [b for b in bits if w.get(b)]
 
 
 def safe_regf(ip, tag=""):
@@ -115,9 +143,15 @@ def link_healthy():
         if (d.get("tgt_wsticky") or 0) or (d.get("ini_wsticky") or 0):
             return False, "%s wedge-sticky latched" % tag
         w = read_witness(ip)
-        if w.get("present") and w.get("stall_stuck"):
-            return False, "%s witness stall_stuck=1" % tag
-    return True, "FCSM=4 both, Region-F present+healthy+no-sticky, witness stall==0"
+        if not w.get("present"):
+            return False, ("%s 0x21F8 witness marker absent (CC-3: the "
+                           "TL-042/TL-044 containment plane could not be read, "
+                           "which is not healthy)" % tag)
+        hit = witness_set(w, WITNESS_WEDGE_BITS)
+        if hit:
+            return False, "%s witness %s" % (tag, "=1 ".join(hit) + "=1")
+    return True, ("FCSM=4 both, Region-F present+healthy+no-sticky, witness "
+                  "present and quiet (stall/synth_b/wr_hol/xhb_dead/perm all 0)")
 
 
 # --- deliberate wedge inducer (bounded, timeout-wrapped, RO gates between) ---
@@ -138,8 +172,10 @@ def induce_wedge(cap, chunk, base):
         w = read_witness(cc.DIE_A_IP)
         if w.get("timeout"):
             return cc.DIE_A_IP, "witness read WEDGED @beat %d" % beats, beats
-        if w.get("present") and (w.get("stall_stuck") or w.get("synth_b")):
-            return cc.DIE_A_IP, "witness bit10|bit8 set @beat %d" % beats, beats
+        hit = witness_set(w, WITNESS_WEDGE_BITS)
+        if hit:
+            return cc.DIE_A_IP, ("witness %s set @beat %d"
+                                 % ("+".join(hit), beats)), beats
         d = safe_regf(cc.DIE_A_IP)
         if d.get("timeout"):
             return cc.DIE_A_IP, "Region-F read WEDGED @beat %d" % beats, beats

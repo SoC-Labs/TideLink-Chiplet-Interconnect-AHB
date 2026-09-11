@@ -7,6 +7,8 @@
 # Tests (build spec 2026-08-08), all wedge-safe by construction:
 #   T1 provenance   : board ~/td/scripts/*.py sha256 == repo (RO)
 #   T2 obs_probe    : marker-gated 0x21E0/0x21F8/0x21E8 + fcsm/cal (RO)
+#                     0x21F8 includes the TL-042/TL-044 containment plane
+#                     ([12] wr_hol_stuck, [13] xhb_dead, [14] xhb_dead_perm)
 #   T3 delivery_soak: die_a write N -> die_b LOCAL verify N (verify cannot wedge)
 #   T6 endurance    : T3 repeated to MAX_BEATS in chunks, Region-F gate each chunk
 #   T10 read_soak   : die_b seed_local -> die_a read over link in <=CHUNK chunks,
@@ -258,14 +260,58 @@ def obs(host):
     return None
 obs.last = None
 
+# 0x21F8 witness bits this harness gates on. The [12]/[13]/[14] triple is the
+# TL-042 / TL-044 containment plane added on rev2/integration
+# (src/rtl/tidelink_top.sv:2178). Any of them set means the design has ENGAGED a
+# containment or a watchdog: the link is not healthy even if Region F still reads
+# clean, which is precisely the case Region F cannot see (TL-044's whole premise
+# is an XHB500 park that the FC nodes report as healthy).
+WITNESS_FAULT_BITS = ("wr_hol_stuck", "xhb_dead", "xhb_dead_perm")
+
+
 def healthy(o):
-    """Region-F clean AND fcsm=4 (marker-gated; unknown marker => not healthy)."""
+    """Region-F clean AND fcsm=4 AND the 0x21F8 containment plane quiet.
+
+    MARKER-GATED, FAIL-CLOSED, in both directions:
+      * an absent Region-F (0xAD) or witness (0xB5) marker means the plane could
+        not be read, which is NOT healthy;
+      * a witness field that is MISSING from the board's JSON (an
+        eth_sysval_board.py older than the TL-042/TL-044 decode) is likewise not
+        healthy -- it is "this board cannot tell me", not "this board says 0".
+        T1_provenance is the test that names that cause: it sha256s the board's
+        copy of the script against the repo's.
+    """
     if not o: return False
     if o.get("fcsm") != 4 or o.get("cal") != 1: return False
     if not o.get("regf_present"): return False
     if o.get("data_healthy") != 1: return False
     if (o.get("wedge_tgt") or 0) != 0 or (o.get("wedge_ini") or 0) != 0: return False
+    if not o.get("witness_present"): return False
+    for b in WITNESS_FAULT_BITS:
+        if o.get(b) != 0: return False
     return True
+
+
+def witness_faults(o):
+    """The containment bits that are set / unreadable, in words. Reporting only."""
+    out = []
+    if not o:
+        return ["no obs"]
+    if not o.get("witness_present"):
+        return ["0x21F8 witness marker absent (expect 0xB5) — the TL-042/TL-044 "
+                "containment plane could not be read"]
+    names = {"wr_hol_stuck":  "TL-042 head-of-line write-age watchdog EXPIRED (0x21F8[12])",
+             "xhb_dead":      "TL-044 XHB500 declared DEAD — port in bounded-error "
+                              "containment (0x21F8[13])",
+             "xhb_dead_perm": "TL-044 containment latched PERMANENTLY (0x21F8[14])"}
+    for b in WITNESS_FAULT_BITS:
+        v = o.get(b)
+        if v is None:
+            out.append("%s: NOT REPORTED by this board script (stale "
+                       "eth_sysval_board.py — see T1_provenance)" % b)
+        elif v:
+            out.append(names[b])
+    return out
 
 def por_die_a():
     cmd = ("curl -sS --max-time 90 --unix-socket /run/fpgahub/fpgahub.sock -X POST "

@@ -41,6 +41,15 @@ def rf(marker=0xAD, healthy=1, tgt_ws=0, ini_ws=0):
         | ((tgt_ws & 0x1F) << 10) | ((ini_ws & 0x1F) << 15)
 
 
+def wt(marker=0xB5, hreadyout=1, wr_os=0, hwm=0, synth_b=0, wr_err=0,
+       stall_stuck=0, ext_stall=0, wr_hol=0, dead=0, dead_perm=0):
+    """The 0x21F8 witness word. Default: present and completely quiet."""
+    return ((marker & 0xFF) << 24) | ((dead_perm & 1) << 14) | ((dead & 1) << 13) \
+        | ((wr_hol & 1) << 12) | ((ext_stall & 1) << 11) | ((stall_stuck & 1) << 10) \
+        | ((wr_err & 1) << 9) | ((synth_b & 1) << 8) | ((hwm & 7) << 5) \
+        | ((wr_os & 7) << 1) | (hreadyout & 1)
+
+
 CASES = [
     # (label, swi, status, regf, allow_missing, expected exit)
     ("all good, Region-F present+healthy",
@@ -82,7 +91,9 @@ LABELS = {EXIT_HEALTHY: "HEALTHY(0)", EXIT_FAULT: "FAULT(1)",
 def main():
     failures = 0
     for label, s, st, r, allow, want in CASES:
-        d = decode(s, st, 4096, 0, r)
+        # A quiet, PRESENT witness word throughout: these cases are about the
+        # Region-F (C3) verdict, and a missing witness plane would mask it.
+        d = decode(s, st, 4096, 0, r, wt())
         rc, verdict_label, reasons = evaluate(d, allow_missing_regionf=allow)
         if rc == want:
             print("  PASS  %-52s -> %s" % (label, LABELS[rc]))
@@ -93,7 +104,7 @@ def main():
             print("        verdict=%r reasons=%r" % (verdict_label, reasons))
 
     # The opt-out label must NOT contain the string consumers grep for.
-    d = decode(swi(), 0x0, 4096, 0, rf(marker=0x00))
+    d = decode(swi(), 0x0, 4096, 0, rf(marker=0x00), wt())
     _rc, lbl, _r = evaluate(d, allow_missing_regionf=True)
     if "HEALTHY" in lbl:
         failures += 1
@@ -103,7 +114,27 @@ def main():
         print("  PASS  --allow-missing-regionf label (%r) does not read as HEALTHY"
               % lbl)
 
-    total = len(CASES) + 1
+    # THE TL-042/TL-044 ROW. Region F spotless, fcsm=4, cal=1 — and the XHB500
+    # port is in containment. Region F CANNOT see this (healthy FC nodes behind a
+    # parked bridge is TL-044's premise), so before 2026-09-11 this exact state
+    # printed "RESULT: HEALTHY (exit 0)".
+    for label, word, want in (
+            ("xhb_dead=1 behind a clean Region F", wt(dead=1), EXIT_FAULT),
+            ("xhb_dead_perm=1 behind a clean Region F", wt(dead_perm=1), EXIT_FAULT),
+            ("wr_hol_stuck=1 behind a clean Region F", wt(wr_hol=1), EXIT_FAULT),
+            ("witness marker absent -> COULD-NOT-EVALUATE",
+             wt(marker=0x00), EXIT_COULD_NOT_EVALUATE),
+            ("quiet witness -> HEALTHY", wt(), EXIT_HEALTHY)):
+        d = decode(swi(), 0x0, 4096, 0, rf(), word)
+        rc, _lbl, reasons = evaluate(d)
+        if rc == want:
+            print("  PASS  %-52s -> %s" % (label, LABELS[rc]))
+        else:
+            failures += 1
+            print("  FAIL  %-52s -> %s (wanted %s)" % (label, LABELS[rc], LABELS[want]))
+            print("        reasons=%r" % (reasons,))
+
+    total = len(CASES) + 1 + 5
     if total < 10:
         print("COULD-NOT-EVALUATE: only %d cases" % total)
         return 2

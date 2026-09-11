@@ -2,6 +2,7 @@
 > Every claim is line-cited at the review point `origin/main` **5e8bdb5a**; lines prefixed `rev2:` cite the candidate `rev2/integration` **cba9774d**. Dated 2026-09-09.
 > This text has been **redacted** before landing in git: credentials, board and jump-host IPs, vendor release/drop codes, EDA and PDK install paths and user home
 > directories are replaced with placeholders (`<REDACTED-IP>`, `<ARM-IP-FAMILY>`, `<ARM-CMSDK-DROP>`, `<EDA-INSTALL>`, `<PHYS-IP-PATH>`, `<MEM-COMPILER-PATH>`, `$WORKTREES`).
+> `<FORMER-USER>` replaces a former colleague's username; the grep recipes that cite it were run against the real string and returned zero hits.
 > Because of that redaction some evidence pointers below are generic — a placeholder stands where a concrete host, credential or absolute path was named.
 > The `file:line` citations into this repository are unaffected and remain exact.
 
@@ -1524,7 +1525,7 @@ Verified: `d0a977aa..e6aaa82f` = 14 commits, `e6aaa82f..d0a977aa` = 13; `e6aaa82
 - No firmware PHY retrain (calibrated-once): `calibrated_once_q` POR-only latch (FIX1 gates it on `!validation_timed_out`); in-situ `SWI_FORCE_RECAL` wedges die_a (7 recals 0 lands). Data-mode wedge needs both-die POR (TL-029 waiver). **Open.**
 
 ### 2.12 Public-repo exposure
-- `syn/asic/common.mk` at 5e8bdb5a: **clean** — site paths moved to untracked `site.env` (`site.env.example` tracked); `dwn1c21` = 0 hits; PDK path grep in `syn/` = only generic library family names (`<STDCELL-LIB>`, `<PROCESS-NODE>_TECH_PATH` variable). `affbda14` ✔ on main (equivalent of `32d20a98`). **FIXED on main for PDK/home paths.**
+- `syn/asic/common.mk` at 5e8bdb5a: **clean** — site paths moved to untracked `site.env` (`site.env.example` tracked); `<FORMER-USER>` = 0 hits; PDK path grep in `syn/` = only generic library family names (`<STDCELL-LIB>`, `<PROCESS-NODE>_TECH_PATH` variable). `affbda14` ✔ on main (equivalent of `32d20a98`). **FIXED on main for PDK/home paths.**
 - **Board credential + IPs still in public history:** 18 files contain the board password string at 5e8bdb5a **and at rev2/integration** (count only; value deliberately not printed); 41 files contain the two board IPs; 11 commits in history touch the password string. Removal `60637105` is on **rev2/hygiene only**. History rewrite/rotation outstanding. **Verified (counts).**
 
 ### 2.13 PTP (F13), PHC hop, mailbox; PHY BIST (F19)
@@ -1721,7 +1722,7 @@ All commands run read-only against `$WORKTREES/SoCLabs/td-bisect/baseline-5e8bdb
 | A17 | `grep -c socl_` deps vs local FCSM 0-4 | 0 vs 73/72/72/72/72 |
 | A18 | `git show 52c06677 --stat` + diff of `_GEN_115` | 6 files, +190/-12; Part-B unconditional; 68 lines mark_debug taps |
 | A19 | `git show 001b231d` message | new port `link_clk_div_ratio_i[2:0]`; `user_hsclk` rewired; default = combinational bypass |
-| A20 | `git grep -i dwn1c21 5e8bdb5a`; `tsmc` outside deps; drop-code regex in `syn/`; `site.env.example` tracked; `common.mk` head | 0; docs/prose only; only `<STDCELL-LIB>`/`<PROCESS-NODE>_TECH_PATH`; yes; site paths delegated to untracked `site.env` |
+| A20 | `git grep -i <FORMER-USER> 5e8bdb5a`; `tsmc` outside deps; drop-code regex in `syn/`; `site.env.example` tracked; `common.mk` head | 0; docs/prose only; only `<STDCELL-LIB>`/`<PROCESS-NODE>_TECH_PATH`; yes; site paths delegated to untracked `site.env` |
 | A21 | `git grep -l '<board password>' 5e8bdb5a \| wc -l`; same on rev2/integration; IPs; `git log -S<pw> --all \| wc -l` | 18; 18; 41; 11 (values not printed) |
 | A22 | `git log --oneline --since=2026-08-10 -- syn/asic` | `affbda14`, `9d1b2eaa` |
 | A23 | `set_case_analysis` in `1_init_design.tcl`; `constraints.sdc` header; `read_design.tcl` uncertainty block | :285-297 per-scenario; "PURE SDC only"; `current_scenario` before `set_clock_uncertainty` :278-281 |

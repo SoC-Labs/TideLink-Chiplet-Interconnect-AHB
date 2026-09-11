@@ -120,8 +120,12 @@ fi
 # package_ip in their own rsync'd tree, so this is skipped if all-remote.
 if [ "$ANY_LOCAL" -eq 1 ]; then
     echo "[$(ts)] package_ip (once, local) ..."
-    export ARM_IP_LIBRARY_PATH="${ARM_IP_LIBRARY_PATH:-/research/AAA/ip_library}"
-    export CMSDK_DIR="${CMSDK_DIR:-$ARM_IP_LIBRARY_PATH/BP210/BP210-BU-00000-r1p1-00rel0}"
+    # shellcheck disable=SC1091
+    [ -f "$TIDELINK_HOME/site.env" ] && . "$TIDELINK_HOME/site.env"
+    # No default path: see fpga/scripts/farm_build.sh and site.env.example.
+    : "${ARM_IP_LIBRARY_PATH:?not set — it locates the Arm IP library root. Set it in site.env or export it; there is no default.}"
+    : "${CMSDK_DIR:?not set — it locates the Arm CMSDK package root (the one shipping cmsdk_fpga_sram.v). Set it in site.env or export it; the package directory name carries a release code.}"
+    export ARM_IP_LIBRARY_PATH CMSDK_DIR
     export CMSDK_FPGA_SRAM_V="${CMSDK_FPGA_SRAM_V:-$CMSDK_DIR/logical/models/memories/cmsdk_fpga_sram.v}"
     # TIDELINK_PHY_V2 (2026-06-30): forward to the SHARED package_ip so it
     # packages the V2 IP (with the autonomous-winscan FSM). set_env.sh does NOT

@@ -28,7 +28,7 @@
 #                                         pass.
 #
 # Run (always clean sim_build first):
-#   cd /home/dam1n19/SoCLabs/td-bisect/sim-robust && source set_env.sh
+#   cd <your tidelink worktree> && source set_env.sh
 #   rm -rf cocotb/sim_robust/sim_build
 #   make -C cocotb/sim_robust                        # default: fingerprint
 #   make -C cocotb/sim_robust MODULE=test_adversarial_state
@@ -39,7 +39,7 @@
 SIM             = vcs
 TOPLEVEL_LANG   = verilog
 
-TIDELINK_HOME  ?= $(realpath $(CURDIR)/../..)
+TIDELINK_HOME  ?= $(realpath $(CURDIR)/../../..)
 export TIDELINK_HOME
 
 VERILOG_SOURCES = $(CURDIR)/tb_calibrator_robust.sv \

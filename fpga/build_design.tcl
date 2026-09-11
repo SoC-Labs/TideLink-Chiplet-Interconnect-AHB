@@ -236,7 +236,7 @@ update_ip_catalog
 # REUSED across builds instead of re-synthesised on every `create_project -force`.
 # Survives the project wipe (cache lives outside the project dir). Keyed on IP
 # config+part+tool, so a genuine IP-config change correctly misses. Zero effect on
-# placement/routing/timing (the pad_clk_rx eye is untouched). NEVER under /research/AAA.
+# placement/routing/timing (the pad_clk_rx eye is untouched). NEVER under $ARM_IP_LIBRARY_PATH.
 if { [info exists ::env(FPGA_IP_CACHE_DIR)] && $::env(FPGA_IP_CACHE_DIR) ne "" } {
     file mkdir $::env(FPGA_IP_CACHE_DIR)
     config_ip_cache -use_cache_location $::env(FPGA_IP_CACHE_DIR)

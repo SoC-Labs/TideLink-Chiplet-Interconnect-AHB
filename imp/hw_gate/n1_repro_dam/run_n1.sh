@@ -5,7 +5,9 @@
 set -e
 MODE="${1:?usage: run_n1.sh <fix|nofix>}"
 LOG2="${N1_TIMEOUT_LOG2:-11}"
-REPO=/home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet/tidelink
+# Derived from this script's own location, so the runner works from any
+# checkout rather than from one person's home directory.
+REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 MYDIR="$REPO/imp/hw_gate/n1_repro_dam"
 cd "$REPO"
 set +u

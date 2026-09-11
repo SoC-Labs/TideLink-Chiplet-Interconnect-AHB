@@ -3,7 +3,11 @@ TOPLEVEL_LANG   = verilog
 
 TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
-export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
+# Site configuration: per-machine tool + IP roots, with NO default path.
+# mk/site.mk reads site.env and names anything missing. site.env.example
+# says what each variable locates.
+SITE_VARS_REQUIRED += CMSDK_DIR
+include $(TIDELINK_HOME)/mk/site.mk
 
 # ── Config select: 'tree' (the DEFAULT, real shared RTL) or 'unfixed' ─────────
 # POLARITY FLIPPED 2026-07-19, when docs/proposals/twin2_fix.patch was APPLIED:

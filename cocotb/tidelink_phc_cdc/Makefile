@@ -4,6 +4,10 @@ TOPLEVEL_LANG   = verilog
 TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
 
+# Site configuration: per-machine tool roots, with NO default path.
+# Provides $(SITE_REQUIRE); see mk/site.mk and site.env.example.
+include $(TIDELINK_HOME)/mk/site.mk
+
 VERILOG_SOURCES = $(CURDIR)/tb_top.sv \
                   $(TIDELINK_HOME)/src/rtl/tidelink_phc_cdc.sv
 
@@ -22,10 +26,9 @@ endif
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
-VERDI_HOME = /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
-
 .PHONY: gui
 gui: $(SIM_BUILD)/simv
+	@$(SITE_REQUIRE) VERDI_HOME "the Verdi install root (waveform GUI)"
 	unset NOVAS_HOME; VERDI_HOME=$(VERDI_HOME) MODULE=$(MODULE) \
 	TESTCASE=$(TESTCASE) COCOTB_RESOLVE_X=ZEROS \
 	$(SIM_BUILD)/simv -l sim.log -gui $(SIM_ARGS)

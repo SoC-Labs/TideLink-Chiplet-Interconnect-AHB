@@ -39,8 +39,8 @@ We expose io_pad and sample it cycle-by-cycle to characterise:
      the existing RTL has no idle path.
 
 Invocation:
-    cd /home/dam1n19/SoCLabs/td-bisect/td-interface-debug
-    source /home/dam1n19/SoCLabs/tidelink/set_env.sh
+    cd <your tidelink worktree>
+    source ./set_env.sh
     rm -rf cocotb/wav_d2d_gpio_tx/sim_build
     make -C cocotb/wav_d2d_gpio_tx
 """

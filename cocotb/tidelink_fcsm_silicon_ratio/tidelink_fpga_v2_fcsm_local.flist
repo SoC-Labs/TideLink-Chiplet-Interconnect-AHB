@@ -1,4 +1,22 @@
 // =============================================================================
+// ##  DO NOT DERIVE A TAPEOUT FLIST FROM THIS FILE.  ##
+//
+// This is the FPGA filelist. It DELIBERATELY re-points WlinkGenericFCSM 0-4
+// from deps/ to src/rtl/local_overrides/ so the FPGA build gets the recovery
+// FCSMs. That re-point is an FPGA-ONLY decision: per the 2026-07-29 hold, the
+// ASIC/tapeout flists keep those five files on the recovery-stripped deps/
+// copies, and that hold was RATIFIED as the tapeout decision on 2026-08-20.
+//
+// A generator that builds a tapeout filelist by reading THIS file silently
+// imports the FPGA choice into a tapeout netlist. That is not hypothetical:
+// the compute chiplet did exactly this (scripts/gen_resolved_flist.py) and
+// inherited the re-point without anyone deciding it. It is invisible in an RTL
+// diff, because the six override files are byte-identical to their deps/
+// counterparts -- it is a FLIST divergence, not an RTL fork, which is why it
+// survives review.
+//
+// The tapeout filelist is  flists/tidelink_top_full_asic_v2.flist.  Use it.
+// =============================================================================
 // tidelink_fpga_v2.flist — S3 PHY-swap build variant (V2) of the FPGA filelist
 //
 // V2 = the NEW shared GPIO-PHY component (deps/tidelink-phy, the
@@ -224,6 +242,14 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_2.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_20.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_21.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_23.v
+// TL-020 landmine defuse (2026-08-08): WavFIFO_23 (above) instantiates the PTP a2l
+// replay memory wlink_wlink_ptp_tl_a2l_48x4, which the Chisel memory generator never
+// emitted (siblings _48x16/_14x8 exist in deps/). Dormant only because the PTP FC node
+// is not elaborated by these tops; if it is enabled (TL-010) elaboration would abort
+// 'Cannot find cell'. This local_override behavioral model (copy of the sibling _48x16)
+// resolves it. ZERO current-netlist-impact (compiled, not elaborated). TAPEOUT: swap for
+// the tech SRAM macro if PTP is enabled -- David/TL-010.
+${TIDELINK_HOME}/src/rtl/local_overrides/wlink_wlink_ptp_tl_a2l_48x4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_3.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_5.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavFIFO_6.v
@@ -240,7 +266,7 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_10.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_2.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkCrcGen_8.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkEccSyndrome.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkEccSyndrome.v
 // V2 PHY SWAP: GPIO PHY wrapper from the shared PHY component — adds the
 // swi_word_pin_in / swi_word_pin_auto_en FIX-R ports (consumed by the
 // TIDELINK_PHY_V2 arm of local_overrides/Wlink.v) and drops link_tx_tx_idle.
@@ -256,7 +282,9 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayA
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayAddrSync_18.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_3.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_1.v
+// TL-027 a2l CDC self-latch fix (AW node _1): re-point deps->local_override so the
+// FPGA build carries the fix (added by 1112d63 but NOT wired into this flist). 2026-08-09.
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_1.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_10.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_11.v
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_12.v
@@ -267,9 +295,11 @@ ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_13.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_14.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_15.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_2.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_3.v
+// TL-027 a2l CDC self-latch fix (W node _3): re-point deps->local_override. 2026-08-09.
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_3.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_4.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_5.v
+// TL-027 a2l CDC self-latch fix (B node _5): re-point deps->local_override. 2026-08-09.
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_5.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_6.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_8.v
@@ -369,6 +399,21 @@ ${TIDELINK_HOME}/src/rtl/tidelink_rxclk_buf.sv
 // axi_chiplet_controller.sv (via the v2 shim below) for APB Region F
 // (OBS_AXI_NODES @ 0x21E0). Plain SV, no V2 deps — one definition for V1/V2.
 ${TIDELINK_HOME}/src/rtl/tidelink_axinode_obs.sv
+// SoC Labs I1 winscan / calibrator observability (2026-07-30): reads the
+// forwarded-clock alignment calibrator's winscan result (FSM state, cal_done,
+// validation-timeout, per-lane fault/lock, selected-lane eye) over the PS
+// backdoor into APB Region F slots 1-2 (WINSCAN_STAT @ 0x21E4, WINSCAN_EYE @
+// 0x21E8). Instantiated by axi_chiplet_controller.sv. Pure RO fan-out; ZERO
+// added flops in the rx_link_clk capture region (detect+CDC in apb_clk).
+${TIDELINK_HOME}/src/rtl/tidelink_winscan_obs.sv
+// SoC Labs I1 FC-emit / router-grant observability (2026-07-30): taps the
+// WlinkTxRouter boundary in the local-override Wlink.v -> Region F slots 3-4
+// (FCEMIT_STAT @ 0x21EC, FCEMIT_IDCNT @ 0x21F0). Gated by TIDELINK_FCEMIT_OBS,
+// which is defined PER-FILE in the v2 shims (v2_Wlink.v + v2_axi_chiplet_
+// controller.sv) so it survives Vivado IP packaging — NOT a flist +define+
+// (that mechanism is dropped by ipx::package_project, see banner). The leaf
+// module is listed unconditionally (dead-stripped when the define is off).
+${TIDELINK_HOME}/src/rtl/tidelink_fcemit_obs.sv
 ${TIDELINK_HOME}/src/rtl/v2shims/v2_axi_chiplet_controller.sv
 // Bug N7/N8 silicon observability override: adds obs_{delay_ctr,timeout_ctr,
 // init_wait,axl_state,txn_step}_o output ports for APB Region C readback.
@@ -401,4 +446,11 @@ ${TIDELINK_HOME}/src/rtl/tidelink_perf.sv
 // tidelink_top's TIDELINK_PHY_V2 arm RAZ-ties Region 10 (0x140-0x15F).
 
 // ── Top-level wrapper ────────────────────────────────────────────────────────
+// ── Link-clock divider — must come before the tidelink_top shim, which
+//    `include`s the real tidelink_top.sv and therefore instantiates it.
+${TIDELINK_HOME}/src/rtl/tidelink_link_clk_div.sv
+// ── Link-rate control registers (APB quadrant 11) — instantiated by
+//    tidelink_top.sv only when LINK_RATE_REGS_PRESENT=1, so it must be
+//    compiled before it. Harmless (unreferenced) in the default OFF build.
+${TIDELINK_HOME}/src/rtl/tidelink_link_rate_regs.sv
 ${TIDELINK_HOME}/src/rtl/v2shims/v2_tidelink_top.sv

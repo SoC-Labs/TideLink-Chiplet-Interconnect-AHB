@@ -47,7 +47,7 @@ its opt-OUT `else). The tests:
      (including the all-ones / walking patterns) with zero delay.
 
 Invocation (from repo root):
-    cd /home/dam1n19/td_idelay_wt && source set_env.sh
+    cd <your tidelink worktree> && source set_env.sh
     rm -rf cocotb/tidelink_idelay_rx/sim_build
     make -C cocotb/tidelink_idelay_rx
 

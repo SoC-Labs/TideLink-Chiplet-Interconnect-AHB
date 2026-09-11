@@ -7,9 +7,21 @@
 SIM             = vcs
 TOPLEVEL_LANG   = verilog
 
-TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
+TIDELINK_HOME ?= $(realpath $(CURDIR)/../../..)
 export TIDELINK_HOME
-export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
+# Site configuration: per-machine tool + IP roots, with NO default path.
+# mk/site.mk reads site.env and names anything missing. site.env.example
+# says what each variable locates.
+SITE_VARS_REQUIRED += CMSDK_DIR
+# USE_FPGA_MODELS=1 pulls in the Xilinx unisims library, so it needs the
+# Vivado install root too. Named here (before the include) rather than at
+# the ifeq below, because mk/site.mk reads SITE_VARS_REQUIRED as it is
+# included. A command-line USE_FPGA_MODELS=1 is set before any of this runs.
+USE_FPGA_MODELS ?= 0
+ifeq ($(USE_FPGA_MODELS),1)
+  SITE_VARS_REQUIRED += XILINX_VIVADO
+endif
+include $(TIDELINK_HOME)/mk/site.mk
 # Project-local cmsdk_fpga_sram.v stub (Corstone-101 BP210 omission workaround).
 export CMSDK_FPGA_SRAM_V ?= $(TIDELINK_HOME)/imp/fpga/tidelink_ip/src/cmsdk_fpga_sram.v
 
@@ -34,9 +46,7 @@ COMPILE_ARGS += $(TIDELINK_HOME)/src/rtl/tidelink_ptp.sv
 #
 #   make USE_FPGA_MODELS=1 MODULE=test_phc_hw_sync_pair
 # ---------------------------------------------------------------------------
-USE_FPGA_MODELS ?= 0
 ifeq ($(USE_FPGA_MODELS),1)
-  XILINX_VIVADO ?= /apps/Xilinx/Vivado/2024.1
   COMPILE_ARGS += +define+PHC_PAIR_USE_FPGA_MODELS
   COMPILE_ARGS += -y $(XILINX_VIVADO)/data/verilog/src/unisims +libext+.v
   COMPILE_ARGS += $(XILINX_VIVADO)/data/verilog/src/glbl.v

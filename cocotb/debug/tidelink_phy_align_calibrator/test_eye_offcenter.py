@@ -46,7 +46,7 @@ THREE VARIANTS:
 INVOCATION
 ==========
 
-    cd /home/dam1n19/SoCLabs/td-bisect/td-sim-eyecenter && source set_env.sh
+    cd <your tidelink worktree> && source set_env.sh
     cd cocotb/tidelink_phy_align_calibrator
     rm -rf sim_build
     make MODULE=test_eye_offcenter

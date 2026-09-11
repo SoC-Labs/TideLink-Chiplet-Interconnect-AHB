@@ -19,11 +19,11 @@
 #
 # Run from mapstone-dev (where the daemon lives):
 #
-#    sudo /home/dam1n19/SoCLabs/tidelink/fpga/scripts/setup_fpgahub_tidelink.sh
+#    sudo <tidelink>/fpga/scripts/setup_fpgahub_tidelink.sh
 #
 # Or dry-run:
 #
-#    sudo /home/dam1n19/SoCLabs/tidelink/fpga/scripts/setup_fpgahub_tidelink.sh --dry-run
+#    sudo <tidelink>/fpga/scripts/setup_fpgahub_tidelink.sh --dry-run
 #
 # Optional env:
 #   MANIFEST_PATH      — path to fpgahub.toml on this host. Default: try the

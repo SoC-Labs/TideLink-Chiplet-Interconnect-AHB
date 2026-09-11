@@ -12,7 +12,11 @@ TOPLEVEL_LANG   = verilog
 
 TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
-export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
+# Site configuration: per-machine tool + IP roots, with NO default path.
+# mk/site.mk reads site.env and names anything missing. site.env.example
+# says what each variable locates.
+SITE_VARS_REQUIRED += CMSDK_DIR
+include $(TIDELINK_HOME)/mk/site.mk
 
 VERILOG_SOURCES = $(CURDIR)/tb_top.sv $(CURDIR)/pad_skid.sv
 
@@ -44,10 +48,9 @@ CUSTOM_COMPILE_DEPS += $(_flist_deps)
 
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
-VERDI_HOME = /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
-
 .PHONY: gui
 gui: $(SIM_BUILD)/simv
+	@$(SITE_REQUIRE) VERDI_HOME "the Verdi install root (waveform GUI)"
 	unset NOVAS_HOME; VERDI_HOME=$(VERDI_HOME) MODULE=$(MODULE) \
 	TESTCASE=$(TESTCASE) COCOTB_RESOLVE_X=ZEROS \
 	$(SIM_BUILD)/simv -l sim.log -gui $(SIM_ARGS)

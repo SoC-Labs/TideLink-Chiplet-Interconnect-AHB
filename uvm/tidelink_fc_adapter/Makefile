@@ -8,10 +8,12 @@
 #   RTL simulation:   make run / run_all / coverage
 ###############################################################################
 
-# Tool paths
-VCS_HOME    ?= /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2
-VERDI_HOME  ?= /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
-VIP_HOME    ?= /eda/synopsys/2022-23/RHELx86/VC-VIP-SOC_2022.12
+# ── Site configuration ──────────────────────────────────────────────────────
+# Tool installs and IP roots are per-machine facts with NO default: see
+# mk/site.mk and site.env.example. `source set_env.sh` sets them too.
+TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
+SITE_VARS_REQUIRED += VCS_HOME VIP_HOME
+include $(TIDELINK_HOME)/mk/site.mk
 AMBA_HOME    = $(VIP_HOME)/vip/svt/amba_svt/latest
 SVT_HOME     = $(VIP_HOME)/vip/svt/common/latest
 

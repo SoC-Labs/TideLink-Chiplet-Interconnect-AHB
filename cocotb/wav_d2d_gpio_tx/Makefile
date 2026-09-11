@@ -8,8 +8,8 @@
 #
 # Run (always clean sim_build first — VCS does NOT rebuild simv on RTL edits):
 #
-#   cd /home/dam1n19/SoCLabs/td-bisect/td-interface-debug
-#   source /home/dam1n19/SoCLabs/tidelink/set_env.sh
+#   cd <your tidelink worktree>
+#   source ./set_env.sh
 #   rm -rf cocotb/wav_d2d_gpio_tx/sim_build
 #   make -C cocotb/wav_d2d_gpio_tx
 # =============================================================================

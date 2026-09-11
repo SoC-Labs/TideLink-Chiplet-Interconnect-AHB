@@ -30,7 +30,7 @@ This unit test probes the FSM directly (we control io_tx_ready) to:
   * report cycle-by-cycle state/req_pstate/io_tx_en trajectory
 
 Invocation:
-    cd /home/dam1n19/SoCLabs/td-bisect/td-interface-debug
+    cd <your tidelink worktree>
     source set_env.sh
     rm -rf cocotb/wlink_tx_pstate_ctrl/sim_build
     make -C cocotb/wlink_tx_pstate_ctrl

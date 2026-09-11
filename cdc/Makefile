@@ -1,15 +1,17 @@
 export TIDELINK_HOME := $(realpath $(dir $(lastword $(MAKEFILE_LIST)))/..)
-export CMSDK_DIR     ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
+# Site configuration: per-machine tool + IP roots, with NO default path.
+# mk/site.mk reads site.env and names anything missing. site.env.example
+# says what each variable locates.
+SITE_VARS_REQUIRED += CMSDK_DIR SPYGLASS_HOME
+include $(TIDELINK_HOME)/mk/site.mk
 
-# cmsdk_fpga_sram.v is missing from the Corstone-101 BP210 install used in CI;
-# fall back to the standalone BP210 install when not present in CMSDK_DIR.
-CMSDK_FPGA_SRAM_V ?= $(if $(wildcard $(CMSDK_DIR)/logical/models/memories/cmsdk_fpga_sram.v),\
-                       $(CMSDK_DIR)/logical/models/memories/cmsdk_fpga_sram.v,\
-                       $(ARM_IP_LIBRARY_PATH)/BP210/BP210-BU-00000-r1p1-00rel0/logical/models/memories/cmsdk_fpga_sram.v)
-export CMSDK_FPGA_SRAM_V
+# cmsdk_fpga_sram.v is absent from some CMSDK packages. mk/site.mk derives
+# CMSDK_FPGA_SRAM_V from CMSDK_DIR when the package ships it, and site.env
+# names it directly when it does not. (This used to hard-code a SECOND
+# release-coded Arm package as the fallback — the exact inventory disclosure
+# site.env.example exists to keep out of tracked files.)
 
-# ── SpyGlass tool ────────────────────────────────────────────────────────────
-SPYGLASS_HOME ?= /eda/synopsys/2022-23/RHELx86/SPYGLASS_2022.06-SP2/SPYGLASS_HOME
+# ── SpyGlass tool (SPYGLASS_HOME: required above, no default) ────────────────
 SPYGLASS      := $(SPYGLASS_HOME)/bin/spyglass
 
 # ── Target module (override: make cdc MODULE=tidelink_fifo) ──────────────────

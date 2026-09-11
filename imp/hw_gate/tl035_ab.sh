@@ -28,7 +28,7 @@ set -u
 ARM="${1:?usage: tl035_ab.sh <arm-name>}"
 : "${KR260_PASSWORD:?KR260_PASSWORD not set}"
 
-ETH=/home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet
+ETH="${CHIPLET_HOME:?not set — it locates the nanosoc-ethernet-chiplet superproject checkout. Set it in site.env or export it; there is no default.}"
 RUN="$ETH/tidelink/pynq_host/scripts/kr260_eth_run.sh"
 KB="$(cd "$(dirname "$0")" && pwd)/kb.sh"
 IP_A=10.22.24.159

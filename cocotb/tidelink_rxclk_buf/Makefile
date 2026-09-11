@@ -18,7 +18,7 @@
 # Run (always clean sim_build first — cocotb does NOT rebuild simv on RTL or
 # +define+ changes, so a stale simv would give a false PASS):
 #
-#   cd /home/dam1n19/td_idelay_wt && source set_env.sh
+#   cd <your tidelink worktree> && source set_env.sh
 #   rm -rf cocotb/tidelink_rxclk_buf/sim_build
 #   make -C cocotb/tidelink_rxclk_buf
 # =============================================================================

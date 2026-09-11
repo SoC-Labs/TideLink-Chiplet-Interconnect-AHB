@@ -50,7 +50,7 @@ does not fire read_complete or move any pointer prematurely -- the caller
 just waits longer, exactly like a normal AHB stall.
 
 But the underlying vendor SRAM model, src/rtl/fifo/fpga/tidelink_sram.sv ->
-cmsdk_fpga_sram.v (/research/AAA/ip_library/.../cmsdk_fpga_sram.v, read-only
+cmsdk_fpga_sram.v ($ARM_IP_LIBRARY_PATH/.../cmsdk_fpga_sram.v, read-only
 vendor IP, NOT modified here), registers its READ ADDRESS unconditionally,
 every cycle, regardless of CS:
 

@@ -5,7 +5,9 @@
 # byte 1 (word_count) and byte 0 (data_id). Reuses one sim_build so VCS compiles
 # once.
 cd "$(dirname "$0")"
-source /home/dam1n19/SoCLabs/tidelink-wip-ecc/set_env.sh >/dev/null 2>&1
+# This bench's own checkout — NOT a fixed worktree. Sourcing a sibling
+# worktree's set_env.sh silently tested a DIFFERENT tree's RTL.
+source ../../set_env.sh >/dev/null 2>&1
 export PATH="$VCS_HOME/bin:$PATH"
 export TIDELINK_PHY_V2=1
 LOG=/tmpdir/claude-74755/-home-dam1n19-SoCLabs-tidelink/991ee143-c452-4b4c-802d-d32480d9458a/scratchpad/ecc_diag

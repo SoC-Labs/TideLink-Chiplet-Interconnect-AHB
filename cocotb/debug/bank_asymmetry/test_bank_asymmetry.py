@@ -75,14 +75,14 @@ References
 ==========
 
   * project memory: project_tidelink_fpga_bringup.md (top RESOLVED section)
-  * /home/dam1n19/td_campaign/bringup_health_probe.log
+  * <campaign-log-dir>/bringup_health_probe.log
   * tidelink_phy_align_calibrator.sv §9.9 best-of-sweep block
   * commit 0d85843 (Agent A's best-of-sweep widest-eye latch)
 
 Invocation
 ==========
 
-    cd /home/dam1n19/td_idelay_wt && source set_env.sh
+    cd <your tidelink worktree> && source set_env.sh
     rm -rf cocotb/bank_asymmetry/sim_build
     make -C cocotb/bank_asymmetry
 

@@ -1163,7 +1163,7 @@ sim_gate_eth_m0:
 # M1 + shape-A additionally need the ETHERNET SUBSYSTEM's own env (ETH_SS_HOME,
 # ETHMAC_AHB_HOME, SOCLABS_NANOSOC_ARCH_TECH_DIR, ARM_CORTEXM0PLUS_IP_PATH,
 # ETHMAC_IP_DIR, HA1588_IP_DIR) — their flists reference the M0+ core, the
-# OpenCores EthMAC and HA1588 under /research/AAA (READ-ONLY, flist-referenced,
+# OpenCores EthMAC and HA1588 under $ARM_IP_LIBRARY_PATH (READ-ONLY, flist-referenced,
 # never modified). tidelink's own set_env.sh does not set those, so the gate
 # sources the subsystem's set_env.sh in a SUBSHELL. SIM_GATE_ETH_DEP checks the
 # checkout first, so a missing sibling is a one-line message in THIS suite's log
@@ -1984,3 +1984,42 @@ install-git-hooks:
 	fi; \
 	echo "install-git-hooks: running $$found"; \
 	"$$found" $(HOOK_INSTALL_ARGS)
+
+# =============================================================================
+# Site-path hygiene
+# =============================================================================
+# `make vendor-check` above is the SUPERSET scan and lives in a separate
+# repository (nanoSoC-ASIC-Toolkit), so a standalone TideLink clone cannot run
+# it. This one is in-tree and needs nothing but git + grep, so it runs
+# everywhere — including on a machine that has no EDA tools at all.
+#
+# It fails on two things in any tracked build file (Makefile, *.mk, *.sh,
+# *.tcl, *.py, *.pl):
+#
+#   * an absolute path under the `research`, `eda`, `apps` or `home` roots —
+#     one institution's filesystem layout, resolving on exactly one machine;
+#   * a revision-coded vendor drop name (BP210-...-r1p1-00rel0) — an inventory
+#     of what this site is licensed for.
+#
+# MEASURED 2026-09-11: this tree PASSES. It did not before the same commit
+# that added this target — ~80 bench Makefiles carried a `?=` default that
+# resolved on the lab host, so the "no default site path" policy that
+# set_env.sh and syn/asic/common.mk had carried since 2026-08-14 was
+# unenforced everywhere else. Exemptions live in scripts/ci/site_allowlist.txt
+# and each one must state a reason.
+.PHONY: site-check site-check-selftest site-check-scope
+
+site-check:
+	@$(CURDIR)/scripts/ci/site_check.sh
+
+## Prove the guard can go red before believing a green. Seeds each violation
+## class into a fixture and asserts the scanner fires — including the shell
+## default-value shape (`$${VAR:-<absolute site path>}`) that the first draft
+## of the scanner read as clean.
+site-check-selftest:
+	@$(CURDIR)/scripts/ci/tests/test_site_check.sh
+
+## What site-check actually reads. Useful when a file you expected to be
+## covered is not: the scope is tracked build files only, never docs.
+site-check-scope:
+	@$(CURDIR)/scripts/ci/site_check.sh --list-scope

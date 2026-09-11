@@ -5,7 +5,7 @@
 # the deterministic AW CRC inject and uploads the CSV BEFORE the errinject's ~60s-timeout POR.
 # Good-citizen leasing. Wedge-safe. Reads the decision tree from the CSV at the end.
 set -u
-ROOT=/home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet
+ROOT="${CHIPLET_HOME:?not set — it locates the nanosoc-ethernet-chiplet superproject checkout that holds this tidelink worktree. Set it in site.env or export it; there is no default.}"
 SC="$ROOT/tidelink/pynq_host/scripts"
 SCR=/tmpdir/claude-74755/-home-dam1n19-SoCLabs-nanosoc-ethernet-chiplet/e31cf0db-becf-4762-a881-c1c17e74fb93/scratchpad
 export TIDELINK_HOME="$ROOT/tidelink"; export PYTHONPATH="$SC/coverage"

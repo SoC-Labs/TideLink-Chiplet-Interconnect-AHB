@@ -17,7 +17,7 @@
 #   * cocotb/wavd2d_gpiorx_t3a_off/  USE_T3A=0, legacy free-run
 #
 # Run (always clean sim_build first):
-#   cd /home/dam1n19/td_idelay_wt && source set_env.sh
+#   cd <your tidelink worktree> && source set_env.sh
 #   rm -rf cocotb/wavd2d_gpiorx_t3a_timeout/sim_build
 #   make -C cocotb/wavd2d_gpiorx_t3a_timeout
 # =============================================================================

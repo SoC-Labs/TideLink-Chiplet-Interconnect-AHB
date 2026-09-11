@@ -23,10 +23,23 @@ FAIL line -- and overrides ENVS. No simulator, no RTL, about a second. The
 positive case (all-pass -> exit 0) is the negative control: a Makefile that
 failed unconditionally would satisfy the failing case on its own.
 
-THE CONTROL HAS TO BE ABLE TO GO RED. Point it at a pre-fix tree:
-    git worktree add --detach /tmp/prefix <commit-before-the-fix>
-    python3 scripts/ci/tests/test_regression_exit_code.py --repo /tmp/prefix
-The "one failing environment" case then reports rc=0 and this exits 1.
+THE CONTROL HAS TO BE ABLE TO GO RED, and the two halves go red against two
+DIFFERENT breaks. Measured 2026-09-11:
+
+  Against a pre-fix worktree (`git worktree add --detach <dir> <pre-fix commit>`
+  then `--repo <dir>`): 1/4 cases pass. The two summary cases and the -n case go
+  red -- "one environment FAILs -> rc=0" is the defect itself.
+
+  Against a copy whose run_env DRY-RUN GUARD is stripped but whose regression
+  recipe is intact (write the modified cocotb/Makefile under <dir>/cocotb/ and
+  pass `--repo <dir>`): 2/4 cases pass. Both dry-run cases go red, writing
+  .result and run.log for runs that never happened.
+
+The `-p -q` case is VACUOUSLY GREEN against a pre-fix tree and this is expected,
+not an oversight: pre-fix `regression` has no recipe at all, so make never
+traverses to the environment targets and nothing runs. It is a guard against
+re-breaking the CURRENT shape, and the guard-stripped copy above is what turns
+it red. Do not read its green on an old tree as evidence the guard is present.
 
 Run: python3 scripts/ci/tests/test_regression_exit_code.py [--repo DIR]
 """
@@ -99,10 +112,16 @@ def main():
             print("        (and the summary table did not print)")
 
     # ── 3. a dry run must write nothing ──────────────────────────────────────
-    for flag, name in (("-n", "--dry-run"), ("-q", "--question")):
+    # The question-mode case is spelled `-p -q`, not bare `-q`, because that is
+    # the incantation that actually fired: plain `-q` stops at the first
+    # out-of-date prerequisite, but `-p` forces make to walk the whole database
+    # and so runs every $(MAKE)-bearing recipe. `make -C cocotb -p -q
+    # regression`, issued 2026-09-11 only to READ the database, is what
+    # overwrote all 31 <env>/.result files with FAIL.
+    for flags, name in ((["-n"], "--dry-run"), (["-p", "-q"], "--print-data-base --question")):
         with tempfile.TemporaryDirectory() as td:
             root = build_fixture(td, makefile)
-            subprocess.run(["make", "-C", str(root), flag, "regression",
+            subprocess.run(["make", "-C", str(root), *flags, "regression",
                             "ENVS=envgood envbad"],
                            capture_output=True, text=True, timeout=300)
             wrote = sorted(p.name + "/" + q.name
@@ -112,12 +131,12 @@ def main():
             ok = not wrote
             failures += 0 if ok else 1
             print("  %-4s `make %s regression` writes nothing (%s)"
-                  % ("PASS" if ok else "FAIL", flag, name))
+                  % ("PASS" if ok else "FAIL", " ".join(flags), name))
             if wrote:
                 print("        it wrote: %s" % ", ".join(wrote))
                 print("        GNU make runs $(MAKE) lines even under %s; the "
                       "sub-make does nothing, so the result is recorded as "
-                      "FAIL for a run that never happened." % flag)
+                      "FAIL for a run that never happened." % " ".join(flags))
 
     print("\nregression exit-code control: %d/%d cases passed" % (4 - failures, 4))
     return 1 if failures else 0

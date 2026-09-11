@@ -300,3 +300,26 @@ sim_build_sb_selftest/
 # blanket '*.rep' above would otherwise swallow every LVS fixture.
 # ---------------------------------------------------------------------------
 !ci/fixtures/**
+
+# ---------------------------------------------------------------------------
+# GENERATED bench file lists. cocotb/tidelink_a2l_replay_cdc/Makefile writes
+# these at MAKEFILE PARSE TIME:
+#
+#     $(shell echo "$(DUT_SRC)" > $(DUT_SRC_F))
+#
+# so they are rewritten by every `make` in that directory -- including `make -n`,
+# and including a make run purely to query a variable. They were tracked anyway,
+# which had two consequences, both measured on rev2/integration:
+#   1. the tree self-dirties mid-gate, and sim_gate_clean_builds' clean-stamp
+#      check then reports a dirty tree for a run that changed nothing (MEMORY:
+#      "tracked dut_src_*.f regenerated at parse time flip the stamp mid-run");
+#   2. dut_src_7.f and dut_src_9.f were COMMITTED containing an absolute path
+#      into a personal worktree
+#      (/home/dam1n19/SoCLabs/td-bisect/tl-siteenv-2026-08-19/...), which is both
+#      a public-repo hygiene leak and unusable in anyone else's checkout.
+# The content is a single derived path; nothing reads it that does not also run
+# the Makefile that writes it, so it must not be in git at all.
+# NOTE: the Makefile-side half of this defect (making the generation idempotent /
+# build-dir-local) is TEAM B's change, on a branch from origin/main. Reconcile at
+# merge; this branch deliberately touches only the tracking.
+cocotb/tidelink_a2l_replay_cdc/dut_src*.f

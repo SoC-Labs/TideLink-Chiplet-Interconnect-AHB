@@ -249,12 +249,64 @@ comma := ,
 # "freeze 46-blocking-0-FAIL / integ gate-green" claim was false). Fix: stamp
 # every .status with <sha>-<dirty>; sim_gate_summary REFUSES to report PASS
 # unless every scored status carries the CURRENT stamp.
-GATE_SHA   := $(shell git -C $(TIDELINK_HOME) rev-parse --short=12 HEAD 2>/dev/null || echo nosha)
-GATE_DIRTY := $(shell test -n "$$(git -C $(TIDELINK_HOME) status --porcelain 2>/dev/null)" && echo dirty || echo clean)
-GATE_STAMP := $(GATE_SHA)-$(GATE_DIRTY)
+#
+# FLIST DIGEST (added 2026-09-11). <sha>-<dirty> identifies the COMMIT, not the
+# FILE SET that was actually compiled. Those differ: flists reference
+# ${TIDELINK_HOME}-rooted paths into deps/ submodules and into generated trees
+# (deps/xhb500/generated, imp/gen/), none of which the commit sha covers. A gate
+# run on the right sha with an uninitialised deps/ or a stale generated bridge
+# compiles a DIFFERENT design and stamps an identical-looking stamp. The digest
+# is an md5 over the flist CONTENTS, so the stamp now says "this commit, this
+# file set". It is one whitespace-free token appended to the existing stamp, so
+# sim_gate_summary's `set -- $$line; stamp=$$4` parsing is unchanged.
+#
+# EVERY COMPONENT MUST BE ABLE TO SAY "I COULD NOT TELL". This is the estate's
+# most expensive recurring bug (build_provenance_fail_open, 2026-08-24: a
+# `git_dirty:false` that actually meant the check had errored, so a build was
+# stamped clean AND source_commit:"unknown"). The three components below each
+# had, or would have had, that shape:
+#   GATE_DIRTY  — `test -n "$(git status --porcelain)" && dirty || clean` prints
+#                 "clean" when git ERRORS, because a failed command produces no
+#                 output and `test -n ""` is false. Unreadable repo => "clean".
+#   GATE_FLISTS — an empty glob makes `cat` print nothing and md5sum then
+#                 digests the empty string, yielding d41d8cd9: a plausible-looking
+#                 8 hex digits that means "there were no flists".
+#   GATE_SHA    — already had `|| echo nosha`; kept.
+# All three now emit an explicit unknown marker, and a stamp containing one can
+# never equal a healthy stamp, so the summary refuses PASS rather than scoring a
+# cohort it cannot identify.
+GATE_SHA    := $(shell git -C $(TIDELINK_HOME) rev-parse --short=12 HEAD 2>/dev/null || echo nosha)
+GATE_DIRTY  := $(shell if ! git -C $(TIDELINK_HOME) status --porcelain >/dev/null 2>&1; then echo dirtyunknown; \
+	elif [ -n "$$(git -C $(TIDELINK_HOME) status --porcelain 2>/dev/null)" ]; then echo dirty; else echo clean; fi)
+GATE_FLISTS := $(shell ls $(TIDELINK_HOME)/flists/*.flist >/dev/null 2>&1 && \
+	cat $(TIDELINK_HOME)/flists/*.flist 2>/dev/null | md5sum 2>/dev/null | cut -c1-8)
+GATE_STAMP  := $(GATE_SHA)-$(GATE_DIRTY)-f$(if $(GATE_FLISTS),$(GATE_FLISTS),noflists)
+
+# ── cohort stamp: the stamp AS OF GATE START ─────────────────────────────────
+# Every sim_gate suite runs in its OWN recursive $(MAKE), and so does
+# sim_gate_summary. Each of those re-parses this Makefile and RE-EVALUATES
+# GATE_DIRTY from `git status --porcelain`. So the summary was comparing
+# statuses stamped at gate START against a stamp derived at gate END — any
+# mid-run tree change (the a2l dut_src*.f self-dirtying fixed in 915b58ce, but
+# equally another tool, a parallel agent, or a stray editor save) made EVERY
+# status look "STALE / CROSS-BRANCH" and the gate refused PASS with a message
+# that named the wrong cause.
+#
+# sim_gate/sim_gate_quick now record the stamp once into $(GATE_STAMP_FILE) and
+# the summary scores against THAT. This is not a loosening: a tree that changed
+# mid-run is still a real integrity failure and still exits non-zero — but it is
+# now reported as its own named condition, with the offending paths listed,
+# instead of being misattributed to a stale cohort.
+GATE_STAMP_FILE := $(SIM_GATE_DIR)/.gate_stamp
+# 2026-09-11: the guard tested only 'n', and tested it with `grep -qw` over the
+# WHOLE of MAKEFLAGS (so a variable assignment such as FOO=n could also trip it).
+# It now reads the option cluster — MAKEFLAGS' first word — and covers all three
+# no-op modes that GNU make exempts $(MAKE) lines from: -n (--dry-run),
+# -q (--question) and -t (--touch). REPRODUCED the -q hole 2026-09-11 in
+# cocotb/Makefile: one `make -p -q regression` overwrote 31 <env>/.result files.
 define sim_gate_run
-	@if echo "$(MAKEFLAGS)" | grep -qw -- n; then \
-	  echo "[sim_gate] REFUSING to run under 'make -n' ($(1))."; \
+	@case "$${MAKEFLAGS%% *}" in *[nqt]*) \
+	  echo "[sim_gate] REFUSING to run under 'make -n' / '-q' / '-t' ($(1))."; \
 	  echo "[sim_gate] sim_gate_run is NOT -n safe: the recipe below is a shell 'if'"; \
 	  echo "[sim_gate] whose @-prefixed body make PRINTS but the recursive \$$(MAKE) -C"; \
 	  echo "[sim_gate] inherits -n, so the sub-make does nothing, the 'if' succeeds, and"; \
@@ -262,12 +314,12 @@ define sim_gate_run
 	  echo "[sim_gate] (Reproduced 2026-07-18: 'make -n sim_gate_nack_wedge' emitted"; \
 	  echo "[sim_gate]  'nack_wedge_recovery PASS 4s' into $(SIM_GATE_DIR).)"; \
 	  echo "[sim_gate] To inspect a recipe without side effects, read the Makefile."; \
-	  exit 1; \
-	fi
+	  exit 1 ;; \
+	esac
 	@mkdir -p $(SIM_GATE_DIR)
 	@echo "[sim_gate] RUN  $(1)  (log: $(SIM_GATE_DIR)/$(1).log)"
 	@case "$${MAKEFLAGS%% *}" in \
-	  *n*) echo "[sim_gate] DRY-RUN: would run $(1); NOT touching $(SIM_GATE_DIR)/$(1).status" ;; \
+	  *[nqt]*) echo "[sim_gate] DRY-RUN (-n/-q/-t): would run $(1); NOT touching $(SIM_GATE_DIR)/$(1).status" ;; \
 	  *) t0=$$(date +%s); \
 	     if ( $(2) ) > $(SIM_GATE_DIR)/$(1).log 2>&1; then st=PASS; else st=FAIL; fi; \
 	     dt=$$(( $$(date +%s) - t0 )); \
@@ -1255,6 +1307,15 @@ sim_gate_errinj:
 # recorded verdict lines contain {}, '' and / and an ERE would rot into a
 # pattern that quietly matches nothing, i.e. a sentinel that cries XCHG forever.
 define sim_gate_sentinel
+	@case "$${MAKEFLAGS%% *}" in *[nqt]*) \
+	  echo "[sim_gate] REFUSING to run under 'make -n' / '-q' / '-t' ($(1))."; \
+	  echo "[sim_gate] sim_gate_sentinel had NO dry-run guard until 2026-09-11."; \
+	  echo "[sim_gate] Its \$$(2) carries \$$(MAKE), which GNU make runs even under"; \
+	  echo "[sim_gate] -n/-q/-t; the sub-make then does nothing, rc=0, the signature"; \
+	  echo "[sim_gate] predicate is evaluated against an EMPTY log and a FABRICATED"; \
+	  echo "[sim_gate] XFAIL/XCHG .status is written for a sentinel that never ran."; \
+	  exit 1 ;; \
+	esac
 	@mkdir -p $(SIM_GATE_DIR)
 	@echo "[sim_gate] SENT $(1)  (log: $(SIM_GATE_DIR)/$(1).log)"
 	@t0=$$(date +%s); \
@@ -1598,6 +1659,10 @@ sim_gate_clean_builds:
 
 sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
+	@# Record the cohort stamp ONCE, here, at gate start. sim_gate_summary
+	@# scores against this file, not against a stamp it re-derives after the
+	@# run (see the GATE_STAMP_FILE note above).
+	@printf '%s\n' '$(GATE_STAMP)' > $(GATE_STAMP_FILE)
 	@echo "========================================"
 	@echo " sim_gate — full aggregate sim gate"
 	@echo " blocking suites + 2 known-defect sentinels (~40-55 min)"
@@ -1694,6 +1759,10 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 
 sim_gate_quick: sim_gate_env_check sim_gate_clean_builds
 	@rm -rf $(SIM_GATE_DIR) && mkdir -p $(SIM_GATE_DIR)
+	@# Record the cohort stamp ONCE, here, at gate start. sim_gate_summary
+	@# scores against this file, not against a stamp it re-derives after the
+	@# run (see the GATE_STAMP_FILE note above).
+	@printf '%s\n' '$(GATE_STAMP)' > $(GATE_STAMP_FILE)
 	@echo "========================================"
 	@echo " sim_gate_quick — smoke gate (skips t31/t32)"
 	@echo "========================================"
@@ -1718,8 +1787,15 @@ sim_gate_summary:
 	@echo "======================================================="
 	@echo " sim_gate summary"
 	@echo "======================================================="
-	@echo "  gate stamp: $(GATE_STAMP)"; \
-	fail=0; stale=0; \
+	@# REFERENCE STAMP = the cohort stamp written at gate start, if there is one.
+	@# Falling back to the freshly-derived $(GATE_STAMP) keeps ad-hoc single-suite
+	@# use (sim_gate_one, a bare `make sim_gate_summary`) behaving exactly as
+	@# before. See the GATE_STAMP_FILE note near GATE_STAMP.
+	@ref=$$(cat $(GATE_STAMP_FILE) 2>/dev/null); \
+	if [ -n "$$ref" ]; then src="recorded at gate start"; else ref='$(GATE_STAMP)'; src="derived now (no cohort stamp on disk)"; fi; \
+	echo "  gate stamp: $$ref  [$$src]"; \
+	fail=0; stale=0; drift=0; \
+	if [ -n "$$(cat $(GATE_STAMP_FILE) 2>/dev/null)" ] && [ "$$ref" != '$(GATE_STAMP)' ]; then drift=1; fi; \
 	for s in $(SIM_GATE_SUITES); do \
 	  if [ -f $(SIM_GATE_DIR)/$$s.status ]; then \
 	    line=$$(cat $(SIM_GATE_DIR)/$$s.status); \
@@ -1729,8 +1805,8 @@ sim_gate_summary:
 	  echo "  $$line"; \
 	  set -- $$line; st=$$2; stamp=$$4; \
 	  if [ "$$st" != PASS ]; then fail=1; fi; \
-	  if [ "$$st" != MISS ] && [ "$$stamp" != "$(GATE_STAMP)" ]; then \
-	    stale=1; echo "    ^ STALE/FOREIGN: status stamp '$$stamp' != current '$(GATE_STAMP)'"; fi; \
+	  if [ "$$st" != MISS ] && [ "$$stamp" != "$$ref" ]; then \
+	    stale=1; echo "    ^ STALE/FOREIGN: status stamp '$$stamp' != cohort '$$ref'"; fi; \
 	done; \
 	if [ -n "$(SIM_GATE_SENTINELS)" ]; then \
 	  echo "-------------------------------------------------------"; \
@@ -1745,19 +1821,35 @@ sim_gate_summary:
 	    echo "  $$line"; \
 	    set -- $$line; st=$$2; stamp=$$4; \
 	    if [ "$$st" != XFAIL ]; then fail=1; fi; \
-	    if [ "$$st" != MISS ] && [ "$$stamp" != "$(GATE_STAMP)" ]; then \
-	      stale=1; echo "    ^ STALE/FOREIGN: status stamp '$$stamp' != current '$(GATE_STAMP)'"; fi; \
+	    if [ "$$st" != MISS ] && [ "$$stamp" != "$$ref" ]; then \
+	      stale=1; echo "    ^ STALE/FOREIGN: status stamp '$$stamp' != cohort '$$ref'"; fi; \
 	  done; \
 	fi; \
 	echo "-------------------------------------------------------"; \
+	if [ $$drift -ne 0 ]; then \
+	  echo "  RESULT: TREE CHANGED DURING THE RUN — refusing to report PASS."; \
+	  echo "          cohort stamp (gate start): $$ref"; \
+	  echo "          stamp now (gate end)     : $(GATE_STAMP)"; \
+	  echo "          The suites did NOT all run against one tree state, so a green"; \
+	  echo "          table would not describe any single revision. This is a REAL"; \
+	  echo "          integrity failure, not the stale-cohort case below."; \
+	  echo "          What differs now (git status --porcelain):"; \
+	  git -C $(TIDELINK_HOME) status --porcelain 2>/dev/null | sed 's/^/            /'; \
+	  echo "          If a gate target itself wrote one of those paths, that is a"; \
+	  echo "          self-dirtying gate — fix the writer, do NOT add it to"; \
+	  echo "          .gitignore just to silence this (see 915b58ce for the shape"; \
+	  echo "          of the real fix), and never use 'git update-index"; \
+	  echo "          --assume-unchanged', which hides it per-clone only."; \
+	  exit 2; \
+	fi; \
 	if [ $$stale -ne 0 ]; then \
-	  echo "  RESULT: STALE / CROSS-BRANCH — one or more .status is not from $(GATE_STAMP)."; \
+	  echo "  RESULT: STALE / CROSS-BRANCH — one or more .status is not from $$ref."; \
 	  echo "          A green summary must belong to THIS commit; refusing to report PASS."; \
 	  echo "          Re-run 'make sim_gate' on a clean checkout of the current tip."; \
 	  exit 2; \
 	fi; \
 	if [ $$fail -eq 0 ]; then \
-	  echo "  RESULT: ALL SUITES PASS @ $(GATE_STAMP)  (logs: $(SIM_GATE_DIR)/)"; \
+	  echo "  RESULT: ALL SUITES PASS @ $$ref  (logs: $(SIM_GATE_DIR)/)"; \
 	  if [ -n "$(SIM_GATE_SENTINELS)" ]; then \
 	    echo "          (known defects still present as recorded — see docs/ERROR_INJECTION_FINDINGS.md)"; \
 	  fi; \

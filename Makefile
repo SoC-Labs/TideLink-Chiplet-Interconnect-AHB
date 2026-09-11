@@ -1777,7 +1777,36 @@ sim_gate_registry_coverage:
 
 # The single authoritative regression front-end: prove registry coverage, then run
 # the tip-stamped, fail-loud, exit-on-FAIL aggregate. Use THIS in CI, not bare sim_gate.
-sim_gate_regressions: sim_gate_registry_coverage sim_gate
+sim_gate_regressions: selfcheck_gates sim_gate_registry_coverage sim_gate
+
+# ── controls for the checkers themselves ────────────────────────────────────
+# A checker whose own failure mode is never exercised is decoration. Every
+# control under scripts/ci/tests/ feeds synthetic specimens to a real checker and
+# REQUIRES it to go red; they are pure Python, no simulator and no board, a few
+# seconds each, so there is no excuse for them not to run. sim_gate_regressions
+# depends on this, ahead of the coverage check, so a neutered checker cannot
+# report a clean gate.
+#
+#   make selfcheck_gates                    run them all; report every failure
+#   make selfcheck_registry_hw_evidence     just the hardware-evidence rule
+.PHONY: selfcheck_gates selfcheck_registry_hw_evidence
+selfcheck_gates:
+	@rc=0; \
+	for t in $(TIDELINK_HOME)/scripts/ci/tests/test_*.py; do \
+	  [ -e "$$t" ] || continue; \
+	  echo "=== $$(basename $$t)"; \
+	  if python3 "$$t"; then :; else rc=1; echo "  ^ CONTROL FAILED"; fi; \
+	done; \
+	if [ $$rc -eq 0 ]; then echo "selfcheck_gates: ALL CONTROLS PASS"; \
+	else echo "selfcheck_gates: FAILURES — a checker cannot produce its failing verdict"; fi; \
+	exit $$rc
+
+# The hardware-proof evidence rule added 2026-09-11: an entry claiming hardware
+# proof must name a stat()-able verification.evidence path and a legal
+# verification.vehicle. Its control includes a seeded-bad-entry run against the
+# REAL docs/BUG_REGISTRY.yaml, so it proves the rule bites on the live file.
+selfcheck_registry_hw_evidence:
+	@python3 $(TIDELINK_HOME)/scripts/ci/tests/test_registry_hw_evidence.py
 
 # Sanctioned single-suite run that PROPAGATES failure (unlike bare `make sim_gate_<x>`,
 # which records status and exits 0). Routes through the tip-stamped summary.

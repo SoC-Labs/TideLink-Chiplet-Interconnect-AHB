@@ -2273,4 +2273,379 @@ bugs:
         - "imp/hw_gate/TL042_HW_RESULT_REJECTED_2026_08_13.md (candidate fix REJECTED: baseline 16/16 vs fixed 0/16 at n=2, healthy bring-up every run; regression mechanism = synth_b_pending is a term of wr_hold_clr)"
         - "src/rtl/tidelink_top.sv:1826-1827 (HEAD) `wr_hold_clr = (s_axi_wvalid & s_axi_wready & s_axi_wlast) | synth_b_pending` — re-read at merge time, md5 b75d391b0f659d808ac0a4cb37310643"
       approved: false
-    related: [TL-002, TL-005, TL-035, TL-037]
+    suite_misnamed_2026_09_11: >
+      ID-COLLISION CLEANUP. The head-of-line write-age watchdog that fixes INSTANCE 1
+      of this class landed on origin/rev2/integration as 82c56e2a, whose own subject
+      line is "fix(TL-042): head-of-line WRITE-age watchdog — the ahb_sub backstop was
+      STARVED, not masked", and whose Makefile block is headed "TL-042 instance 1".
+      Its suite, its cocotb module and its tests are nonetheless all named tl044_* /
+      test_tl044_*, which makes TL-044 look like the owner of a fix that is TL-042's.
+      No new id is warranted — this is not a separate defect, it is this one — so the
+      resolution is a RENAME of the suite, not an allocation.
+      RENAME (to execute on origin/rev2/integration; none of these files exists on
+      origin/main, so it cannot be done from the truth-pass branch):
+        token           tl044_hol -> tl042_hol
+        suite target    sim_gate_tl044_hol_write_age -> sim_gate_tl042_hol_write_age
+        cocotb module   test_tl044_hol_write_age.py  -> test_tl042_hol_write_age.py
+        test prefixes   test_tl044_control_aggregate_backstop_fires_without_traffic,
+                        test_tl044_starvation_defeats_the_aggregate_backstop,
+                        test_tl044_escape_is_clean_and_normal_path_survives,
+                        test_tl044_healthy_traffic_never_trips_the_watchdog  -> test_tl042_*
+        sim_build dirs  sim_build_tl044_hol, sim_build_tl044_hol_prefix -> sim_build_tl042_hol*
+      UNLIKE the TL-043-ARR rename this one is NOT text-only: the token appears in
+      suite names, make targets, a filename, cocotb TESTCASE names and sim_build paths,
+      so it must be done as a coordinated edit, not a blind sed. Files carrying it
+      (occurrence counts from `git grep -c` on origin/rev2/integration):
+    hol_write_age_rename_manifest:          # branch: origin/rev2/integration
+      - {file: Makefile, tl044_hol_occurrences: 8, note: "suite target, SIM_GATE_ALL_SUITES entry, aggregate invocation, sim_build rm"}
+      - {file: cocotb/tidelink_axi_datanode_recovery/Makefile, tl044_hol_occurrences: 14, note: "TL044_HOL_TESTS list, .PHONY, MODULE=, SIM_BUILD=, clean glob"}
+      - {file: cocotb/tidelink_axi_datanode_recovery/test_tl044_hol_write_age.py, tl044_hol_occurrences: 1, note: "FILE RENAME, plus 4 test function names"}
+      - {file: scripts/ci/sim_gate_integrity.py, tl044_hol_occurrences: 1, note: "suite-name registry — will FAIL LOUD if the rename misses it, which is the point"}
+      - {file: src/rtl/tidelink_top.sv, tl044_hol_occurrences: 2, note: "comments only"}
+      - {file: docs/BUG_REGISTRY.yaml, tl044_hol_occurrences: 2, note: "this entry, on the rev2 line"}
+    related: [TL-002, TL-005, TL-035, TL-037, TL-044]
+
+  # ===========================================================================
+  # UNREGISTERED IDs + ID-COLLISION RESOLUTION (added 2026-09-11 truth pass)
+  #
+  # TL-043, TL-044 and TL-045 were in live use — in shipping RTL comments, in
+  # sim_gate suite names, in cocotb filenames, in commit subjects — with NO entry
+  # in this file on origin/main, origin/rev2/integration or origin/rev2/hygiene
+  # (all three carried exactly 42 entries, TL-001..TL-042). Two of the three had
+  # more than one claimant. An id that names two defects is worse than no id: it
+  # makes `grep` lie, and it makes a status line ambiguous about which thing it
+  # is the status OF.
+  #
+  # RESOLUTION (see id_collision_resolution_2026_09_11 under TL-046):
+  #   TL-043  kept by Hazard-1 (edge-qualified wr_hold_clr). Sole claimant on the
+  #           trunk, in shipping RTL, landed and gated.
+  #   TL-044  kept by the ahb_sub READ DEAD-GATE containment. Primary claimant,
+  #           named by its own fix commit, most references.
+  #   TL-045  kept by cross-die exclusives. Sole claimant.
+  #   TL-046  NEW — the AR/R replay self-heal, drafted off-branch as "TL-043-ARR".
+  #           Renamed; a suffixed id is not an id.
+  #   tl044_hol_write_age  MISATTRIBUTED — it is the TL-042 fix. Suite renamed,
+  #           no new id.
+  # ===========================================================================
+
+  - id: TL-043
+    title: "Hazard-1 — synth_b_pending is a LEVEL term of wr_hold_clr, so a drain blinds the TL-002 write hold for EVERY other write"
+    severity: high
+    area: rtl/tidelink_top
+    status: sim_proven
+    registered: 2026-09-11        # the FIX landed 2026-08-18; the id went unregistered for three weeks
+    summary: >
+      wr_hold_clr was `(s_axi_wvalid & s_axi_wready & s_axi_wlast) | synth_b_pending`.
+      The second term is a LEVEL, not an event: while synth_b_pending is asserted to
+      drain one stuck write, the TL-002 peer-write data-phase hold (wr_hold_r) is held
+      cleared for every OTHER write in flight, so those writes release their data phase
+      early — the exact rank-1 data-drop TL-002 exists to prevent. The recovery
+      mechanism disables the protection, which is the same shape as TL-005's
+      synth_b_pending-defeats-the-read-backstop finding and as the 2026-08-13 candidate
+      that regressed 16/16 to 0/16 on hardware.
+    root_cause: >
+      A level used where an edge was meant. src/rtl/tidelink_top.sv:1971-2009 now reads
+      the pre-fix form at :2006 (`| synth_b_pending;  // pre-fix LEVEL (bug, TL-043)`)
+      against the fix at :2009 (`| wr_hold_drain_release;  // TL-043: edge-qualified
+      drain release`), both retained in-source so the change is legible at the site.
+    fix:
+      approach: "edge-qualify the drain release: wr_hold_drain_release is a one-cycle pulse at the start of a synth-B drain instead of the drain's whole duration"
+      files: [src/rtl/tidelink_top.sv]
+      commit: 2413aa60          # landed via merge 77d9bcbe; both ancestors of origin/main (merge-base)
+      branch: origin/main
+      netlist_affecting: true
+    verification:
+      sim_test: "cocotb/tidelink_axi_datanode_recovery/test_tl002_wrhold_drain_guard.py — white-box invariant (a) non-vacuity: synth_b_pending observed ==1; (b) wr_hold_r latches under it; (c) it releases via the edge, not the level. Plus a DATA-LANDING arm asserting the second write's payload lands byte-exact."
+      in_sim_gate: true         # Makefile:807-808 -> make wrhold_drain_guard, under the writehold suite
+      hw_tested: false
+      hw_validated: false       # explicit — no board run isolates this fix
+      evidence: null
+      vehicle: null
+    naming_note: >
+      The test file is named test_tl002_wrhold_drain_guard.py, not test_tl043_*. That
+      is deliberate and is NOT the collision: the defect is in TL-002's mechanism and
+      the file sits with TL-002's other write-hold tests. Left as-is; renaming it would
+      be churn that breaks the Makefile suite for no gain.
+    signoff:
+      claude_verdict: >
+        Landed and gated on the trunk, sim-proven with an explicit non-vacuity arm.
+        Registered here three weeks late — the id was in shipping RTL comments, in a
+        cocotb test and in a merge subject line while this file had never heard of it.
+        Netlist-affecting and landed on the public default branch, so the sign-off is
+        owed retrospectively, as for TL-026.
+      evidence:
+        - "src/rtl/tidelink_top.sv:1971 (fix banner), :2006 (pre-fix LEVEL retained), :2009 (edge-qualified release)"
+        - "commit 2413aa60, merged 77d9bcbe; both ancestors of origin/main"
+        - "cocotb/tidelink_axi_datanode_recovery/test_tl002_wrhold_drain_guard.py; Makefile:807-808"
+      approved: false
+    related: [TL-002, TL-005, TL-042, TL-045]
+
+  - id: TL-044
+    title: "ahb_sub READ DEAD GATE — after the read backstop fires, an IDLE port drives HREADYOUT LOW forever and wedges the WHOLE AHB bus"
+    severity: high
+    area: rtl/tidelink_top
+    status: sim_proven
+    registered: 2026-09-11
+    summary: >
+      What TL-037 left open. The read backstop retires a stuck read correctly and
+      TL-037 bounds the next transfer addressed to this port, but sub_err1_r/sub_err2_r
+      are ONE-SHOTS: two cycles later every term of the ahb_sub_hreadyout mux is 0 on an
+      idle bus and the port falls through to its terminal fallback,
+      xhb_sub_hreadyout_raw, which XHB500 holds LOW forever because a lost R parks
+      read_counter non-zero and only r_done decrements it. The port therefore drives
+      HREADYOUT LOW WHILE IDLE — an AHB-Lite violation whose blast radius is the whole
+      bus, since the AHB mux keeps presenting this slave's HREADYOUT to the manager
+      between transfers. The next transaction of ANY kind, to this port or to any other
+      slave, never starts, with no bus timeout. TL-037's terminal-timeout arm cannot
+      cover it: that arm needs sub_mst_dphase_r, which on an idle bus is 0 by
+      construction.
+    fix:
+      approach: >
+        CONTAINMENT, not repair — XHB500 cannot be un-wedged from the wrapper, and
+        XHB500 itself is shared vendor IP that must not be modified. A sticky
+        xhb_dead_r, armed only after a 2-cycle ERROR has fired AND the bridge has shown
+        no sign of life for XHB_DEAD_ARM_LOG2 consecutive cycles, releases an IDLE bus
+        and retires every subsequent transfer with a bounded 2-cycle AHB ERROR. It
+        never fabricates read data.
+      files: [src/rtl/tidelink_top.sv]
+      commit: c6f091a1
+      branch: origin/rev2/integration      # NOT on origin/main — verified by merge-base
+      netlist_affecting: true
+    verification:
+      sim_test: "sim_gate_tl044_read_deadgate (six blocking arms: RED / GREEN / SAFETY / INTERMITTENT / FALSE-FIRE + a two-armed MUTANT whose define disables the ACTION while leaving DETECTION intact, and whose negative arm REQUIRES the GREEN test to fail) + sim_gate_tl044_park_recipe"
+      in_sim_gate: true                    # on rev2/integration only
+      hw_tested: false
+      hw_validated: false                  # explicit — no board run
+      evidence: null
+      vehicle: null
+    park_recipe_is_not_a_third_claimant: >
+      `tl044_park_recipe` reads like a third TL-044 claimant and is not one. Read at
+      the Makefile: it arms two INDEPENDENT REAL parks (far terminus stops answering; R
+      persistently lost in the link with the far die healthy), shows they produce the
+      same internal signature, and then drives all three of the containment's own exit
+      branches — NEVER (structural: while parked no further AR is admitted, so no
+      r_done, so read_counter is decremented by nothing), RECOVERED (a real late R
+      un-parks it), INTERMITTENT (RELAPSE_MAX+1 genuine cycles latch xhb_dead_perm_r) —
+      with no Force anywhere. That is TL-044's own safety test, and it is the thing the
+      deadgate suite could not do because its INTERMITTENT arm has to Force
+      xhb_sub_hreadyout_raw to author a waveform. Correctly named; recorded here so it
+      stops reading as a collision.
+    cannot_tell_from_this_repository: >
+      Whether the containment's blast-radius claim ("0 raw-high cycles in 8093 on
+      pristine 5e8bdb5a") reproduces: that measurement is quoted in the rev2/integration
+      Makefile and no capture or log containing it is retained on this host. The
+      MECHANISM is verifiable by reading core_resp.sv, which is under the shared vendor
+      IP tree and read-only; the MEASUREMENT is not re-checkable here.
+    signoff:
+      claude_verdict: >
+        Real, mechanically argued, and the only entry in this file whose sim suite
+        includes a mutant arm that requires the green test to fail — which is the
+        discipline this project keeps discovering it needs. NOT on origin/main and NOT
+        hardware-validated. Netlist-affecting, so landing is David's.
+      evidence:
+        - "commit c6f091a1 'fix(TL-044): contain the ahb_sub READ DEAD GATE — bounded errors, not a wedged bus' (on origin/rev2/integration, NOT on origin/main)"
+        - "origin/rev2/integration:Makefile:1005-1035 (mechanism + the six arms), :1038-1057 (park recipe)"
+        - "cocotb/tidelink_axi_datanode_recovery/test_tl044_read_deadgate.py, test_tl044_park_recipe.py"
+      approved: false
+    related: [TL-037, TL-042, TL-005, TL-045]
+
+  - id: TL-045
+    title: "cross-die exclusive access silently succeeded — no mutual exclusion AND no failure indication"
+    severity: high
+    area: xhb500-integration
+    status: root_caused          # the DEFECT is measured on rev2/integration; the FIX is on an unmerged side branch
+    registered: 2026-09-11
+    provenance: >
+      Entry content reused from an unmerged registry commit in the off-repo
+      eth-chiplet clone (branch rev2/fix-exclusives), which is the only place a TL-045
+      entry has ever existed. Read there, not modified. Condensed here and its status
+      LOWERED from the sim_proven it claims: on the branches this repository can see,
+      the defect is demonstrated and the fix is not present.
+    summary: >
+      Two initiators could both complete a store-exclusive to the SAME cross-die
+      address, both answered OKAY, the second silently overwriting the first. Measured
+      with LDREX-A / LDREX-B / STREX-B / STREX-A: outcomes {A_ldrex:0xBAD,
+      B_ldrex:0xBAD, B_strex:OK, A_strex:OK}, far memory left holding A's 0x1111AAAA
+      over B's committed 0x2222BBBB. Software using cross-die exclusives for mutual
+      exclusion had NO mutual exclusion and no indication that it had none. The silence
+      is the defect: a loud failure is recoverable, a silent one is not.
+    root_cause: >
+      Three independent breaks, all in the INTEGRATION. Wlink was never at fault — it
+      carries axlock as AW/AR payload bit 13 (AXI4ToWlink.v:454/473).
+        1. tidelink_top's AHB subordinate port has no HEXCL and no HEXOKAY pin, so an
+           AHB5 manager's exclusive marker is already gone at TideLink's own pins, one
+           level above any tie-off.
+        2. u_xhb_sub .hexcl(1'b0) forces awlock/arlock to 0 for EVERY outbound
+           transaction (core_addr.sv:253/268). The exclusive does not merely go
+           unanswered across the die boundary — IT NEVER CROSSES IT.
+        3. u_xhb_sub .hmaster(12'd0) forces AxID=0 (core_addr.sv:248/263), so all five
+           initiators are bit-identical on the wire, and u_xhb_mng .hexokay(1'b0) makes
+           AXI_RESP_EXOKAY unreachable inbound (core_h_xout.sv:180).
+      With no marker on the wire and no monitor on the path, a "cross-die exclusive"
+      executes as an ordinary read followed by an ordinary, unconditional write.
+    fix:
+      approach: >
+        REFUSE, do not pretend. tidelink_top gains ahb_sub_hexcl (in) and
+        ahb_sub_hexokay (out, constant 0). A transfer presented with HEXCL high is
+        (a) NEVER ISSUED — xhb_sub_hsel is gated so XHB500 never latches it, nothing
+        reaches the link, PEER MEMORY IS NOT MODIFIED; (b) answered with a two-cycle AHB
+        ERROR; (c) answered with HEXOKAY=0. Supporting exclusives properly was evaluated
+        and REJECTED: it needs a global exclusive monitor at the far terminus, which
+        does not exist and which tidelink_top's ahb_mng port has no HEXOKAY pin to
+        reach, AND a per-initiator AxID, which collides with the Fix K hazard-list BID
+        override (TL-003 presents sub_wr_awid_r, a SINGLE register, for a 4-deep list —
+        correct only while AWID is constant). A granted-but-unmonitored exclusive would
+        be WORSE than the original defect, because software would then trust it.
+      files: [src/rtl/tidelink_top.sv, src/rtl/asic/tidelink_dft_wrapper.sv, fpga/vivado_ip/tidelink_vivado_wrapper.v, scripts/ci/check_excl_port_wired.py]
+      commit: 35c75ae0
+      branch: "rev2/fix-exclusives (off-repo eth-chiplet clone ONLY)"
+      netlist_affecting: true
+    verification:
+      sim_test: "sim_gate_xdie_exclusive"
+      in_sim_gate: true
+      hw_tested: false
+      hw_validated: false         # explicit — no rig run has been made
+      evidence: null
+      vehicle: null
+      what_is_where_2026_09_11: >
+        Checked branch by branch rather than taken from the draft entry, and the answer
+        differs from it. On origin/rev2/integration the suite exists and asserts the
+        DEFECT: test_xdie_exclusive_marker_never_reaches_axi and
+        test_xdie_two_initiators_both_commit. The REFUSAL tests the draft describes
+        (test_xdie_exclusive_is_refused, _cannot_both_commit, _ordinary_traffic_unaffected,
+        plus the LEGACY_MUTANT red proof) are NOT on origin/rev2/integration, and
+        `git grep ahb_sub_hexcl origin/rev2/integration` hits only the test file, never
+        src/rtl/tidelink_top.sv. scripts/ci/check_excl_port_wired.py is likewise absent
+        there. So on every branch this repository can see, the defect is proven and the
+        fix is not present. Status set to root_caused accordingly.
+    action_items:
+      - "LAND THE FIX. It exists only on an unmerged branch of an off-repo clone — the single most losable piece of work in this registry."
+      - "PARENT-CHIPLET WIRING IS THE ONLY THING BETWEEN THIS FIX AND A SILENT REVERT: the parent chiplet's u_tidelink instantiation must DRIVE ahb_sub_hexcl. Unconnected reads 0 = 'not an exclusive' = the original defect, with a green gate."
+      - "DECISION for David: is refusing the right policy, or must cross-die exclusives be SUPPORTED? Supporting them is a far-side global-monitor + AxID/Fix-K workstream, not a wiring change."
+      - "INBOUND exclusives would be OBSERVED, not blocked (obs 0x21F8 bit[16]). Unreachable on a TideLink<->TideLink pair once neither die can emit AxLOCK=1; if that bit ever reads 1 on silicon the inbound block becomes real work."
+      - "HW validation outstanding: no rig run has been made. obs 0x21F8 bit[15] latches on a refusal and is the intended on-silicon witness."
+    signoff:
+      claude_verdict: >
+        The DEFECT is measured and reproducible on rev2/integration and I have confirmed
+        the suite that measures it. The FIX is not on any branch of this repository, so
+        its measured refusal and its red proof are reported here on the draft entry's
+        authority, not on mine. Do not read this entry as a fixed bug.
+      evidence:
+        - "PRE-FIX, measured on rev2/integration: outcomes={'A_ldrex': 2989, 'B_ldrex': 2989, 'B_strex': 'OK', 'A_strex': 'OK'} after_B=0x2222bbbb final=0x1111aaaa"
+        - "origin/rev2/integration:cocotb/tidelink_axi_datanode_recovery/test_xdie_exclusive.py:225,298 — both tests assert the DEFECT"
+        - "origin/rev2/integration:Makefile:1059-1073 (sim_gate_xdie_exclusive) and :294 (in SIM_GATE_ALL_SUITES)"
+        - "core_addr.sv:253/268 (awlock/arlock = hexcl), :248/263 (awid/arid = hmaster); core_h_xout.sv:180 (EXOKAY only on far HEXOKAY) — vendor IP, read-only"
+        - "REUSED, NOT INDEPENDENTLY VERIFIED: the post-fix and red-proof numbers, from commit 35c75ae0 on the off-repo clone branch rev2/fix-exclusives"
+      approved: false
+    related: [TL-042, TL-043, TL-044, TL-003]
+
+  - id: TL-046
+    title: "AR/R replay nodes _7/_9 ship WITHOUT the a2l CDC self-heal (read-path gap) — was 'TL-043-ARR'"
+    severity: high
+    area: rtl/wlink
+    status: sim_proven
+    registered: 2026-09-11
+    opened: 2026-08-23            # as "TL-043-ARR", on an unmerged branch of the off-repo clone
+    id_collision_resolution_2026_09_11: >
+      THIS ENTRY IS THE RENAMED CLAIMANT. It was drafted as "TL-043-ARR", which
+      collided with TL-043 (Hazard-1, the edge-qualified wr_hold_clr). Renamed rather
+      than kept with a suffix, for three reasons: TL-043 is cemented in shipping RTL
+      comments on the trunk (src/rtl/tidelink_top.sv:1971/2006/2009) and in a landed,
+      gated cocotb test, so it is the claimant that cannot move; `grep TL-043` matches
+      the suffixed form, so the collision defeats the tool people actually use; and a
+      suffixed id does not match the TL-0NN shape every consumer of this file assumes
+      (dupkey_check.py, registry_coverage.py, gen_bug_registry_html.py). TL-046 is the
+      first unused number — TL-044 and TL-045 are registered above.
+
+      THE RENAME CANNOT BE EXECUTED FROM THIS BRANCH. Every file carrying the old
+      token lives on origin/rev2/integration; none exists on origin/main. Verified:
+      src/rtl/local_overrides/WlinkGenericFCReplayV2_{7,9}.v, flists/tidelink_a2l_replay_cdc_{7,9}.flist,
+      cocotb/tidelink_a2l_replay_cdc/{test_a2l_replay_cdc_7.py,test_a2l_replay_cdc_9.py,
+      tl027only_WlinkGenericFCReplayV2_{7,9}.v} and docs/FALSE_GREEN_REGISTER.md are
+      all absent on origin/main. The manifest below is the complete, occurrence-counted
+      set to change when rev2/integration lands; it was produced by
+      `git grep -c 'TL-043-ARR' origin/rev2/integration`, not by estimate.
+      Execute with:
+        git grep -l 'TL-043-ARR' -- . | xargs sed -i 's/TL-043-ARR/TL-046/g'
+      then re-run `git grep -n 'TL-043-ARR'` and expect zero hits.
+      NOTE: no suite name, target name, filename or signal name contains the string —
+      only comments and docstrings — so the rename is text-only and breaks no build.
+    rename_manifest_TL_043_ARR_to_TL_046:   # branch: origin/rev2/integration. old token "TL-043-ARR" -> "TL-046"
+      - {file: Makefile, occurrences: 2}
+      - {file: cocotb/tidelink_a2l_replay_cdc/Makefile, occurrences: 2}
+      - {file: cocotb/tidelink_a2l_replay_cdc/test_a2l_replay_cdc_7.py, occurrences: 2}
+      - {file: cocotb/tidelink_a2l_replay_cdc/test_a2l_replay_cdc_9.py, occurrences: 2}
+      - {file: cocotb/tidelink_a2l_replay_cdc/tl027only_WlinkGenericFCReplayV2_7.v, occurrences: 1}
+      - {file: cocotb/tidelink_a2l_replay_cdc/tl027only_WlinkGenericFCReplayV2_9.v, occurrences: 1}
+      - {file: docs/FALSE_GREEN_REGISTER.md, occurrences: 1}
+      - {file: flists/tidelink_a2l_replay_cdc_7.flist, occurrences: 1}
+      - {file: flists/tidelink_a2l_replay_cdc_9.flist, occurrences: 1}
+      - {file: src/rtl/local_overrides/WlinkGenericFCReplayV2_7.v, occurrences: 1}
+      - {file: src/rtl/local_overrides/WlinkGenericFCReplayV2_9.v, occurrences: 1}
+      - {file: TOTAL, occurrences: 15}
+    summary: >
+      The AR (_7) and R (_9) app-to-link replay nodes ship RAW from deps/ in BOTH the
+      tapeout and FPGA flists and had no local_overrides copy at all — the files did not
+      exist. Their sibling write-path nodes _1/_3/_5 and the sideband _12/_13 all carry
+      the TL-027 CDC self-heal. Verified at the flist on origin/main 5e8bdb5a:
+      tidelink_top_full_asic_v2.flist:306/308 and tidelink_fpga_v2.flist:304/306 both
+      name deps/ for _7/_9, and src/rtl/local_overrides/ contains _1, _3, _5, _12, _13
+      and no _7 or _9. The asymmetry was untracked because TL-027 asserted the opposite
+      (see its closure note) and the 2026-08-13 escape-vs-safety audit enumerates
+      _1/_3/_5/_12/_13 and omits AR/R entirely.
+    root_cause: >
+      deps _7/_9 drive the ACK-pointer CDC edge-triggered —
+      `link_addr_to_app_clk_w_inc = a2l_link_addr != a2l_link_addr_in`. A torn value
+      delivered through WavMultibitSync that is not followed by a further change never
+      re-fires the edge, so the synced ACK pointer latches forever, a2l_full sticks,
+      app_ready goes to 0 and that node stops transmitting. The hardened form drives it
+      continuously (`= 1'b1`, "continuous resend") and self-heals within one mailbox
+      round trip.
+    fix:
+      approach: "transplant the _1 form to src/rtl/local_overrides/WlinkGenericFCReplayV2_{7,9}.v with per-node width re-derivation, then re-point the ship + FPGA flists. Functional delta ~15 lines (ACK-window guard + continuous w_inc + TL-032 revert-aware rewind)."
+      files: [src/rtl/local_overrides/WlinkGenericFCReplayV2_7.v, src/rtl/local_overrides/WlinkGenericFCReplayV2_9.v, flists/tidelink_top_full_asic_v2.flist, flists/tidelink_fpga_v2.flist]
+      commit: e88ff7be
+      branch: origin/rev2/integration      # NOT on origin/main — verified by merge-base
+      netlist_affecting: true
+    verification:
+      sim_test: "sim_gate_a2l_replay_cdc_7 + sim_gate_a2l_replay_cdc_9 (reproduce-first A/B per node against the raw deps copy)"
+      in_sim_gate: true          # on rev2/integration: Makefile:621-627, listed at :300 and invoked at :1973-1974. Gate wiring is a SEPARATE commit, 5994cce7 — the suites ran unscored before it.
+      hw_tested: false
+      hw_validated: false        # explicit
+      evidence: null
+      vehicle: null
+    hazard_reviewed_2026_08_23: >
+      Carried over from the draft, because it is the kind of check that should not have
+      to be redone. The _1 form's TL-032 revert-aware rewind is UNCONDITIONAL, and a
+      CONDITIONAL ACK-rewind was withdrawn from _13 by 1c1173e7 as refuted on silicon
+      ("rewinding the ACK pointer can discard a legitimate in-flight ACK"). TL-032
+      answers that structurally: link_revert and a2l_ack_valid are decoded from the SAME
+      3-bit field against DIFFERENT constants (3'h2 vs 3'h3), so a revert can never
+      coincide with a legitimate ACK and prioritising it cannot discard one. The
+      exposure is structurally impossible, not merely unobserved.
+    silicon_correlate_is_not_proof: >
+      On freeze 5e8bdb5a, writes measured 6/6 runs 128/128 byte-exact while cross-die
+      reads measured 2 PASS / 4 FAIL with three distinct failure signatures, and the
+      pass/fail split follows the hardened/raw split exactly. THIS IS CORRELATION AND
+      MUST NOT BE PROMOTED: three signatures suggest more than one contributor, read
+      intermittency is also eye-sensitive, and a later finding
+      (cross-die read failures traced to an ssh/instrument artefact) INVALIDATES read
+      FAILURES as evidence while leaving the write PASSES standing. Whatever this entry
+      is proven by, it is not that split.
+    signoff:
+      claude_verdict: >
+        The GAP is verified directly at the flists and the override directory on
+        origin/main and is not in doubt. The FIX and its A/B are on
+        origin/rev2/integration and are not on the trunk. Netlist-affecting; David
+        lands. Renamed from TL-043-ARR by the 2026-09-11 truth pass — see
+        id_collision_resolution_2026_09_11 for the rename manifest, which must be
+        executed on rev2/integration.
+      evidence:
+        - "flists/tidelink_top_full_asic_v2.flist:306,308 and flists/tidelink_fpga_v2.flist:304,306 name deps/ for _7/_9 (read at the files, origin/main 5e8bdb5a)"
+        - "src/rtl/local_overrides/ contains WlinkGenericFCReplayV2_{1,3,5,12,13}.v and no _7/_9"
+        - "src/rtl/local_overrides/WlinkGenericFCReplayV2_{1,3,5}.v each carry `assign link_addr_to_app_clk_w_inc = 1'b1; // TL-027 port: continuous resend (self-heal)`"
+        - "commits e88ff7be (overrides), 0688c7b4 (reproduce-first bench), 5994cce7 (gate wiring) — all on origin/rev2/integration, none on origin/main"
+        - "NOT VERIFIED HERE: that deps _7/_9 carry the edge-triggered form. The submodules are unregistered in this worktree so deps/ is empty; taken from the draft entry."
+        - "imp/hw_gate/SIGNOFF_LEDGER_2026_08_13.md:105 flagged the understatement on 2026-08-13; the draft entry (5c316198, off-repo clone, unmerged) wrote the correction on 2026-08-23; neither reached this file until now"
+      approved: false
+    related: [TL-027, TL-032, TL-009]

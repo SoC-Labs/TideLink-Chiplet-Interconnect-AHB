@@ -1,7 +1,7 @@
 > **Appendix to the TideLink Rev-2 Review.** These are the eight full reviewer reports behind `docs/reviews/2026-09-09_REV2_REVIEW.md`, reproduced unabridged.
 > Every claim is line-cited at the review point `origin/main` **5e8bdb5a**; lines prefixed `rev2:` cite the candidate `rev2/integration` **cba9774d**. Dated 2026-09-09.
 > This text has been **redacted** before landing in git: credentials, board and jump-host IPs, vendor release/drop codes, EDA and PDK install paths and user home
-> directories are replaced with placeholders (`<REDACTED-IP>`, `<ARM-CMSDK-DROP>`, `<EDA-INSTALL>`, `<PHYS-IP-PATH>`, `<MEM-COMPILER-PATH>`, `$WORKTREES`).
+> directories are replaced with placeholders (`<REDACTED-IP>`, `<ARM-IP-FAMILY>`, `<ARM-CMSDK-DROP>`, `<EDA-INSTALL>`, `<PHYS-IP-PATH>`, `<MEM-COMPILER-PATH>`, `$WORKTREES`).
 > Because of that redaction some evidence pointers below are generic — a placeholder stands where a concrete host, credential or absolute path was named.
 > The `file:line` citations into this repository are unaffected and remain exact.
 
@@ -2138,7 +2138,7 @@ All counts are `git grep` over **tracked** files at the named ref. **The board c
 | **Board credential** | **24 hits / 18 files** | **0** | 24 / 18 | `imp/hw_gate/ila_run_tl035.sh:30`, `pynq_host/scripts/bringup_pair_release.sh:14`, `docs/HANDOVER_AXI_DATANODE_RECOVERY.md:48,59`, `docs/handoff/TL027_A2L_ETHCHIPLET_HANDOFF.md:47` (with username + both IPs on one line) |
 | Board IPs `<REDACTED-IP>` | 87 / 41 | 87 / 41 | — | `docs/KR260_BOARD_ENV.md:18-19`, `docs_site/boards.md:134`, `docs/BUILD_REGISTRY.yaml:556` |
 | Jump-host IP `<REDACTED-IP>` | 2 | — | — | `docs/BOARD_DEPLOY_RUNBOOK.md:18`, `docs_site/boards.md:66` |
-| Arm release-coded drop `…/<ARM-CMSDK-DROP>` | 41 files | 41 | 41 | 40× `cocotb/*/Makefile` (`export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/<ARM-CMSDK-DROP>/…`, e.g. `cocotb/tidelink/Makefile:6`), `cdc/Makefile:2,8` |
+| Arm release-coded drop `…/<ARM-CMSDK-DROP>` | 41 files | 41 | 41 | 40× `cocotb/*/Makefile` (`export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/<ARM-IP-FAMILY>/<ARM-CMSDK-DROP>/…`, e.g. `cocotb/tidelink/Makefile:6`), `cdc/Makefile:2,8` |
 | EDA install paths `<EDA-INSTALL>` etc. | 40 files | 40 | — | 38× `cocotb/*/Makefile` `VERDI_HOME = …`, `cdc/Makefile:12` `SPYGLASS_HOME ?= …`, `cocotb/debug/phc_pair/Makefile:39` `<EDA-INSTALL>`, `docs/reference/DEPENDENCIES.md:107-109` |
 | Real PDK / memory-compiler paths | 1 Makefile + docs | same | — | **`cocotb/tidelink/Makefile:40` `PHYS_IP_PATH ?= <PHYS-IP-PATH>`, `:42` `MEM_PATH ?= <MEM-COMPILER-PATH>`**; `docs/reference/DFT_PLAN_2026_05_28.md:36-37,55`; `docs_site/integration.md:593-594` (`tcbn65lpbwp12t`, rf_16k path) |
 | Library / process names (`tcbn65*`, `cln65lp`, `sc12_cln65lp`) | 7 files tcbn65; `flists/tidelink_netlist.flist:2-3`; `fusion-compiler/Makefile:90`; `constraints.sdc:241`; `routing_rules.tcl.template:5,11` | same | — | family names, not drop codes — lower severity, but `site.env.example:34-45` says the policy is to keep even corner-encoded stems out |

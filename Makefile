@@ -1808,6 +1808,18 @@ selfcheck_gates:
 selfcheck_registry_hw_evidence:
 	@python3 $(TIDELINK_HOME)/scripts/ci/tests/test_registry_hw_evidence.py
 
+# docs/bug_registry.html and docs/build_registry.html are GENERATED and TRACKED,
+# which means they go stale silently on every registry edit. --check is cheap and
+# deterministic; run it rather than trusting that whoever edited the YAML
+# remembered. (On 2026-09-11 --check itself could not report staleness: it raised
+# a ValueError before printing, and exited 1 only because an uncaught exception
+# does. Fixed in the same pass.)
+.PHONY: bug_registry_html bug_registry_html_check
+bug_registry_html:
+	@python3 $(TIDELINK_HOME)/scripts/gen_bug_registry_html.py
+bug_registry_html_check:
+	@python3 $(TIDELINK_HOME)/scripts/gen_bug_registry_html.py --check
+
 # Sanctioned single-suite run that PROPAGATES failure (unlike bare `make sim_gate_<x>`,
 # which records status and exits 0). Routes through the tip-stamped summary.
 #   make sim_gate_one TOKEN=sim_gate_v2_data SUITE=v2_pair_data

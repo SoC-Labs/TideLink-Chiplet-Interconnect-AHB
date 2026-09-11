@@ -1,5 +1,14 @@
 # Contributing
 
+:::{important}
+**The authority is `CONTRIBUTING.md` at the repository root.** This page is a
+reference companion — repository layout, the `sim_gate` contract in detail, and
+how to add a test. Where the two differ, `CONTRIBUTING.md` wins. In particular
+it carries the rules that a change must satisfy to land: the four test arms per
+fix, the must-fail control per diagnostic, provenance and artefact requirements,
+registry discipline and the definition of done.
+:::
+
 TideLink is a tapeout-intent subsystem with live hardware attached to it. The
 conventions below exist because each one has already been paid for once.
 
@@ -114,12 +123,22 @@ eth-chiplet bring-up. Before rebasing onto any live branch, cross-check
 
 ## The `sim_gate` contract
 
-`make sim_gate` is the merge gate. Its contract:
+:::{warning}
+**`make sim_gate` is not a merge gate — nothing runs it automatically.** There is
+no `.github/` directory in the tree and `origin` is the GitHub remote, so no
+pipeline exists on the current forge. `.gitlab-ci.yml:364` defines a `sim-gate`
+job with `allow_failure: false`, but it targets the second, non-current GitLab
+remote. The gate is run by whoever remembers to run it, and "CI was green" means
+nothing here. It is a **release gate by convention**: mandatory before any farm
+build and before any hardware deploy (see `CONTRIBUTING.md` §6).
+:::
+
+Its contract:
 
 ```bash
 source ./set_env.sh
-make sim_gate            # ~45-60 min, 43 blocking suites + 2 sentinels
-make sim_gate_quick      # 14-suite smoke variant (SIM_GATE_QUICK_SUITES, Makefile:1206)
+make sim_gate            # SIM_GATE_ALL_SUITES (55 suites) + 3 sentinels
+make sim_gate_quick      # smoke variant (SIM_GATE_QUICK_SUITES)
 make sim_gate_inventory  # lists suites and cross-checks wiring; runs nothing
 ```
 
@@ -128,6 +147,13 @@ recreates `imp/sim_gate/`, runs every suite, then scores them in
 `sim_gate_summary`. Per-suite artefacts land at `imp/sim_gate/<suite>.log` and
 `<suite>.status`. Exit is non-zero if any blocking suite is not `PASS` or any
 sentinel is not `XFAIL`.
+
+**Read the `.status` files, not an aggregate exit code.** The aggregate passes
+`SIM_GATE_NONFATAL=1` to every suite so it can record-and-continue, so a suite's
+own non-zero exit is deliberately suppressed. Every `.status` is stamped
+`<sha>-<clean|dirty>` (`GATE_STAMP`, `Makefile:252-254`) and `sim_gate_summary`
+**refuses to report PASS** unless every scored status carries the current stamp —
+a `-dirty` stamp is not a pass. See `CONTRIBUTING.md` §5.
 
 ### Status vocabulary
 
@@ -213,6 +239,8 @@ sentinel is not `XFAIL`.
 | `make -C cocotb regression` | The 28 unit environments (see the scope caveat in {doc}`simulation_tests`). |
 
 ## Commit and gate expectations
+
+These are the headlines; `CONTRIBUTING.md` is the full, authoritative list.
 
 - **`make sim_gate` must be green before any farm build and before any hardware
   deploy.** A sim-discoverable bug once burned 75 minutes of farm and deploy

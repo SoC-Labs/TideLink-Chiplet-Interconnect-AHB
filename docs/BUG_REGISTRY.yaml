@@ -9,8 +9,11 @@
 # per-bug `status`, `fix`, and `verification` blocks; the human approver owns
 # the final `signoff.approved` flag.
 # -----------------------------------------------------------------------------
-schema_version: 1
+schema_version: 2                # 2 (2026-09-11): hardware claims now carry
+                                 # verification.evidence + verification.vehicle,
+                                 # machine-enforced by scripts/ci/registry_coverage.py
 generated: 2026-08-06
+last_truth_pass: 2026-09-11      # see campaign.truth_pass_2026_09_11
 maintainer: autonomous overnight campaign (Claude Opus 4.8)
 approver: David Mapstone <david@mapstone.me>
 
@@ -26,7 +29,36 @@ approver: David Mapstone <david@mapstone.me>
 # -----------------------------------------------------------------------------
 legend:
   severity: [rank1_critical, high, medium, low, fyi]
-  status: [open, root_caused, fix_built, sim_proven, hw_proven, signed_off, deferred, wontfix]
+  status: [open, root_caused, fix_built, sim_proven, hw_proven, signed_off, deferred, wontfix, closed]
+  vehicle: [onchip, eth-pair, z2, asic-mirror-sim]   # the ONLY legal verification.vehicle values
+
+# ---- HARDWARE-PROOF EVIDENCE DISCIPLINE (added 2026-09-11) -------------------
+# Added because the 2026-09-11 truth pass found all three `hw_proven` entries
+# (TL-003, TL-005, TL-007) resting on PROSE in docs/ rather than on a retained
+# artefact, and the same failure had already been written down eleven months of
+# project-time earlier in imp/hw_gate/SIGNOFF_LEDGER_2026_08_13.md without any
+# entry being demoted. A verdict nobody can re-check is not a verdict.
+#
+# RULE (machine-enforced, scripts/ci/registry_coverage.py --hw-evidence):
+#   An entry whose `status` is hw_proven or signed_off, OR whose
+#   `verification.hw_validated` is true, MUST carry BOTH:
+#     verification.evidence : a repo-relative path (or list of paths) that a
+#                             script can stat(). A narrative .md is acceptable
+#                             ONLY if it is the artefact itself; prefer the raw
+#                             capture (.csv/.jsonl/.log/verdict file).
+#     verification.vehicle  : exactly one value from legend.vehicle above.
+#   Anything else is a HARD FAIL. `hw_evidence:` (free text) stays as colour but
+#   never satisfies the rule on its own.
+#
+#   Control: scripts/ci/tests/test_registry_hw_evidence.py — feeds synthetic
+#   registries to the real checker and requires it to go RED. Run via
+#   `make selfcheck_registry_hw_evidence`.
+hw_evidence_policy:
+  required_for: [status:hw_proven, status:signed_off, "verification.hw_validated: true"]
+  required_fields: [verification.evidence, verification.vehicle]
+  vehicle_enum: [onchip, eth-pair, z2, asic-mirror-sim]
+  checker: scripts/ci/registry_coverage.py
+  control: scripts/ci/tests/test_registry_hw_evidence.py
 
 # ---- SIGN-OFF MECHANISM -----------------------------------------------------
 # Every bug carries a `signoff` block:
@@ -91,12 +123,71 @@ campaign:
       and previously let a bare-indented amendment block shadow TL-041's verification
       and signoff. Result: 42 entries, TL-001..TL-042, zero duplicate mapping keys,
       zero duplicate ids.
+  truth_pass_2026_09_11:
+    scope: >
+      Every claim in this file re-checked against the tree at origin/main 5e8bdb5a,
+      independently of the 2026-09-09 rev-2 review that prompted it. Method: every
+      cited sha put through `git merge-base --is-ancestor <sha> origin/main`; every
+      claimed artefact stat()ed under imp/ and docs/; flist and RTL claims read at the
+      file rather than inferred from a commit message.
+    method_note: >
+      Nothing here was accepted because a review said it. Two of the review's own
+      claims did not survive contact with the tree and are recorded as CORRECTED
+      below. Where the repository cannot settle a question, the entry now says so
+      rather than guessing.
+    demoted_hw_proven: [TL-003, TL-005, TL-007]
+    landed_fix_recorded: [TL-006, TL-020, TL-026, TL-027, TL-032, TL-037]
+    closed: [TL-015, TL-027, TL-033]
+    added: [TL-043, TL-044, TL-045, TL-046]
+    corrections_to_the_2026_09_09_review:
+      - >
+        "TL-005/TL-007: a silicon capture showed the synthetic-B backstop never fired
+        in the real wedge (0x21F8 bit[8]=0)" — PARTIALLY REFUTED. The 2026-08-08
+        eye-gated handover records the OPPOSITE for the bad-eye wedge class:
+        docs/HANDOVER_RELIABILITY_EYE_GATED_2026-08-08.md:35 gives 0x21F8=0xb5000521
+        on a bad-eye bring-up, whose bit[8] IS 1 (synth-B fired), against 0xb5000421
+        (bit[8]=0) on the good-eye runs. The bit[8]=0 reading the review means is
+        0xB5000498, cited by the rev2/integration registry and Makefile for the
+        2026-08-23 write-starvation wedge — and NO retained capture anywhere on this
+        host contains that value; it exists only as prose in three source files.
+        The retained 2026-08-24 eth-pair capture reads wr_backstop=0, but that run
+        parks a READ port, where a WRITE backstop reading 0 is expected and refutes
+        nothing. NET: bit[8] does not support a blanket "never fired", and the
+        specific capture the claim rests on is not retained. This does not rescue
+        TL-005/TL-007 — they are demoted for the separate and sufficient reason that
+        their own HW verdict has no retained artefact.
+      - >
+        "TL-033 ... a saturate-at-zero guard has existed since ce2f2c90" — CONFIRMED
+        exactly (see the entry). "TL-015 resolved by the consolidation" — CONFIRMED
+        (both FF targets it names, 5be494b and 1107151, are now ancestors of
+        origin/main). "TL-037 landed as 2b84732f" — CONFIRMED, ancestor of
+        origin/main, RTL and gate wiring both present.
+      - >
+        "A registry entry 5c31619 on the local branch rev2/ar-r-selfheal" — that
+        object does NOT exist in this repository. It is 5c316198 in the off-repo
+        clone at nanosoc-ethernet-chiplet/tidelink, which also carries a second
+        unmerged registry entry (TL-045, on rev2/fix-exclusives) the review did not
+        mention. Both were read there and reused here; neither clone was modified.
+    could_not_verify:
+      - >
+        Whether cocotb/tidelink_fifo test_43_credit_underflow_saturates_whitebox
+        currently PASSES: needs a VCS run, not taken (five sibling agents were
+        running against the same licence pool). The RTL guard it targets is present
+        and read directly; the test's stale-probe defect is recorded as fixed in its
+        own source comment. Structure verified, execution not.
+      - >
+        Whether the 2026-08-02 "die_a survives errinject B byte0" and the Fix K
+        "wedge #3 -> #6" observations actually happened. They are contemporaneous and
+        specific, but no log, capture or verdict file from either run is retained
+        anywhere reachable from this host. They are recorded as unrecoverable, not as
+        false.
+
   awaiting_david_signoff:   # reached sim_proven/hw_proven with evidence; set signoff.approved when accepted
-    - "TL-003 Fix K (hw_proven, silicon)"
-    - "TL-005 F-2 backstop (hw_proven)"
+    - "TL-003 Fix K (sim_proven — hw_proven DEMOTED 2026-09-11, no retained artefact)"
+    - "TL-005 F-2 backstop (sim_proven — hw_proven DEMOTED 2026-09-11, no retained artefact)"
     - "TL-004 F-1 illegal-ERROR (sim_proven+gated)"
-    - "TL-006 W-byte-0 ECC (sim_proven+NOW gated 63222b6)"
-    - "TL-007 B-wedge OKAY synth-B (hw_proven)"
+    - "TL-006 W-byte-0 ECC (sim_proven+NOW gated 63222b6; ASIC flist re-point LANDED d78268a4)"
+    - "TL-007 B-wedge OKAY synth-B (sim_proven — hw_proven DEMOTED 2026-09-11, no retained artefact)"
     - "TL-002 wr_hold_r (sim_proven, standalone)"
     - "TL-008 txgen hijack (sim_proven+gated)"
   david_decisions:
@@ -285,7 +376,7 @@ bugs:
     title: Fix K — XHB500 hazard-list write-wedge (s_axi_bid mux)
     severity: high
     area: rtl/tidelink_top
-    status: hw_proven
+    status: sim_proven          # DEMOTED from hw_proven 2026-09-11 — see hw_claim_demoted_2026_09_11
     summary: >
       Under a bid-mismatch the XHB500 hazard-list never freed the EWR write,
       hard-wedging the write path. Fix K muxes s_axi_bid to sub_wr_awid_r when a
@@ -300,13 +391,34 @@ bugs:
     verification:
       sim_test: cocotb/tidelink_axi_datanode_recovery/test_axi_datanode_recovery.py  # bid_corrupt reproduce/fix pair
       in_sim_gate: true
-      hw_tested: true
-      hw_evidence: "silicon-confirmed die_a wedge #3 -> survives to #6"
+      hw_tested: false            # WAS true — withdrawn 2026-09-11, see hw_claim_demoted_2026_09_11
+      hw_validated: false
+      evidence: null              # REQUIRED for any hardware claim; nothing retained
+      vehicle: null
+      hw_evidence_withdrawn: "silicon-confirmed die_a wedge #3 -> survives to #6"   # retained verbatim as the historical claim
       in_hw_gate: true
       hw_test: kr260_eth_ecc_hwverify.sh   # [3] W byte-0 SOAK exercises the hazard-list write path; die_a must survive N injections (Fix K regression = wedge returns)
+    hw_claim_demoted_2026_09_11: >
+      hw_proven -> sim_proven. The hardware half of this verdict has NO RETAINED
+      ARTEFACT. Its entire basis is the one-line narrative "die_a wedge improved from
+      write #3 -> #6" in docs/HANDOVER_RANK1_PEERWRITE_DATADROP_2026-08-06.md:91.
+      No log, capture, verdict file or board transcript from that run exists anywhere
+      under imp/, docs/, or the off-repo result trees on this host; the ECC/injection
+      harness it names (pynq_host/scripts/kr260_eth_ecc_hwverify.sh) exists but has
+      left no output behind. imp/hw_gate/SIGNOFF_LEDGER_2026_08_13.md reached the
+      same conclusion on 2026-08-13 ("No HW log exists") and the entry was never
+      demoted, so the claim has been load-bearing for a month on nothing.
+      NOT A RETRACTION: the observation may well have happened, and the SIM half is
+      solid and non-vacuous (test_axi_bid_corrupt_wedges_no_fix FAILs without the fix,
+      test_axi_bid_corrupt_recovers_fixk PASSes with it — a genuine reproduce-first
+      pair, gated blocking).
+      TO RESTORE hw_proven: one kr260_eth_ecc_hwverify.sh run on a bid-corrupting
+      injection with the run directory committed under imp/hw_gate/ (image md5 per
+      die, pre/post 0x21F8 reads, the wedge index), then set
+      verification.evidence to that path and verification.vehicle to eth-pair.
     signoff:
-      claude_verdict: "hw_proven (silicon-confirmed). Candidate sign-off."
-      evidence: [commit:9dfe1da, "cocotb bid_corrupt reproduce+fix PASS", "silicon #3->#6"]
+      claude_verdict: "sim_proven, blocking-gated. The hw_proven claim was DEMOTED 2026-09-11 for want of any retained artefact (see hw_claim_demoted_2026_09_11). Candidate sign-off on the sim evidence alone."
+      evidence: [commit:9dfe1da, "cocotb bid_corrupt reproduce+fix PASS", "silicon #3->#6 — NARRATIVE ONLY, HANDOVER_RANK1_PEERWRITE_DATADROP_2026-08-06.md:91, no artefact"]
       approved: false
       approved_by: null
       approved_date: null
@@ -341,7 +453,7 @@ bugs:
     title: AXI data-node F-2 — I5 backstop asserts but never restores
     severity: high
     area: rtl/tidelink_top
-    status: hw_proven   # FIXED + GATED + HW-proven on integ line
+    status: sim_proven   # DEMOTED from hw_proven 2026-09-11 — see hw_claim_demoted_2026_09_11. FIXED + GATED (blocking).
     summary: >
       2026-08-02 review CRITICAL: the backstop drove ERROR upstream of XHB500 and
       abandoned s_axi tracking -> XHB500 waits forever for a B that never arrives
@@ -356,8 +468,11 @@ bugs:
     verification:
       sim_test: "test_axi_datanode_gaps.py gaps_backstop 6/6 + test_i5_clean_drop_leaves_path_usable (XFAIL->positive regression)"
       in_sim_gate: true   # gaps_backstop BLOCKING (integ), promoted 622b3d8
-      hw_tested: true
-      hw_evidence: "die_a survives `errinject --node B --inj-byte 0` (ping 2/2, SSH up); every prior build hard-wedged"
+      hw_tested: false            # WAS true — withdrawn 2026-09-11, see hw_claim_demoted_2026_09_11
+      hw_validated: false
+      evidence: null              # REQUIRED for any hardware claim; nothing retained
+      vehicle: null
+      hw_evidence_withdrawn: "die_a survives `errinject --node B --inj-byte 0` (ping 2/2, SSH up); every prior build hard-wedged"
       hw_scope: "B-node byte-0 single-bit inject ONLY; AW/W and B byte-1 untested/failing"   # ADDED 2026-08-13 — see hw_scope_note
       hw_scope_note: >
         NARROWED 2026-08-13. The hw_proven verdict rests on exactly ONE silicon
@@ -369,6 +484,32 @@ bugs:
         as general recovery proof, which is how the campaign rollup has been using it.
       in_hw_gate: true
       hw_test: kr260_eth_ecc_hwverify.sh   # [2] B byte-0 injection -> die_a ALIVE is exactly this bug's evidence (backstop-restore regression = die_a wedges)
+    hw_claim_demoted_2026_09_11: >
+      hw_proven -> sim_proven. The hardware half has NO RETAINED ARTEFACT. Its whole
+      basis is one table row of prose:
+      docs/AXI_DATANODE_OKAY_FIX_HWPROOF_2026_08_02.md:44-48 ("B, byte 0, bit 0 |
+      ALIVE (ping 2/2, SSH OK)"). No board transcript, ping output, ssh log or obs
+      read from that session survives under imp/, docs/ or any result tree on this
+      host. imp/hw_gate/SIGNOFF_LEDGER_2026_08_13.md said exactly this on 2026-08-13
+      ("HW claim rests on a narrative doc, not a log") and the status was left at
+      hw_proven for a month. The hw_scope_note below had already narrowed the claim to
+      one inject class on one node; narrowing an unretained claim does not retain it.
+      WHAT THE REPOSITORY CANNOT SETTLE: whether the synth-B backstop arms in the
+      wedge classes that actually matter. Evidence points BOTH ways and neither side
+      is retained. docs/HANDOVER_RELIABILITY_EYE_GATED_2026-08-08.md:35 reports
+      0x21F8=0xb5000521 on a bad-eye wedge, i.e. bit[8]=1, synth-B FIRED; the same row
+      reports 0xb5000421 (bit[8]=0) on the healthy runs. Against that, the 2026-08-23
+      write-starvation wedge is cited as 0x8403_21F8=0xB5000498 (bit[8]=0, SET-ONLY,
+      therefore "the expiry never happened") in three places on rev2/integration —
+      the Makefile TL-042 block, its registry, and test_tl044_hol_write_age.py — and
+      NO capture containing that value is retained anywhere on this host. The only
+      retained silicon obs reads (td-bisect ethchiplet-capture-2026-08-24/10_post_obs.log,
+      wr_backstop=0; kr260-baseline-2026-08-23-results/12c, 0xB5000001) come from runs
+      that park a READ port, where a WRITE backstop reading 0 is expected and
+      adjudicates nothing. Recorded as UNDECIDABLE FROM THIS REPOSITORY, not resolved.
+      TO RESTORE hw_proven: one errinject B byte-0 run committed under imp/hw_gate/
+      with per-die image md5, pre/post 0x21F8 and the liveness probe output; set
+      verification.evidence to it and verification.vehicle to eth-pair.
     caveats:
       - "OKAY masks the lost write-ack — sound only for a data_id-routing corruption where DATA already landed. David RATIFIED OKAY over SLVERR (SLVERR caused a PS write-retry loop = self-sustaining wedge)."
       - "Physical marginal-eye wedge (TL-009) still dominates on HW independent of this logical fix.  ** SUPERSEDED 2026-08-13: the 'degraded rig eye' reading is RETRACTED — see TL-009.physical_eye_claims_retracted_2026_08_13. The rig delivers 16/16 byte-exact on baseline and the wedge reproduces on a GOOD eye. **"
@@ -412,8 +553,8 @@ bugs:
       and is proven: imp/hw_gate/ila_2026_08_12/{ila_capture.tcl, ila_capture_run.sh}
       force-capture through the PS deadlock.
     signoff:
-      claude_verdict: "hw_proven + gated (blocking) on integ. Candidate sign-off (integ line)."
-      evidence: [commit:9b4c40b, commit:e827199, commit:42da64b, "gaps_backstop 6/6", "die_a survives errinject B byte0"]
+      claude_verdict: "sim_proven + gated (blocking). hw_proven DEMOTED 2026-09-11 — no retained artefact, and whether the backstop arms in the operative wedge class is undecidable from this repository (see hw_claim_demoted_2026_09_11)."
+      evidence: [commit:9b4c40b, commit:e827199, commit:42da64b, "gaps_backstop 6/6", "die_a survives errinject B byte0 — NARRATIVE ONLY, AXI_DATANODE_OKAY_FIX_HWPROOF_2026_08_02.md:44-48, no artefact"]
       approved: false
 
   # ---------------------------------------------------------------------------
@@ -476,7 +617,7 @@ bugs:
     title: AXI data-node B-wedge — synth-B OKAY (not SLVERR) restores stuck write
     severity: high
     area: rtl/tidelink_top
-    status: hw_proven
+    status: sim_proven          # DEMOTED from hw_proven 2026-09-11 — see hw_claim_demoted_2026_09_11
     summary: >
       synth-B response returned SLVERR which failed to restore a stuck XHB500
       write; emitting OKAY restores it so die_a survives errinject B byte0.
@@ -487,10 +628,21 @@ bugs:
       branch: fix/axi-datanode-recovery
       netlist_affecting: true
     verification:
-      sim_test: pending_agent:2
-      in_sim_gate: unknown
-      hw_tested: true
-      hw_evidence: "die_a survives `errinject B byte0` (was hard-wedge every prior build)"
+      # WAS `sim_test: pending_agent:2` / `in_sim_gate: unknown` — a placeholder that
+      # was never filled in and that registry_coverage.py has been flagging as a
+      # coverage GAP ever since. Filled 2026-09-11 from the tree: the OKAY contract IS
+      # gated. cocotb/tidelink_axi_datanode_recovery/Makefile:222-227 GAPS_BACKSTOP_TESTS
+      # runs test_i5_backstop_restores_the_path, whose docstring states the contract
+      # under test ("retires it (resp=OKAY) so the write RECOVERs and XHB500 re-idles",
+      # test_axi_datanode_gaps.py:841), and Makefile sim_gate_axi_datanode_gaps invokes
+      # gaps_backstop as a blocking suite. The re-point to the OKAY contract is 622b3d8.
+      sim_test: "cocotb/tidelink_axi_datanode_recovery/test_axi_datanode_gaps.py GAPS_BACKSTOP_TESTS (make gaps_backstop) — test_i5_backstop_restores_the_path / test_i5_clean_drop_leaves_path_usable / test_i5_rearms_after_abort assert the synth-B OKAY contract"
+      in_sim_gate: true   # sim_gate_axi_datanode_gaps -> gaps_backstop, BLOCKING
+      hw_tested: false            # WAS true — withdrawn 2026-09-11, see hw_claim_demoted_2026_09_11
+      hw_validated: false
+      evidence: null              # REQUIRED for any hardware claim; nothing retained
+      vehicle: null
+      hw_evidence_withdrawn: "die_a survives `errinject B byte0` (was hard-wedge every prior build)"
       hw_scope: "B-node byte-0 single-bit inject ONLY; AW/W and B byte-1 untested/failing"   # ADDED 2026-08-13 — see hw_scope_note
       hw_scope_note: >
         NARROWED 2026-08-13, same basis as TL-005. The hw_proven verdict rests on the
@@ -501,9 +653,25 @@ bugs:
         narrowed so it stops reading as general recovery proof.
       in_hw_gate: true
       hw_test: kr260_eth_ecc_hwverify.sh   # [2] B byte-0 injection -> die_a ALIVE is this bug's exact evidence (synth-B-OKAY regression = SLVERR again = die_a wedges)
+    hw_claim_demoted_2026_09_11: >
+      hw_proven -> sim_proven. Same artefact, same absence, as TL-005: the verdict is
+      the single prose row docs/AXI_DATANODE_OKAY_FIX_HWPROOF_2026_08_02.md:44-48, and
+      nothing raw from that 2026-08-02 session is retained. The 2026-08-13 ledger
+      called this row "the single most overstated row" in the registry, on the
+      compound grounds that it claimed hardware proof from a narrative AND left
+      `sim_test: pending_agent:2` unfilled; both halves are now corrected.
+      One in-repo artefact from that day DOES survive and is worth not confusing with
+      the missing one: docs/ila_capA_i5_fires_2026_08_02.csv, 4096 samples, which is
+      genuine silicon ground truth for the DEFECT (the dead window after the I5 ERROR,
+      dbg_xhb_hrdyout_raw=0) and contains nothing about the OKAY fix, having been
+      captured before it existed.
+      TO RESTORE hw_proven: re-run errinject B byte-0 on the OKAY image, commit the run
+      directory under imp/hw_gate/, set verification.evidence to it and
+      verification.vehicle to eth-pair. Note the retained contra-evidence in the same
+      table: B byte-1 WEDGED (TL-038), so the sweep must report per-byte, not a verdict.
     signoff:
-      claude_verdict: "hw_proven; OKAY-vs-ERROR semantics is a David decision"
-      evidence: [commit:e827199, "@dcf0fce not pushed"]
+      claude_verdict: "sim_proven + gated (blocking). hw_proven DEMOTED 2026-09-11 — no retained artefact (see hw_claim_demoted_2026_09_11). OKAY-vs-ERROR semantics remains a David decision."
+      evidence: [commit:e827199, "@dcf0fce not pushed", "die_a survives errinject B byte0 — NARRATIVE ONLY, AXI_DATANODE_OKAY_FIX_HWPROOF_2026_08_02.md:44-48, no artefact"]
       approved: false
 
   # ---------------------------------------------------------------------------

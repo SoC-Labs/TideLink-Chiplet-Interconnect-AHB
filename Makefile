@@ -1879,6 +1879,35 @@ sim_gate_summary:
 	fi; \
 	exit $$fail
 
+# ── controls for the gate tooling itself ─────────────────────────────────────
+# Every checker and guard in this Makefile that was fixed after producing a
+# false verdict ships with a control that FAILS if the fix is reverted. They are
+# pure Python plus git -- no simulator, no board, a few seconds -- so there is no
+# excuse for them not to run. A checker whose own control is never executed is
+# back to being decoration.
+#
+# PROVE A DIAGNOSTIC CAN FAIL BEFORE TRUSTING IT. Each test's docstring gives the
+# exact command that turns it red (point it at a pre-fix worktree, or at a stub
+# checker). If you add one, add that line too.
+#
+#   make selfcheck_gates      run them all; reports every failure, exits non-zero
+.PHONY: selfcheck_gates
+selfcheck_gates:
+	@rc=0; n=0; \
+	for t in $(TIDELINK_HOME)/scripts/ci/tests/test_*.py; do \
+	  [ -e "$$t" ] || continue; n=$$((n+1)); \
+	  echo "=== $$(basename $$t)"; \
+	  if python3 "$$t"; then :; else rc=1; echo "  ^ CONTROL FAILED"; fi; \
+	done; \
+	if [ $$n -eq 0 ]; then \
+	  echo "selfcheck_gates: NO CONTROLS FOUND in scripts/ci/tests/ — refusing to"; \
+	  echo "                 report success for a run that checked nothing."; \
+	  exit 2; \
+	fi; \
+	if [ $$rc -eq 0 ]; then echo "selfcheck_gates: ALL $$n CONTROLS PASS"; \
+	else echo "selfcheck_gates: FAILURES — a checker cannot produce its failing verdict"; fi; \
+	exit $$rc
+
 # ── registry-driven regression harness (durable, "run for all bugs") ─────────
 .PHONY: sim_gate_registry_coverage sim_gate_regressions sim_gate_one
 

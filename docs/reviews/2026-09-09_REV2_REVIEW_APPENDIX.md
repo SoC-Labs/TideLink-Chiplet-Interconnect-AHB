@@ -121,7 +121,7 @@ Sources in `src/rtl` that are **not** in the shipping hierarchy (grep of instant
 | `tidelink_fpga` (F1) | 185 | none (V1) | fifo/fpga | ACC (only `_6` is LO) | ACC | LO | `cocotb/tidelink_top_pair/Makefile:37` default, `fpga/filelist.tcl` default, 10+ cocotb Makefiles |
 | `tidelink_top` (T) | 47 | none | fifo/fpga | **no Wlink at all** | — | ACC | `cdc/Makefile:20`, `lint/verilator/Makefile:97` |
 | `tidelink_asic` / `tidelink` / `tidelink_generic` | 9/10/9 | — | asic/fpga/generic | — | — | — | FIFO-only partitions (`syn/asic/common.mk:44`) |
-| `tidelink_netlist` | 4 | — | — | — | — | — | DC netlist + TSMC65 stdcells (`tidelink.mapped.v`) |
+| `tidelink_netlist` | 4 | — | — | — | — | — | DC netlist + <PROCESS-NODE> stdcells (`tidelink.mapped.v`) |
 
 Set difference F2 − A2 (exact, from the cleaned flists): `${CMSDK_FPGA_SRAM_V}`, `fifo/fpga/tidelink_sram.sv`, `LO/WlinkGenericFCReplayAddrSync_18.v`, `LO/WlinkGenericFCSM{,_1,_2,_3,_4}.v`, `LO/i2c_master.v`, `v2shims/{v2_Wlink.v,v2_axi_chiplet_controller.sv,v2_tidelink_top.sv}`. A2 − F2: `ACC/i2c/rtl/i2c_master.v`, `ACC/wlink/WlinkGenericFCReplayAddrSync_18.v`, `ACC/wlink/WlinkGenericFCSM{,_1..4}.v`, `TPHY/tidelink_sync_word.svh`, `fifo/asic/tidelink_sram.sv`, and the un-shimmed `LO/Wlink.v`, `LO/axi_chiplet_controller.sv`, `tidelink_top.sv`. That is **8 divergent modules**: FCSM ×5, AddrSync_18, i2c_master, tidelink_sram — matching the peer inventory (8 modules; their 7,210-line figure is from `$WORKTREES/SoCLabs/td-bisect/asicsim-2026-08-26/`, not re-derived here; my own added+removed count for the same 8 is 1,176 lines, a different metric).
 
@@ -1524,7 +1524,7 @@ Verified: `d0a977aa..e6aaa82f` = 14 commits, `e6aaa82f..d0a977aa` = 13; `e6aaa82
 - No firmware PHY retrain (calibrated-once): `calibrated_once_q` POR-only latch (FIX1 gates it on `!validation_timed_out`); in-situ `SWI_FORCE_RECAL` wedges die_a (7 recals 0 lands). Data-mode wedge needs both-die POR (TL-029 waiver). **Open.**
 
 ### 2.12 Public-repo exposure
-- `syn/asic/common.mk` at 5e8bdb5a: **clean** — site paths moved to untracked `site.env` (`site.env.example` tracked); `dwn1c21` = 0 hits; PDK path grep in `syn/` = only generic library family names (`tcbn65lp`, `CLN65LP_TECH_PATH` variable). `affbda14` ✔ on main (equivalent of `32d20a98`). **FIXED on main for PDK/home paths.**
+- `syn/asic/common.mk` at 5e8bdb5a: **clean** — site paths moved to untracked `site.env` (`site.env.example` tracked); `dwn1c21` = 0 hits; PDK path grep in `syn/` = only generic library family names (`<STDCELL-LIB>`, `<PROCESS-NODE>_TECH_PATH` variable). `affbda14` ✔ on main (equivalent of `32d20a98`). **FIXED on main for PDK/home paths.**
 - **Board credential + IPs still in public history:** 18 files contain the board password string at 5e8bdb5a **and at rev2/integration** (count only; value deliberately not printed); 41 files contain the two board IPs; 11 commits in history touch the password string. Removal `60637105` is on **rev2/hygiene only**. History rewrite/rotation outstanding. **Verified (counts).**
 
 ### 2.13 PTP (F13), PHC hop, mailbox; PHY BIST (F19)
@@ -1721,7 +1721,7 @@ All commands run read-only against `$WORKTREES/SoCLabs/td-bisect/baseline-5e8bdb
 | A17 | `grep -c socl_` deps vs local FCSM 0-4 | 0 vs 73/72/72/72/72 |
 | A18 | `git show 52c06677 --stat` + diff of `_GEN_115` | 6 files, +190/-12; Part-B unconditional; 68 lines mark_debug taps |
 | A19 | `git show 001b231d` message | new port `link_clk_div_ratio_i[2:0]`; `user_hsclk` rewired; default = combinational bypass |
-| A20 | `git grep -i dwn1c21 5e8bdb5a`; `tsmc` outside deps; drop-code regex in `syn/`; `site.env.example` tracked; `common.mk` head | 0; docs/prose only; only `tcbn65lp`/`CLN65LP_TECH_PATH`; yes; site paths delegated to untracked `site.env` |
+| A20 | `git grep -i dwn1c21 5e8bdb5a`; `tsmc` outside deps; drop-code regex in `syn/`; `site.env.example` tracked; `common.mk` head | 0; docs/prose only; only `<STDCELL-LIB>`/`<PROCESS-NODE>_TECH_PATH`; yes; site paths delegated to untracked `site.env` |
 | A21 | `git grep -l '<board password>' 5e8bdb5a \| wc -l`; same on rev2/integration; IPs; `git log -S<pw> --all \| wc -l` | 18; 18; 41; 11 (values not printed) |
 | A22 | `git log --oneline --since=2026-08-10 -- syn/asic` | `affbda14`, `9d1b2eaa` |
 | A23 | `set_case_analysis` in `1_init_design.tcl`; `constraints.sdc` header; `read_design.tcl` uncertainty block | :285-297 per-scenario; "PURE SDC only"; `current_scenario` before `set_clock_uncertainty` :278-281 |
@@ -2048,7 +2048,7 @@ Every suite is spelled in four places that must agree by hand: (a) its target bo
 | `tidelink_top_full_asic.flist` (257) | `syn/asic/scripts/tidelink.FC.read_design.tcl`, `common.mk` default, root `Makefile` (`asic_v1_elab`) | V1 ASIC |
 | `tidelink_fpga.flist` (334) | `.gitlab-ci.yml`, `fpga/filelist.tcl` (V1 default!), 8 `cocotb/debug/*`, `lint/verilator`, 3 uvm | V1 FPGA |
 | `tidelink_asic.flist` (9) | `common.mk` (`ASIC_FLIST`), `git_merge_flist.sh` | |
-| `tidelink_netlist.flist` (4) | 8 forks (see below) | GLS: `${STDCELL_VERILOG}/sc12_cln65lp_base_rvt*.v` |
+| `tidelink_netlist.flist` (4) | 8 forks (see below) | GLS: `${STDCELL_VERILOG}/<STDCELL-LIB>_base_rvt*.v` |
 | `tidelink_top.flist` (90) | `cocotb/tidechart_tidelink_pair`, `lint/verilator` | |
 | `tidelink_ahb/apb_regs/apb_addr_ctrl/returner/fifo/fifo_ahb/eye_regs/eye_visibility/lane_checker/cdc_tear*/a2l_replay_cdc*` | one cocotb or lint consumer each | unit lists |
 | **ORPHANS (no consumer)**: `tidelink_clkfreq_check`, `tidelink_generic`, `tidelink_idelay_rx`, `tidelink_mul_iter`, `tidelink_perf`, `tidelink_phc_cdc`, `tidelink_rxclk_buf`, `tl_addr_trans_cam`, `tl_addr_trans_regs` | — | 9 of 33, all 2-9 lines |
@@ -2140,12 +2140,12 @@ All counts are `git grep` over **tracked** files at the named ref. **The board c
 | Jump-host IP `<REDACTED-IP>` | 2 | — | — | `docs/BOARD_DEPLOY_RUNBOOK.md:18`, `docs_site/boards.md:66` |
 | Arm release-coded drop `…/<ARM-CMSDK-DROP>` | 41 files | 41 | 41 | 40× `cocotb/*/Makefile` (`export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/<ARM-IP-FAMILY>/<ARM-CMSDK-DROP>/…`, e.g. `cocotb/tidelink/Makefile:6`), `cdc/Makefile:2,8` |
 | EDA install paths `<EDA-INSTALL>` etc. | 40 files | 40 | — | 38× `cocotb/*/Makefile` `VERDI_HOME = …`, `cdc/Makefile:12` `SPYGLASS_HOME ?= …`, `cocotb/debug/phc_pair/Makefile:39` `<EDA-INSTALL>`, `docs/reference/DEPENDENCIES.md:107-109` |
-| Real PDK / memory-compiler paths | 1 Makefile + docs | same | — | **`cocotb/tidelink/Makefile:40` `PHYS_IP_PATH ?= <PHYS-IP-PATH>`, `:42` `MEM_PATH ?= <MEM-COMPILER-PATH>`**; `docs/reference/DFT_PLAN_2026_05_28.md:36-37,55`; `docs_site/integration.md:593-594` (`tcbn65lpbwp12t`, rf_16k path) |
-| Library / process names (`tcbn65*`, `cln65lp`, `sc12_cln65lp`) | 7 files tcbn65; `flists/tidelink_netlist.flist:2-3`; `fusion-compiler/Makefile:90`; `constraints.sdc:241`; `routing_rules.tcl.template:5,11` | same | — | family names, not drop codes — lower severity, but `site.env.example:34-45` says the policy is to keep even corner-encoded stems out |
+| Real PDK / memory-compiler paths | 1 Makefile + docs | same | — | **`cocotb/tidelink/Makefile:40` `PHYS_IP_PATH ?= <PHYS-IP-PATH>`, `:42` `MEM_PATH ?= <MEM-COMPILER-PATH>`**; `docs/reference/DFT_PLAN_2026_05_28.md:36-37,55`; `docs_site/integration.md:593-594` (`<STDCELL-LIB>`, rf_16k path) |
+| Library / process names (`<STDCELL-LIB>*`, `<PROCESS-NODE>`, `<STDCELL-LIB>`) | 7 files <STDCELL-LIB>; `flists/tidelink_netlist.flist:2-3`; `fusion-compiler/Makefile:90`; `constraints.sdc:241`; `routing_rules.tcl.template:5,11` | same | — | family names, not drop codes — lower severity, but `site.env.example:34-45` says the policy is to keep even corner-encoded stems out |
 | `$WORKTREES/…` | 139 hits | 73 files | — | 30× cocotb Makefiles/tests (`cd $WORKTREES/td_idelay_wt && source set_env.sh`), `.claude/workflows/tidelink-bug-lifecycle.js:12`, `dut_src_*.f` |
 | `<FORMER-USER-HOME>` | **0** on main | 1 file (inventory doc) | 0 | removed by `affbda14`/`32d20a98`; still in history (`b9523996`, `2bb154c6` 2026-06-02) |
 | `/research/` | 33 files | 33 | — | mostly "read-only, never write" prose; the two Makefile defaults above are the real ones |
-| `<REDACTED-IP>`, `CG096`, `PL417`, `ts1n65`, `sc12mc` | 0 | 0 | 0 | |
+| `<REDACTED-IP>`, `<MACRO-ID>`, `<MACRO-ID>`, `<MEM-MACRO>`, `<STDCELL-LIB>` | 0 | 0 | 0 | |
 
 **F-5.1 — The board credential is published, and history rewriting cannot unpublish it.** Sev **P0** · Conf H · Effort S (rotate) · rev2/hygiene FIXED going forward (`60637105` removes the 24 defaults, adds `scripts/ci/check-secrets.sh` with self-arming rules :39-45), rev2/integration NOT, main NOT.
 Evidence: first commit carrying it `a04a194b` (2026-07-31) **is an ancestor of `origin/main`** (`git merge-base --is-ancestor` → yes); `git log --all -S<cred>` = 11 commits. It sits beside the username (`ubuntu`) and both board IPs in the same lines (`docs/handoff/TL027_A2L_ETHCHIPLET_HANDOFF.md:47`, `docs/HANDOVER_AXI_DATANODE_RECOVERY.md:47-48`). Even if `main` is force-rewritten, forks, clones, GitHub's cached views and anyone who fetched since 07-31 keep it. **State plainly: rotate the board password (and any host that shares it), then merge the removal; do not spend effort on history rewriting for this class.** The IPs are RFC-1918 behind the jump host; still, `site.local.mk.example` already shows the right pattern (placeholders) — move the runbook IPs into `site.local.mk`/`fpgahub` config.

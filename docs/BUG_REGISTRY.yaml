@@ -567,16 +567,35 @@ bugs:
       A bypassed WlinkEccSyndrome mis-routed single-bit header flips; decode
       `corrupted` defaulted 1 for syndrome==0 (clean). The _T gate is the fix.
       byte-0 W/AW/R/B + byte-1 corrected byte-exact in sim.
-      REOPENED 2026-08-07 (ASIC line): the fix is wired into the FPGA-V2 flist
-      ONLY, NOT the shipping ASIC-V2 flist -> the tapeout netlist currently ships
-      the ECC BYPASS. See asic_flist_gap.
+      REOPENED 2026-08-07 (ASIC line): the fix was wired into the FPGA-V2 flist
+      ONLY, NOT the shipping ASIC-V2 flist -> the tapeout netlist shipped the ECC
+      BYPASS. *** THAT REOPENING IS CLOSED AS OF d78268a4 — see
+      asic_flist_gap_CLOSED_2026_09_11. The asic_flist_gap text below is STALE and
+      is retained only as the historical record of the gap. ***
     fix:
       approach: header-ECC restore (_T gate on the syndrome==0 clean case)
-      files: [src/rtl/local_overrides/WlinkEccSyndrome.v]   # wired into tidelink_fpga_v2.flist:243 (FPGA). NOT the ASIC flist -- see asic_flist_gap.
-      commit: 1aaed00   # regression tests added 8e071f7. NOTE: 1aaed00 re-pointed ONLY the FPGA flist despite its "flists re-pointed" (plural) message.
-      branch: integ/axirec-on-chiplet
+      files: [src/rtl/local_overrides/WlinkEccSyndrome.v]   # wired into BOTH flists now: tidelink_fpga_v2.flist:269 and tidelink_top_full_asic_v2.flist:253
+      commit: 1aaed00   # regression tests 8e071f7; gate wiring 63222b6; ASIC-V2 flist re-point d78268a4; combined-config sim cf0f1ab2. 1aaed00 alone re-pointed ONLY the FPGA flist despite its "flists re-pointed" (plural) message.
+      commits_landed_on_main: [1aaed00, 8e071f7, 63222b6, d78268a4, cf0f1ab2]   # ADDED 2026-09-11 — all five confirmed ancestors of origin/main
+      branch: origin/main        # WAS integ/axirec-on-chiplet; that line is merged
       netlist_affecting: true
-      asic_flist_gap: >
+      asic_flist_gap_CLOSED_2026_09_11: >
+        CLOSED. The ASIC-V2 flist re-point LANDED and is on origin/main. Verified at
+        the file, not from a commit message: flists/tidelink_top_full_asic_v2.flist:253
+        reads ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkEccSyndrome.v, and the
+        deps bypass survives at :248 only as a comment explaining what was replaced.
+        The FPGA flist agrees (tidelink_fpga_v2.flist:269). Landing commit d78268a4
+        "fix(TL-006): re-point ASIC-V2 flist ECC deps->local_override (restore header
+        ECC)", confirmed an ancestor of origin/main by merge-base; the combined-config
+        sim that A3(a) demanded landed with cf0f1ab2. So the entry's headline claim —
+        "the tapeout netlist currently ships the ECC BYPASS" — has been FALSE since
+        2026-08-08 and stayed in the file for a month. The 2026-08-13 ledger had
+        already spotted it ("Structural win: the ASIC flist re-point HAS landed") and
+        the entry was not updated.
+        STILL OPEN, and not to be read away by this closure: byte-1 coverage is
+        sim-only (TL-038 still wedges on silicon), W byte-0 has never been HW-validated
+        (A2), and landing is netlist-affecting so David still signs.
+      asic_flist_gap_STALE_HISTORICAL: >
         VERIFIED 2026-08-07 (ASIC-line-gaps agent): tidelink_top_full_asic_v2.flist:233
         still pulls deps/axi-chiplet-controller/logical/wlink/WlinkEccSyndrome.v = the
         2026-05-05 blanket bypass (corrupted=0; corrected=0), NOT the local_override with
@@ -923,7 +942,30 @@ bugs:
     title: Integration pins unreachable on remote (land tidelink on main)
     severity: high
     area: build/git-hygiene
-    status: deferred
+    status: closed
+    closed_2026_09_11: >
+      CLOSED — the decision was taken and executed, and the entry was never updated.
+      Both fast-forward targets this entry names as the pending David decision are now
+      ancestors of origin/main, confirmed by merge-base:
+        Option A tip 5be494b ("fix(ci): TideLink-side CI findings ...")   -> ON origin/main
+        Option B tip 1107151 ("merge(converge): graft c6cc6eb ...")       -> ON origin/main
+      and so is the base 18491ef the entry cites as the then-current main. The integ
+      line described here as unreachable is merged; tidelink is on one branch. The
+      2026-08-19 consolidation is what did it.
+      RESIDUAL, deliberately NOT closed with it, because closing the git-hygiene item
+      must not read as closing these:
+        * PUBLIC-REPO EXPOSURE on origin/main is still live. syn/asic/common.mk carries
+          a former user's home directory, vendor phys-IP release names with drop codes,
+          and PDK/EDA install paths. A fix exists (site.env.example plus the path-hygiene
+          commit) but landed on the eth line, not here. That is a separate, open item
+          and it belongs to whoever owns the public branch.
+        * TL-016's .gitmodules SSH->HTTPS change: verified present at HEAD (all three
+          submodule URLs are https), so that half is genuinely done.
+      NOT VERIFIED BY THIS PASS: the "PHY dep pin was GitLab-only" half. Whether the
+      pinned deps/tidelink-phy object is reachable from the GitHub remote cannot be
+      established from this worktree — the submodules are unregistered here
+      (git submodule status shows all three with a leading '-'), so no fetch was
+      attempted and none should be attempted from a docs branch.
     summary: >
       tidelink was pinned ahead of origin/main on no branch (now on
       integ/eth-chiplet-pin); a PHY dep pin was GitLab-only. David decision: push
@@ -940,7 +982,7 @@ bugs:
         - "# Option B (land full integ line = eth-chiplet pin, 63-commit FF, incl wr_hold_r e28c898): git -C .../tidelink push origin 1107151:refs/heads/main"
         - "# Verify pin reachable first: git -C .../tidelink ls-remote origin refs/heads/integ/axirec-on-chiplet | grep 1107151"
     verification: {sim_test: n/a}
-    signoff: {claude_verdict: "DEFERRED — public-main push is David's decision; FF ranges computed and ready", evidence: ["origin/main 18491ef is ancestor; FF-OK to 1107151"], approved: false}
+    signoff: {claude_verdict: "CLOSED 2026-09-11 — executed. 5be494b and 1107151 are both ancestors of origin/main; the land happened via the 2026-08-19 consolidation. Public-repo path/vendor-name exposure on origin/main is a SEPARATE live item and is NOT closed by this.", evidence: ["merge-base --is-ancestor 5be494b origin/main = true", "merge-base --is-ancestor 1107151 origin/main = true", "merge-base --is-ancestor 18491ef origin/main = true"], approved: false}
 
   # ---------------------------------------------------------------------------
   - id: TL-016
@@ -1041,7 +1083,20 @@ bugs:
       FC node) is not elaborated; fires if the PTP FC node is enabled (couples TL-010).
       (3) obs modules (winscan_obs/fcemit_obs) absent from the bare ASIC flist (silicon
       gets them via parent nanosoc_eth_chiplet_asic.flist:81-82; bare flist won't elaborate).
-    fix: {approach: "DONE obs-add (both bare ASIC flists); STILL: dedup :197 + guard/define a2l_48x4", files: [flists/tidelink_top_full_asic_v2.flist, flists/tidelink_top_full_asic.flist], commit: pending, branch: integ/tidelink-consolidated-2026-08-07, netlist_affecting: false}
+    fix: {approach: "DONE obs-add (both bare ASIC flists) + dedup + a2l_48x4 landmine defused", files: [flists/tidelink_top_full_asic_v2.flist, flists/tidelink_top_full_asic.flist], commit: ed480e27, commits_landed_on_main: [ed480e27, cf0f1ab2], branch: origin/main, netlist_affecting: false}
+    landed_2026_09_11: >
+      `commit: pending` CORRECTED. The fix landed and is on origin/main:
+      ed480e27 "fix(TL-020): add obs modules to bare ASIC flists -> 3 elab gates
+      green" and cf0f1ab2 "fix(TL-006 A3 + TL-020): ... + ASIC flist hygiene", both
+      confirmed ancestors of origin/main by merge-base. `branch` corrected from the
+      now-merged integ/tidelink-consolidated-2026-08-07. The entry already described
+      the work as DONE-and-verified in prose while carrying `commit: pending`, which
+      is the shape that makes a landed fix look like an open one to anything reading
+      the fields instead of the paragraphs.
+      UNCHANGED AND STILL OUTSTANDING: the parent-chiplet coordination item —
+      nanosoc_eth_chiplet_asic.flist:81-82 adds the same two obs modules as a
+      workaround and MUST be removed at the next submodule pin bump, or the chiplet
+      build double-defines.
     verification: {sim_test: "sim_gate_asicelab/asicelab_v2/dftelab", in_sim_gate: true, hw_tested: "n/a — elab", result: "3/3 PASS after fix (were 3/3 FAIL)"}
     signoff: {claude_verdict: "ALL 3 SUB-ITEMS DONE + verified (2026-08-08): obs-add (3 elab suites green) + sync_detect dedup + a2l_48x4 landmine defused (dormant behavioral model, zero netlist-impact). 3 elab gates re-green after the dedup+landmine edits. REMAINING COORDINATION (not a blocker): parent nanosoc_eth_chiplet_asic.flist:81-82 obs workaround MUST be removed on the submodule pin bump (double-define); PTP-enable is David/TL-010 (swap behavioral a2l model for tech macro).", evidence: ["asicelab_v2 PASS 9s", "asicelab PASS 9s", "dftelab PASS 9s (post dedup+landmine)", "parent flist:79 prescribes obs fix", "wlink_wlink_ptp_tl_a2l_48x4.v matches sibling _48x16"], approved: false}
     related: [TL-010, TL-013]
@@ -1257,7 +1312,22 @@ bugs:
       S_GAP before re-gating on credit -> a consume settles many cycles before the
       next credit decision; double-spend structurally unreachable. Stronger than the
       release-acc block's soft argument.
-    fix: {approach: "1-cycle pipeline (register inc_r/dec_r/update_r), mirror :438-449", files: [src/rtl/fifo/tidelink_apb_regs.sv], commit: pending, branch: integ/tidelink-consolidated-2026-08-07, netlist_affecting: true}
+    fix: {approach: "1-cycle pipeline (register inc_r/dec_r/update_r), mirror :438-449", files: [src/rtl/fifo/tidelink_apb_regs.sv], commit: 651a71b0, branch: origin/main, netlist_affecting: true}
+    landed_2026_09_11: >
+      `commit: pending` CORRECTED to 651a71b0 "perf(asic): pipeline pair_credit_next
+      critical path (TL-026, David-sign)", confirmed an ancestor of origin/main by
+      merge-base. `branch` corrected from the now-merged
+      integ/tidelink-consolidated-2026-08-07.
+      READ THIS BEFORE READING THE SIGN-OFF LINE: the verdict below says "David signs
+      to land" and the change is ALREADY LANDED on the public default branch. It is
+      netlist-affecting (67 flops on the tapeout trunk). That is a sign-off gap to
+      close deliberately — either David ratifies it where it sits or it is reverted —
+      not a bookkeeping detail. Its equivalence argument is strong (40k-cycle
+      dual-instance harness, 0 mismatches, 12465-mismatch negative control) but that
+      is an argument for ratifying, not a substitute for it.
+      STILL UNGATED: in_sim_gate is false and registry_coverage.py reports it as a
+      FIXED-but-ungated coverage gap. The dual-instance harness is not wired into any
+      sim_gate suite, so this fix can regress silently.
     verification:
       sim_test: "cocotb/tidelink_apb_regs (44 PASS/5 FAIL identical before+after — the 5 are a PRE-EXISTING tb float-to-X on hw_credit_consume, NOT a regression) + a dual-instance equivalence harness (40k cycles, 0 delayed-compare mismatches; negative control 12465 mismatches proves non-vacuous)"
       in_sim_gate: false
@@ -1275,10 +1345,45 @@ bugs:
   # These were real defects/decisions with NO TL-0xx id.
   # ===========================================================================
   - id: TL-027
-    title: a2l data-plane replay nodes _1/_3/_5 ship UNFIXED (no CDC self-heal)
+    title: "a2l data-plane replay nodes _1/_3/_5 CDC self-heal — LANDED and SHIPPING in both flists"
     severity: high
     area: rtl/wlink
-    status: root_caused
+    status: closed
+    closed_2026_09_11: >
+      CLOSED, and the title and summary below were INVERTED. They asserted that
+      _1/_3/_5 "are the pristine (unfixed) deps/ copies in BOTH flists". Read at the
+      files on origin/main 5e8bdb5a, the flists say the opposite:
+
+        flists/tidelink_top_full_asic_v2.flist  :283 _1  :298 _3  :304 _5  -> src/rtl/local_overrides/   HARDENED
+                                                :286 _12 :290 _13                -> src/rtl/local_overrides/   HARDENED
+                                                :306 _7  :308 _9                 -> deps/...                   RAW
+        flists/tidelink_fpga_v2.flist           :287 _1  :299 _3  :302 _5  -> src/rtl/local_overrides/   HARDENED
+                                                :304 _7  :306 _9                 -> deps/...                   RAW
+
+      Confirmed at the RTL and not merely at the path: each of
+      src/rtl/local_overrides/WlinkGenericFCReplayV2_{1,3,5}.v carries
+      `assign link_addr_to_app_clk_w_inc = 1'b1;` with the in-line comment
+      "TL-027 port: continuous resend (self-heal)". So the AW/W/B write path IS fixed
+      and shipping in both the FPGA and the tapeout file set, and has been since
+      8104b1ee (confirmed an ancestor of origin/main by merge-base).
+      The untracked gap is the READ path, AR (_7) and R (_9), which ship raw from
+      deps/ in both flists and have no local_overrides copy at all — the files do not
+      exist. That is now registered as TL-046 (originally drafted as "TL-043-ARR"; see
+      the collision note there).
+      NOT A FRESH DISCOVERY, twice over: imp/hw_gate/SIGNOFF_LEDGER_2026_08_13.md:105
+      flagged the registry as understating this on 2026-08-13, and an unmerged
+      registry commit in the off-repo eth-chiplet clone (5c316198 on
+      rev2/ar-r-selfheal, 2026-08-23, never merged to any branch here) already wrote
+      the correction. Neither reached this file. The whole `fix:` block below is
+      retained verbatim as the historical record; its `commit: null` is precisely what
+      made a landed, shipping fix read as open for a month.
+      WHAT I COULD NOT RE-VERIFY HERE: that the deps _7/_9 copies carry the
+      edge-triggered `= a2l_link_addr != a2l_link_addr_in` form. The submodules are
+      not populated in this worktree (git submodule status shows all three
+      unregistered), so deps/axi-chiplet-controller/... is empty. The flist lines
+      pointing _7/_9 at deps/ are read directly and are not in doubt; the contents of
+      those deps files are taken from 5c316198 and are NOT independently confirmed by
+      this pass.
     summary: >
       The AW/W/B app-to-link replay nodes WlinkGenericFCReplayV2_{1,3,5} are the
       pristine (unfixed) deps/ copies in BOTH tidelink_fpga_v2.flist and
@@ -1293,9 +1398,9 @@ bugs:
       breaks) — but the unhardened-node robustness gap is real regardless.
     fix:
       approach: "copy deps _1/_3/_5 -> src/rtl/local_overrides/ with _12/_13's continuous w_inc + ACK window-guard + the addr-sync reset-skew gate the doc omits; per-node width re-derivation (_1/_5=4-bit/8, _3=6-bit/32); repoint tidelink_fpga_v2.flist (NOT the V1 flist the doc named) + asic_v2 flist"
-      files: [deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_1.v, flists/tidelink_fpga_v2.flist]
-      commit: null
-      branch: null
+      files: [src/rtl/local_overrides/WlinkGenericFCReplayV2_1.v, src/rtl/local_overrides/WlinkGenericFCReplayV2_3.v, src/rtl/local_overrides/WlinkGenericFCReplayV2_5.v, flists/tidelink_fpga_v2.flist, flists/tidelink_top_full_asic_v2.flist]
+      commit: 8104b1ee          # WAS null — CORRECTED 2026-09-11, confirmed ancestor of origin/main
+      branch: origin/main       # WAS null
       netlist_affecting: true
     verification: {sim_test: "cocotb/tidelink_a2l_replay_cdc NODE=1 (AW) + NODE=3 (W) + NODE=5 (B) reproduce+heal A/B ALL 3 PROVEN 2026-08-08; NODE=13 (sideband)", in_sim_gate: true, hw_tested: false}
     cdc_selflatch_derisk_2026_08_08: >
@@ -1445,9 +1550,19 @@ bugs:
     fix:
       approach: "circular stitch: new head_run_len tracker (the run starting at phase 0) + a phase-15 wrap-stitch so a straddling run scores its true width. Applied to calibrator_v2 (FPGA-V2 + ASIC-V2 shipping) + the deps cocotb twin. V1 src/rtl calibrator (legacy/being-retired, different structure) NOT patched."
       files: [src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv, deps/tidelink-phy/rtl/tidelink_phy_align_calibrator.sv]
-      commit: pending
-      branch: integ/tidelink-consolidated-2026-08-07
+      commit: 3f037c04
+      commits_landed_on_main: [3f037c04, 8104b1ee]   # 3f037c04 = the circular stitch; 8104b1ee ported the TL-032 revert-aware rewind alongside the TL-027 self-heal
+      branch: origin/main        # WAS integ/tidelink-consolidated-2026-08-07
       netlist_affecting: true
+      landed_2026_09_11: >
+        `commit: pending` CORRECTED to 3f037c04 "fix(TL-032): circular run-tracker
+        stitch — sim-proven cure for the wrap-straddle write-drop", confirmed an
+        ancestor of origin/main by merge-base; 8104b1ee carried the revert-aware
+        rewind into the a2l replay overrides with TL-027.
+        NOT WEAKENED BY THIS: hw_tested is still false and stays false. The sign-off
+        line below asks for an HW A/B on per-POR land-rate and that has never been
+        run. A landed netlist change with no hardware A/B is exactly the thing the
+        verdict says should ride the next decisive build.
     verification:
       sim_test: "cocotb/tidelink_phy_align_calibrator test_calibrator_wrap.py -- reproduce-first: deps FAIL best_run=0 (dropped to (0,0)) -> heal PASS best_run=4 centred phase 15. No-regression: centering 3/3, t3 4/4, s_probe 3/3, sim_gate v2_winscan_fsm PASS(569s) + v2_autonomous_sync_detect PASS(293s)."
       in_sim_gate: true
@@ -1462,17 +1577,58 @@ bugs:
     title: "No credit-underflow protection — 13-bit credit counter wraps (silent credit corruption)"
     severity: high
     area: rtl/fifo
-    status: open
+    status: closed
+    description_was_wrong_2026_09_11: >
+      THE DESCRIPTION BELOW IS FACTUALLY FALSE AND WAS FALSE ON THE DAY IT WAS
+      MIGRATED. It says credit_count "is decremented UNCONDITIONALLY on write_complete
+      without checking the packet fits". Read at the file, src/rtl/fifo/tidelink_fifo_ctrl.sv
+      does the opposite and carries a comment naming this very bug:
+
+        :199   // BUG-002 fix: saturate at zero to prevent unsigned underflow wrap
+        :200   wire [RAM_ADDR_W-2:0] credit_after_write =
+        :202       ? ((credit_count_r >= (RAM_ADDR_W-1)'(write_packet_delta))
+        :203           ? credit_count_r - (RAM_ADDR_W-1)'(write_packet_delta)
+        :204           : '0)
+        :205       : credit_count_r;
+
+      The guard is a saturate-at-zero: if the packet does not fit, the counter goes to
+      zero instead of wrapping. Provenance traced with `git log -S`: introduced by
+      ce2f2c90 "Fixing CDC issues, adding RTL fixes and adding more tests to the
+      design", dated 2026-04-06 and an ancestor of origin/main — FOUR MONTHS before
+      this entry was migrated as an open Critical from SHORTCOMINGS.md BUG-002. The
+      form at ce2f2c90 was the same saturate written inline in the always block
+      (:237-241 there); b1c0eace later refactored it out as credit_after_write for the
+      N3/Hazard-4 read-pointer fix, which reads the same value and did not weaken it.
+      So the migration copied a stale shortcomings-document entry forward without
+      opening the RTL. The generalisable failure is not "credit underflow" — it is
+      that a MIGRATED entry inherits the confidence of its source and none of its
+      age.
+      WHAT REMAINS OPEN, and why this closes as `closed` rather than `sim_proven`:
+      the entry also asked for an oversize-packet FLAG and for an FPV proof of the
+      no-wrap invariant. Neither exists. The saturate silently absorbs an oversize
+      packet; nothing reports it. If that flag is wanted it is new work and deserves
+      its own id, not a reopening of a defect that was fixed in April.
+      NOT VERIFIED BY THIS PASS: whether the whitebox regression
+      cocotb/tidelink_fifo/test_tidelink_fifo.py:1865
+      test_43_credit_underflow_saturates_whitebox currently PASSES. It exists, it is
+      in sim_gate_fifo's suite, and its own source comment records the 2026-08-13
+      stale-probe repair that had been failing its precondition — but running it needs
+      VCS and no sim was taken during this pass. Structure verified, execution not.
     summary: >
+      *** THE PARAGRAPH BELOW IS THE ORIGINAL, INCORRECT MIGRATION TEXT, RETAINED AS
+      THE HISTORICAL RECORD. See description_was_wrong_2026_09_11 above. ***
       MIGRATED from docs/reference/SHORTCOMINGS.md BUG-002 (Critical; never in the TL-registry). In
       tidelink_fifo_ctrl.sv credit_count is decremented UNCONDITIONALLY on write_complete without checking
       the packet fits; a packet larger than credit_count wraps the unsigned 13-bit counter -> silent
       credit-accounting corruption (FIFO ptr/credit inconsistent, unread data silently overwritten). The
       overrun flag only detects credit_count==0 at a valid transfer, not whether the whole packet fits.
       Candidate first FPV target.
-    fix: {approach: "guard/saturate the credit decrement so it cannot underflow + flag an oversize packet; FPV the invariant that credit_count never wraps", files: [src/rtl/fifo/tidelink_fifo_ctrl.sv], commit: null, branch: null, netlist_affecting: true}
-    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
-    signoff: {claude_verdict: "MIGRATED unregistered Critical (SHORTCOMINGS.md BUG-002). Real silent-corruption risk, sim/FPV-provable. David: fix + FPV or explicitly waive for tapeout. Related credit-integrity family: TL-022 phantom-pop over-credit.", evidence: ["reference/SHORTCOMINGS.md BUG-002", "VERIFICATION_PLAN.md:249-266"], approved: false}
+    fix: {approach: "saturate-at-zero guard on the credit decrement — ALREADY PRESENT since 2026-04-06, not new work", files: [src/rtl/fifo/tidelink_fifo_ctrl.sv], commit: ce2f2c90, branch: origin/main, netlist_affecting: false}
+    verification: {sim_test: "cocotb/tidelink_fifo/test_tidelink_fifo.py test_43_credit_underflow_saturates_whitebox (+ test_32_credit_underflow_saturation, test_33_credit_underflow_normal_path_unaffected) — present in the tree, run under sim_gate_fifo; NOT executed by the 2026-09-11 truth pass", in_sim_gate: true, hw_tested: false, hw_validated: false, evidence: null, vehicle: null}
+    followups:
+      - "OPEN, and deliberately not folded into this closure: there is still no oversize-packet FLAG. The saturate absorbs the condition silently. If an error bit is wanted, open a new id."
+      - "OPEN: the FPV proof of the no-wrap invariant that this entry proposed was never written. The saturate makes wrap unreachable by construction, which is an argument, not a proof."
+    signoff: {claude_verdict: "CLOSED 2026-09-11 — the defect as described does not exist and has not existed since ce2f2c90 (2026-04-06). The migration from SHORTCOMINGS.md BUG-002 carried a stale claim forward without reading the RTL. Closing the DEFECT; the oversize-packet flag and the FPV proof are recorded as open followups and are new work.", evidence: ["src/rtl/fifo/tidelink_fifo_ctrl.sv:199-205 saturate-at-zero guard, comment names BUG-002", "git log -S 'BUG-002 fix: saturate at zero' -> ce2f2c90 (2026-04-06), ancestor of origin/main", "git show ce2f2c90:src/rtl/fifo/tidelink_fifo_ctrl.sv:237-241 = the same guard inline", "reference/SHORTCOMINGS.md BUG-002 (the stale source)"], approved: false}
     related: [TL-022]
 
   - id: TL-034
@@ -1696,7 +1852,7 @@ bugs:
     title: No AXI firewall / AXI timeout on the cross-die write path (PS hard-hangs, no recovery)
     severity: high
     area: rtl/tidelink_top          # CORRECTED 2026-08-17 (was: fpga/integration)
-    status: sim_proven              # CORRECTED 2026-08-17 (was: open) — fix proven via an out-of-tree patch, NOT applied to tracked RTL, needs sign-off to land. NOT "fixed": no board touched, no synthesis check.
+    status: sim_proven              # LANDED 2b84732f (2026-09-11 correction). Still no board run — see landed_2026_09_11.
     summary: >
       A wedged cross-die write/read hangs the PS AXI bus with NO software-visible
       timeout: the store never returns, ssh dies at 60 s, and recovery is
@@ -1734,18 +1890,34 @@ bugs:
         pending review/sign-off to land. Full writeup:
         imp/hw_gate/tl037/TL037_RESULT_2026_08_14.md.
       files: [src/rtl/tidelink_top.sv]
-      commit: null
-      branch: null
+      commit: 2b84732f          # WAS null — CORRECTED 2026-09-11
+      branch: origin/main       # WAS null
       netlist_affecting: true
-      patch: imp/hw_gate/tl037/tl037_fix_ahb_sub_terminal_timeout.patch
+      patch: imp/hw_gate/tl037/tl037_fix_ahb_sub_terminal_timeout.patch   # the patch this commit applied; kept for provenance
+      landed_2026_09_11: >
+        "NOT YET APPLIED to the tracked RTL — exists only as an out-of-tree patch" is
+        FALSE and has been since 2026-08-17. The patch was applied by 2b84732f
+        "fix(tl037): close ahb_sub terminal-timeout dead gate; wire TL-037 into
+        sim_gate", confirmed an ancestor of origin/main by merge-base. Verified in the
+        tree rather than from the commit message: src/rtl/tidelink_top.sv carries the
+        sub_mst_dphase_r register (:1598 declaration, :2091 driver) and the terminal
+        -timeout arm (:1720, firing sub_err1_r at :1770); the gate wiring is in
+        Makefile:854-859 invoking gaps_tl037.
+        WHAT IS STILL TRUE: no board has been touched and no synthesis/timing/area
+        check has been run, and the fix is netlist-affecting on the tapeout trunk —
+        so it has landed on the public default branch WITHOUT the sign-off the entry
+        asks for. That is the live item, not the (now corrected) landing status.
     caveats:
       - "CORRECTED 2026-08-17 (was: 'FPGA-ONLY (PL block design). Does NOT help the ASIC' — WRONG). NETLIST-AFFECTING AND ASIC-RELEVANT: the fix lives in tidelink_top.sv, present in both flists/tidelink_fpga_v2.flist and flists/tidelink_top_full_asic_v2.flist. It matters MORE on the ASIC, where the ASIC flist strips the recovery-FCSM deps copies (07-29 decision) so these tidelink_top ahb_sub backstops are the ONLY recovery left on this path."
       - "The absent FPGA AXI Firewall / AXI Timeout IP is still worth adding as defence in depth for anything upstream of tidelink_top (PS smartconnect / axi_ahblite_bridge), but it is no longer the only mitigation and is no longer a reason to treat TL-037 as out of ASIC scope."
-      - "NOT LANDED. Sim-proven only (test_tl037_ahb_sub_terminal_timeout.py) — no board touched, no synthesis/timing/area check, and the fix patch has not been applied to the tracked src/rtl/tidelink_top.sv. Do not read status:sim_proven as fixed."
+      - "CORRECTED 2026-09-11 (was: 'NOT LANDED ... the fix patch has not been applied to the tracked src/rtl/tidelink_top.sv'). It IS applied, by 2b84732f, and it IS gated. What remains true: sim-proven only, no board touched, no synthesis/timing/area check. Do not read status:sim_proven as hardware-validated — but do not plan off 'not landed' either, which is how this entry has read since the fix went in."
     verification:
-      sim_test: cocotb/tidelink_axi_datanode_recovery/test_tl037_ahb_sub_terminal_timeout.py
-      in_sim_gate: false
+      sim_test: cocotb/tidelink_axi_datanode_recovery/test_tl037_ahb_sub_terminal_timeout.py   # GAPS_TL037_TESTS -> make gaps_tl037
+      in_sim_gate: true    # WAS false — CORRECTED 2026-09-11; Makefile:854-859 runs gaps_tl037 under sim_gate_axi_datanode_gaps
       hw_tested: false
+      hw_validated: false
+      evidence: null
+      vehicle: null
     signoff:
       claude_verdict: >
         Real and still open. The registry's original root_cause and FPGA-only

@@ -290,3 +290,18 @@ syn/asic/*/outputs_*/
 **/xcelium.d*/
 **/INCA_libs*/
 **/*.vdb/
+
+# ── Makefile-GENERATED DUT-source include files (untracked 2026-09-11) ───────
+# cocotb/tidelink_a2l_replay_cdc/Makefile and cocotb/tidelink_cdc_tear/Makefile
+# each write a one-line `.f` at Makefile PARSE time, so EVERY invocation of the
+# bench — including `make -n` — rewrites it. While the four a2l files were
+# TRACKED, that made `make sim_gate` dirty its own tree mid-run: GATE_STAMP
+# flipped clean->dirty partway through and sim_gate_summary refused to report
+# PASS on a genuinely green run (measured 2026-09-09 on cba9774d: 68 PASS /
+# 3 FAIL / 3 XFAIL, 38 clean + 36 dirty stamps, exit 2). scripts/git_merge_flist.sh
+# had already recorded the verdict — "Makefile-GENERATED build artifact that
+# should not be tracked ... gitignore the class" — this is that gitignore.
+# The a2l bench now writes under imp/gen/ (covered by `imp/*` above); the two
+# patterns below keep a stale file from an older checkout out of `git status`.
+cocotb/tidelink_a2l_replay_cdc/dut_src*.f
+imp/gen/

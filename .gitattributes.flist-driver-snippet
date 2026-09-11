@@ -24,7 +24,13 @@
 #              cocotb/tidelink_axi_datanode_recovery/, cocotb/tidelink_fifo/)
 #   *.f     -> 7 tracked files (cocotb/debug/tidelink_peer_aperture/flist.f,
 #              cocotb/fifo_rx_twin2/flist_tree.f, flist_unfixed.f, and the four
-#              cocotb/tidelink_a2l_replay_cdc/dut_src*.f generated artefacts)
+#              scratch_resolved/cocotb__tidelink_a2l_replay_cdc__dut_src*.f
+#              Stage-4 resolution artefacts)
+#              UPDATED 2026-09-11: the four LIVE cocotb/tidelink_a2l_replay_cdc/
+#              dut_src*.f were untracked — they are Makefile-generated at parse
+#              time and were dirtying the tree under `make sim_gate`. They now
+#              generate into imp/gen/a2l_replay_cdc/ and are gitignored, so the
+#              merge driver never sees them and cannot be asked to resolve them.
 #   No tracked Fortran or other `.f` sources exist, so `*.f` is unambiguous here.
 #
 # FAIL-SAFE PROPERTY (do not weaken it): if these lines are committed but

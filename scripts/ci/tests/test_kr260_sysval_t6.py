@@ -51,8 +51,46 @@ import kr260_sysval as SV  # noqa: E402
 
 N = int(os.environ["SYSVAL_ENDUR_BEATS"])
 
+
+def _require_the_fix():
+    """Fail with the DEFECT's name, not a TypeError.
+
+    Against the pre-fix file (merge 77db1c5) the API this control drives simply
+    does not exist, and python's own error message -- "t6_endurance() got an
+    unexpected keyword argument 'board_fn'" -- reads like a broken test rather
+    than like the false green it actually is. Say what is wrong instead."""
+    import inspect
+    missing = []
+    if not hasattr(SV, "verify_verdict"):
+        missing.append("verify_verdict()")
+    try:
+        params = inspect.signature(SV.t6_endurance).parameters
+    except (TypeError, ValueError):  # pragma: no cover
+        params = {}
+    for name in ("board_fn", "obs_fn", "por_fn", "record_fn"):
+        if name not in params:
+            missing.append("t6_endurance(%s=...)" % name)
+    if missing:
+        print("  FAIL  the T6 false-green fix is ABSENT from "
+              "pynq_host/scripts/kr260_sysval.py")
+        print("        missing: %s" % ", ".join(missing))
+        print("        t6_endurance() is therefore recording PASS without reading")
+        print("        its final delivery check -- false-green C4, the exact defect")
+        print("        this control exists to catch. See")
+        print("        docs/MERGE_RECONCILIATION_TODO.md.")
+        return False
+    return True
+
+# A fully healthy `obs` reply, as eth_sysval_board.py emits it. It must satisfy
+# kr260_sysval.healthy() COMPLETELY, including the 0x21F8 witness plane -- that
+# predicate is marker-gated and fail-closed in both directions, so an obs dict
+# missing the containment keys is "this board cannot tell me", which is not
+# healthy. Leaving them out made every case below die at "Region-F/health fault
+# at beat 0" before the delivery check it exists to test was ever reached.
 HEALTHY_OBS = {"fcsm": 4, "cal": 1, "regf_present": True, "data_healthy": 1,
-               "wedge_tgt": 0, "wedge_ini": 0}
+               "wedge_tgt": 0, "wedge_ini": 0,
+               "witness_present": True, "wr_hol_stuck": 0,
+               "xhb_dead": 0, "xhb_dead_perm": 0}
 
 
 def res(rc, out, err="", marker="VERIFY"):
@@ -134,6 +172,8 @@ CASES = [
 
 
 def main():
+    if not _require_the_fix():
+        return 1
     failures = 0
 
     for label, r, want_verdict, want_ret, want_kind in CASES:
@@ -182,6 +222,33 @@ def main():
         failures += 1
         print("  FAIL  a wedge must POR die_a (got %d PORs)" % pors_wedge)
 
+    # The endurance loop's health gate must still bite: an obs reply that cannot
+    # report the containment plane is not a healthy board, and T6 must stop
+    # rather than press on and grade a delivery it has no right to trust.
+    stale_obs = dict(HEALTHY_OBS)
+    for k in ("wr_hol_stuck", "xhb_dead", "xhb_dead_perm"):
+        stale_obs.pop(k)
+    recorded = []
+
+    def _fake_board(host, args, timeout=40, marker=None):
+        if args.startswith("write"):
+            return res(0, "WRITE ok", marker="WRITE")
+        return res(0, "VERIFY %s ok" % TAG)
+
+    def _fake_obs(host):
+        return dict(stale_obs)
+    _fake_obs.last = None
+
+    ret = SV.t6_endurance(board_fn=_fake_board, obs_fn=_fake_obs,
+                          por_fn=lambda: None,
+                          record_fn=lambda n, v, d="", info=None: recorded.append((v, d)))
+    if ret is False and recorded and recorded[0][0] == "FAIL":
+        print("  PASS  %-46s -> stops at the health gate" % "obs cannot report the containment plane")
+    else:
+        failures += 1
+        print("  FAIL  a board whose obs cannot report the containment plane was "
+              "graded: ret=%r recorded=%r" % (ret, recorded))
+
     # The helper must agree with what the function records, directly.
     for rc, out, want in ((0, "VERIFY %s" % TAG, "PASS"),
                           (0, "VERIFY 1/%d" % N, "FAIL"),
@@ -198,7 +265,7 @@ def main():
             print("  FAIL  verify_verdict(rc=%-3d out=%-18r) -> %s (wanted %s)"
                   % (rc, out[:18], v, want))
 
-    total = len(CASES) + 2 + 2 + 6
+    total = len(CASES) + 2 + 2 + 1 + 6
     if total < 12:
         print("COULD-NOT-EVALUATE: only %d cases" % total)
         return 2

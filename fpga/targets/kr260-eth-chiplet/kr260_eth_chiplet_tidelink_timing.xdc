@@ -183,13 +183,35 @@ create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAM
 # Transmit eye: source-synchronous SDR centred-edge forward. Budget +/-20 ns for
 # board trace + peer setup/hold.
 #
-# These +/-20 ns are ABSOLUTE nanoseconds (ribbon flight time + the far die's
-# setup/hold), NOT a fraction of the link period — do NOT rescale them if you
-# change the rate knob. The Z2 lineage of this comment framed them as
-# "12.5% of the 160 ns period"; that framing was a coincidence of its rate, and
-# is what made it look period-dependent. At the KR260's 320 ns period the same
-# +/-20 ns is simply a larger relative margin (6.25%), i.e. strictly more
-# conservative. Only create_clock / -divide_by track the rate knob.
+# THE NUMBER BELOW IS A BUDGET. NOTHING HAS EVER MEASURED THIS INTERFACE.
+#
+# An earlier version of this comment asserted that the then +/-20 ns were
+# "ABSOLUTE nanoseconds (ribbon flight time + the far die's setup/hold), NOT a
+# fraction of the link period", and that the Z2 lineage's "12.5% of the period"
+# framing "was a coincidence of its rate". Git says the opposite. Commit
+# 9aee1d39, verbatim:
+#
+#     set_output_delay pad_tx +/-5 -> +/-20 ns (period-scaled 4x, same
+#     12.5%-of-period fraction; far die samples mid-cell so >=60 ns margin)
+#
+# The 12.5% fraction WAS the derivation method. +/-20 was +/-5 multiplied by
+# four because the link rate dropped by four, and +/-5 itself entered at
+# 5ad4b0c7 as "budget +/-5 ns of the 40 ns period for board trace + peer
+# setup/hold" - also a fraction, also underived. The comment was a
+# rationalisation written after the fact, and it instructed the reader not to
+# rescale on the strength of a history that did not happen.
+#
+# What is actually known: no receiver setup/hold requirement is documented in
+# any of these repositories; the Wavious IP that owns this PHY constrains
+# nothing on its pads; and NO TRANSMIT EYE HAS EVER BEEN MEASURED, on FPGA or
+# silicon. The instruments exist (pynq_host/scripts/eye_toolkit) and have never
+# been run to completion against this interface.
+#
+# So treat the number as a budget to be replaced, not a fact to be preserved.
+# The measurement that would replace it is the DUTY CYCLE of pad_clk_tx at the
+# connector: the entire sampling window below exists because the far die
+# captures on the opposite edge, so the window is a direct function of a duty
+# cycle that nothing here constrains or measures.
 #
 # SYMMETRIC window measured against the forwarded clock pad_clk_tx_fwd (NOT an
 # asymmetric absolute window vs an internal clock), so it does not recreate the
@@ -197,8 +219,34 @@ create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAM
 # edge, so Vivado balances rather than hold-pads every lane. The far die samples
 # MID-CELL (160 ns from either pad transition at 320 ns), so +/-20 ns leaves
 # >=140 ns of true eye margin each side.
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max 20.000 [get_ports {pad_tx[*]}]
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -20.000 [get_ports {pad_tx[*]}]
+# -clock_fall IS THE LOAD-BEARING WORD HERE. The far die captures on the
+# FALLING edge of the forwarded clock - WavD2DGpio.v's reset default selects the
+# inverted pad clock, and both shipped routed netlists name the capture cells'
+# clock `pad_clk_rx'` (82 endpoints on kr260-pair-nptp, 86 on the flip). The
+# comment fifteen lines above already said the far die samples MID-CELL; the
+# constraint simply never encoded it.
+#
+# Vivado infers the capture edge from the capture flop on the RX side, which is
+# why pad_rx[*] shows no phantom violation. On TX the capture flop is off-chip
+# and invisible, so the edge has to be DECLARED. Omitting -clock_fall described
+# a window around the RISING edge and manufactured a -22.145 ns hold "failure"
+# on all eight pad_tx lanes - a check against a requirement that does not exist
+# in the hardware.
+#
+# Measured, two builds differing only in these two lines (same design sha, same
+# toolkit, same gated-clock setting, carried to a bitstream):
+#
+#                        stock +/-20 rising    this
+#     WNS                +0.332                +0.276
+#     failing setup      0                     0
+#     WHS                -22.145               +0.010
+#     failing hold       8 (all pad_tx[*])     0
+#     pad_tx worst hold  -22.145               +151.592
+#     LUT / FF / BUFGCE  59851/54337/23        59851/54337/23
+#
+# IDENTICAL UTILISATION. The design does not change; only what is checked does.
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -clock_fall -max  8.000 [get_ports {pad_tx[*]}]
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -clock_fall -min -8.000 [get_ports {pad_tx[*]}]
 
 #-----------------------------------------------------------------------------
 # [3] RX pad capture: TIMED source-synchronous group, RELATIVE skew bounded

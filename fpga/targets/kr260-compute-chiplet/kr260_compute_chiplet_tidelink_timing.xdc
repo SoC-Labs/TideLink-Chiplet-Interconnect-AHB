@@ -15,13 +15,37 @@
 #   kr260-eth-chiplet/kr260_eth_chiplet_tidelink_timing.xdc
 # with (a) port names renamed to the compute link-0 pads (pad_clk_rx_0,
 # pad_clk_tx_0, pad_tx_0[*], pad_rx_0[*], led0/led1) and (b) SCOPING-TODO
-# markers everywhere a selector depends on the COMPUTE block design - which the
-# BD/wrapper agent is still building. The methodology (why each constraint
-# exists) is unchanged and correct; the get_pins/get_cells NAME filters below
-# are eth-derived GUESSES and MUST be re-resolved against the compute BD before
-# this file times anything. Every unresolved selector fires Vivado 12-4739
-# ("No valid object(s) found"), which the message gate promotes to ERROR - so
-# these are load-bearing TODOs, not cosmetic.
+# markers everywhere a selector depends on the COMPUTE block design.
+#
+# 2026-09-17 - SELECTORS RE-RESOLVED AGAINST THE REAL COMPUTE NETLIST.
+# The eth-derived guesses are GONE. Every get_pins/get_cells NAME filter below
+# was matched against the routed checkpoint
+#   fpga/build/cwallow/outputs/nanosoc_compute_chiplet_routed.dcp
+# (Design State: Physopt postRoute, top = tidelink_design_wrapper) and the match
+# COUNT recorded beside it. A selector that matches the WRONG NUMBER of objects
+# is as broken as one matching none, so the counts - not just "it resolved" -
+# are the evidence.
+#
+# THE ROOT MISTAKE, for the record: the scaffold assumed a "d2d0" infix marked
+# link 0. It does not. `*d2d0*` DOES match 920 cells in this design - but every
+# one of them is in the AHB interconnect decode/arbiter tree
+# (u_compute_matrix_decode_d2d0_m, compute_target_output_D2D0, ...), NOT in the
+# PHY. The PHY hierarchy has no d2d0/d2d1 token anywhere. The real link
+# discriminator is the TideLink instance name itself:
+#   tidelink_design_i/nanosoc_compute_chiplet_0/inst/u_chiplet/u_tidelink_0   <- LINK 0 (this file)
+#   tidelink_design_i/nanosoc_compute_chiplet_0/inst/u_chiplet/u_tidelink_1   <- LINK 1 (see [L1])
+# and the PHY sits at <link>/u_chiplet_controller/u_wlink/phy/gpio/.
+# The divider the old selectors hunted for is not inside either link at all -
+# it is a BD-LEVEL cell, tidelink_design_i/phy_clk_div2_0, so NO `*d2d0*`
+# pattern could ever have reached it.
+#
+# Every unresolved selector fires Vivado 12-4739 ("No valid object(s) found"),
+# which the message gate promotes to ERROR - so these were load-bearing TODOs,
+# not cosmetic. Measured damage on the shipped `cwallow` bitstream, which was
+# built with all five dead: check_timing no_clock = 15956 register pins,
+# unconstrained_internal_endpoints = 45002, ZERO occurrences of pad_tx_0 in
+# timing_summary.rpt, and a green "WNS 11.519 / WHS 0.010 / 0 failing" that
+# measured only the constraints that survived the parse.
 #-----------------------------------------------------------------------------
 # Timing constraints for IMPLEMENTATION ONLY. Applying them during synthesis
 # fires CRITICAL WARNING 12-4739 because the clk_wiz output clocks and the
@@ -37,10 +61,36 @@
 #=============================================================================
 # COMPUTE DELTAS vs the eth chiplet (READ FIRST)
 #=============================================================================
-# (D1) TWO TideLinks. Compute bonds d2d0_* AND d2d1_*; the eth chiplet has one.
+# (D1) TWO TideLinks. Compute bonds two links; the eth chiplet has one.
 #      A KR260 has ONE J21, so only LINK 0 reaches the board (this file). LINK 1
-#      is tied off - see the SCOPING-TODO block [L1] at the end. Do NOT copy
-#      these link-0 constraints for link-1 pads: link-1 has no board clock.
+#      has no board pads - see [L1] at the end. Do NOT copy these link-0
+#      constraints for link-1 pads: link-1 has no board clock.
+#
+#      MEASURED (routed dcp) - how the two links actually differ by name:
+#        get_cells -hier -filter {NAME =~ "*/u_tidelink_?"}          -> 2
+#            .../u_chiplet/u_tidelink_0        (link 0)
+#            .../u_chiplet/u_tidelink_1        (link 1)
+#        get_cells -hier -filter {NAME =~ "*/phy/gpio"}              -> 2
+#            .../u_tidelink_0/u_chiplet_controller/u_wlink/phy/gpio
+#            .../u_tidelink_1/u_chiplet_controller/u_wlink/phy/gpio
+#        get_ports {pad_clk_tx_1 pad_clk_rx_1 pad_tx_1[*] pad_rx_1[*]} -> 0
+#      So the links ARE distinguishable by name, via `u_tidelink_0` /
+#      `u_tidelink_1`, and link 1 has no bonded pads at all. That is the scope
+#      token used throughout this file.
+#
+#      REFINEMENT on "link-1's gpiorx cells are tied off and must be excluded":
+#      link 1 has NO gpiorx cells at all - synthesis removed them outright.
+#        get_cells -hier -filter {NAME =~ "*/gpiorx_?"}                    -> 8 (ALL under u_tidelink_0)
+#        get_cells -hier -filter {NAME =~ "*u_tidelink_1*gpiorx_*/link_data_pad_clk_reg[*]"} -> 0
+#      So for the RX selectors the u_tidelink_0 scope is currently REDUNDANT -
+#      unscoped and scoped both return 128. It is written in anyway, because the
+#      redundancy is a property of today's tie-off, not of the constraint's
+#      intent; if link 1 is ever given a real RX path, an unscoped selector
+#      would silently start sweeping it in.
+#      For the TX word clock the scope is NOT redundant - it is load-bearing.
+#      Link 1's gpiotx_0 SURVIVES (its hsclk is clk_out1, wired at
+#      tidelink_design.tcl:219), so the unscoped eth selector matches 2 pins and
+#      would trip Constraints 18-359 rather than 12-4739. See [4b].
 #
 # (D2) user_ref_clk is a BONDED PAD on compute (x2: user_ref_clk_0/1), whereas
 #      on the eth chiplet it was NOT bonded (aliased onto sys_fclk). On this
@@ -82,12 +132,17 @@ create_clock -period 320.000 -name pad_clk_rx_0 [get_ports pad_clk_rx_0]
 # pad_tx_0[*] against THAT (true forwarded-clock methodology) rather than vs an
 # internal MMCM pin or false-pathing it.
 #
-# SCOPING-TODO [BD-CLK]: the -source pin filter below is the ETH BD path
-# (tidelink_design_i/clk_wiz_0/clk_out1). The compute BD is a different design
-# (two links, dual user_ref_clk); confirm the exact clk_wiz instance name and
-# that clk_out1 is in pad_clk_tx_0's fanin. Use a WILDCARD-FREE NAME filter that
-# resolves to EXACTLY ONE pin (a wildcard that matches >1 pin trips
-# Constraints 18-359 and silently drops this whole stanza).
+# RESOLVED [BD-CLK] 2026-09-17. The eth path happened to be RIGHT here: the
+# compute BD names its clock wizard clk_wiz_0 too, at BD level. MEASURED:
+#   get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"} -> 1
+#       tidelink_design_i/clk_wiz_0/clk_out1
+#   get_clocks -of_objects <that pin>                                       -> 1
+#       clk_out1_tidelink_design_clk_wiz_0_0   (period 39.982 ns = 25.011 MHz)
+# Wildcard-free and exactly one pin, as required (a wildcard matching >1 pin
+# trips Constraints 18-359 and silently drops this whole stanza).
+# This stanza was NEVER among the broken five - it already resolved on the
+# shipped build, which is why pad_clk_tx_0_fwd exists in the routed dcp at
+# period 319.857 ns (= 39.982 x 8). Left byte-for-byte unchanged.
 create_generated_clock -name pad_clk_tx_0_fwd \
     -source [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}] \
     -divide_by 8 [get_ports pad_clk_tx_0]
@@ -121,13 +176,25 @@ set_input_delay -clock [get_clocks pad_clk_rx_0] -min -4.000 [get_ports {pad_rx_
 #      build-to-build defect is per-lane VARIANCE; bounding relative skew removes
 #      it with no absolute hold pressure.
 #
-# SCOPING-TODO [BD-RX]: the capture-flop selector is eth-derived and matches
-# ALL gpiorx cells. On compute it MUST be scoped to LINK 0's PHY only (e.g. the
-# d2d0 / *_tidelink_0 hierarchy) so link-1's (tied-off) gpiorx cells are not
-# swept in. Confirm the WavD2DGpioRx first-stage register name in the compute
-# netlist (eth: link_data_pad_clk_reg[*]) - IP-pack/wrapper renames can change
-# the hierarchy prefix. As written this matches nothing on compute -> 12-4739.
-set _xlnx_shared_i0 [get_cells -hier -filter {NAME =~ "*d2d0*gpiorx_*/link_data_pad_clk_reg[*]"}]
+# RESOLVED [BD-RX] 2026-09-17. This fixes BOTH the set_max_delay (3b) and the
+# set_bus_skew (3c) below - they share $_xlnx_shared_i0, so one dead selector
+# cost two constraints (build_design.log:4562,4564 - two 12-4739 ERRORs).
+#
+# The WavD2DGpioRx first-stage register name did NOT change under IP-pack: it is
+# still link_data_pad_clk_reg[*]. Only the hierarchy prefix was wrong.
+#
+# BEFORE (dead):  *d2d0*gpiorx_*/link_data_pad_clk_reg[*]                  -> 0
+# AFTER  (live):  *u_tidelink_0*gpiorx_*/link_data_pad_clk_reg[*]          -> 128
+#
+# MEASURED on the routed dcp:
+#   get_cells -hier -filter {NAME =~ "*u_tidelink_0*gpiorx_*/link_data_pad_clk_reg[*]"}
+#     COUNT = 128   = 8 lanes (gpiorx_0 .. gpiorx_7) x 16 bits ([0] .. [15])
+#     e.g. tidelink_design_i/nanosoc_compute_chiplet_0/inst/u_chiplet/u_tidelink_0/
+#            u_chiplet_controller/u_wlink/phy/gpio/gpiorx_0/link_data_pad_clk_reg[0]
+# 128 is the RIGHT number: 8 pad_rx_0[*] lanes, one 16-bit pad-clock capture
+# register per lane. An unscoped "*gpiorx_*/..." also returns 128 today (link 1
+# has no gpiorx at all) - the scope is defensive, see (D1).
+set _xlnx_shared_i0 [get_cells -hier -filter {NAME =~ "*u_tidelink_0*gpiorx_*/link_data_pad_clk_reg[*]"}]
 set_max_delay -datapath_only -from [get_ports {pad_rx_0[*]}] -to $_xlnx_shared_i0 8.000
 set_bus_skew -from [get_ports {pad_rx_0[*]}] -to $_xlnx_shared_i0 2.000
 
@@ -147,11 +214,45 @@ set_property IOB FALSE [get_ports {pad_rx_0[*]}]
 # pin (a SINGLE pin; matching div_cnt_reg[*] would hit 3 pins -> Constraints
 # 18-359); generated clock defined on the BUFG output.
 #
-# SCOPING-TODO [BD-DIV]: compute has TWO phy_clk_div instances (one per link).
-# Scope this to LINK 0's divider (d2d0) so it does not collide with link-1's.
+# RESOLVED [BD-DIV] 2026-09-17 - and the SCOPING-TODO's PREMISE WAS FALSE.
+# Compute does NOT have two phy_clk_div instances. It has exactly ONE, and it is
+# not inside either link: it is a BD-LEVEL cell, tidelink_design_i/phy_clk_div2_0.
+# That is why no amount of link scoping could have rescued the old selector -
+# there is no link hierarchy above this cell to scope to.
+#
+# MEASURED on the routed dcp:
+#   get_cells -hier -filter {NAME =~ "*phy_clk_div*"}                 -> 12 objects,
+#     ALL under the single tidelink_design_i/phy_clk_div2_0 (wrapper, inst, GND,
+#     VCC, VCC_1, div_cnt[0..2]_i_1, div_cnt_reg[0..2], u_div_bufg)
+#   get_pins -hier -filter {NAME =~ "*phy_clk_div*div_cnt_reg[*]/C"}  -> 3   (bits 0,1,2 - one divider)
+#
+# Only ONE divider exists because only LINK 0 is divided. tidelink_design.tcl:216
+# wires phy_clk_div2_0/clk_out -> user_ref_clk_0, while :219 wires link 1's
+# user_ref_clk_1 straight to clk_wiz_0/clk_out1 (undivided 25 MHz). So link 1
+# has no /8 island and needs no second divider.
+#
+# Both filters below are WILDCARD-FREE full paths resolving to EXACTLY ONE pin
+# (Constraints 18-359 safety - see [BD-CLK]).
+#
+# BEFORE (dead):  *d2d0*phy_clk_div*div_cnt_reg[2]/C                   -> 0
+# AFTER  (live):  tidelink_design_i/phy_clk_div2_0/inst/div_cnt_reg[2]/C -> 1
+# BEFORE (dead):  *d2d0*phy_clk_div*u_div_bufg*/O                      -> 0
+# AFTER  (live):  tidelink_design_i/phy_clk_div2_0/inst/u_div_bufg/O     -> 1
+#
+# Sanity-checked the source pin really carries the master clock:
+#   get_clocks -of_objects [get_pins .../div_cnt_reg[2]/C]
+#     -> clk_out1_tidelink_design_clk_wiz_0_0   (39.982 ns), so -divide_by 8
+#        gives 319.857 ns = the same 3.125 MHz the pad_clk_tx_0_fwd stanza uses.
+# The BUFG instance kept its RTL name u_div_bufg through the UltraScale+
+# BUFG->BUFGCE transform (get_cells -hier {NAME =~ "*phy_clk_div*bufg*"} -> 1).
+#
+# This one selector is why the ENTIRE user_ref_clk_0 /8 island was untimed:
+# check_timing on the shipped build listed
+#   tidelink_design_i/phy_clk_div2_0/inst/div_cnt_reg[2]/Q
+# as a root clock pin with 300 register/latch pins having NO CLOCK.
 create_generated_clock -name user_ref_clk_0_div8 \
-    -source [get_pins -hier -filter {NAME =~ "*d2d0*phy_clk_div*div_cnt_reg[2]/C"}] \
-    -divide_by 8 [get_pins -hier -filter {NAME =~ "*d2d0*phy_clk_div*u_div_bufg*/O"}]
+    -source [get_pins -hier -filter {NAME =~ "tidelink_design_i/phy_clk_div2_0/inst/div_cnt_reg[2]/C"}] \
+    -divide_by 8 [get_pins -hier -filter {NAME =~ "tidelink_design_i/phy_clk_div2_0/inst/u_div_bufg/O"}]
 
 #-----------------------------------------------------------------------------
 # [4b] TX WORD CLOCK (gpiotx_0 = local hsclk/16)
@@ -162,11 +263,50 @@ create_generated_clock -name user_ref_clk_0_div8 \
 # Declaring it makes Vivado TIME the domain and route the high-fanout net on a
 # global buffer.
 #
-# SCOPING-TODO [BD-TXW]: scope to LINK 0's gpiotx (d2d0). Confirm count_reg[3]
-# is still the /16 tap in the compute PHY.
+# RESOLVED [BD-TXW] 2026-09-17.
+#
+# (a) count_reg[3] IS STILL THE /16 TAP - CONFIRMED, not assumed.
+#     RTL: WavD2DGpioTx.v declares `reg [3:0] count;` with
+#          `wire [3:0] count_in = count + 4'h1;` - a free-running mod-16
+#          counter (the file's own header: "bit-by-bit using an internal 4-bit
+#          `count` register that wraps mod-16"). The top bit of a mod-16
+#          counter toggles every 8 cycles, i.e. full period 16 -> -divide_by 16
+#          at count_reg[3]/Q is correct.
+#     NETLIST: get_cells -hier -filter {NAME =~ "*u_tidelink_0*gpiotx_0/count_reg[*]"}
+#          -> 4   (count_reg[0], [1], [2], [3] - exactly 4 bits, nothing wider,
+#                  so [3] is the top bit and there is no [4] to prefer)
+#     CORROBORATION: the shipped build's check_timing names
+#          .../u_tidelink_0/.../gpiotx_0/count_reg[3]/Q as a root clock pin
+#          driving 1813 register/latch pins with NO CLOCK - i.e. the netlist
+#          agrees this pin is the root of a real, and previously untimed, clock
+#          domain. VERDICT: the [BD-TXW] question is CONFIRMED, not refuted.
+#
+# (b) The link scope here is LOAD-BEARING, unlike [BD-RX]. Link 1's gpiotx_0
+#     survives synthesis (its hsclk is the undivided clk_out1), so an UNSCOPED
+#     eth-style selector matches TWO pins and would trip Constraints 18-359
+#     instead of 12-4739 - a different, quieter failure. MEASURED:
+#       get_pins -hier -filter {NAME =~ "*gpiotx_0/count_reg[3]/C"}              -> 2
+#           .../u_tidelink_0/.../gpiotx_0/count_reg[3]/C
+#           .../u_tidelink_1/.../gpiotx_0/count_reg[3]/C
+#       get_pins -hier -filter {NAME =~ "*u_tidelink_0*gpiotx_0/count_reg[3]/C"} -> 1
+#       get_pins -hier -filter {NAME =~ "*u_tidelink_0*gpiotx_0/count_reg[3]/Q"} -> 1
+#
+# BEFORE (dead):  *d2d0*gpiotx_0/count_reg[3]/C                 -> 0
+# AFTER  (live):  *u_tidelink_0*gpiotx_0/count_reg[3]/C         -> 1
+# BEFORE (dead):  *d2d0*gpiotx_0/count_reg[3]/Q                 -> 0
+# AFTER  (live):  *u_tidelink_0*gpiotx_0/count_reg[3]/Q         -> 1
+#
+# ORDERING: the -source pin only carries a clock once [4a] above has declared
+# user_ref_clk_0_div8, so this stanza MUST stay below [4a].
+#
+# NOT CONSTRAINED, DELIBERATELY: link 1's own /16 word clock
+# (.../u_tidelink_1/.../gpiotx_0/count_reg[3]/Q) is still an undeclared clock
+# root with 540 register pins and no clock. Declaring it is a LINK-1 constraint,
+# which [L1] intentionally defers, and it is outside this change's remit. It is
+# a known, measured residue - see [L1].
 create_generated_clock -name gpiotx0_word_clk \
-    -source [get_pins -hier -filter {NAME =~ "*d2d0*gpiotx_0/count_reg[3]/C"}] \
-    -divide_by 16 [get_pins -hier -filter {NAME =~ "*d2d0*gpiotx_0/count_reg[3]/Q"}]
+    -source [get_pins -hier -filter {NAME =~ "*u_tidelink_0*gpiotx_0/count_reg[3]/C"}] \
+    -divide_by 16 [get_pins -hier -filter {NAME =~ "*u_tidelink_0*gpiotx_0/count_reg[3]/Q"}]
 
 #-----------------------------------------------------------------------------
 # [4] Async clock groups: isolate the genuine recovered-RX -> core CDC, keep the
@@ -183,8 +323,30 @@ create_generated_clock -name gpiotx0_word_clk \
 # on a path the RTL never uses coherently. Grouping it async is REQUIRED, not an
 # optimisation). gpiotx0_word_clk is /16 of the same island - kept grouped.
 #
-# SCOPING-TODO [BD-HCLK]: hclk pin filter is the eth clk_wiz path - re-resolve
-# against the compute BD (same clk_wiz instance as [2]).
+# RESOLVED [BD-HCLK] 2026-09-17: the eth clk_wiz path is correct on compute too
+# - same BD-level instance as [2]. MEASURED -> exactly 1 pin, carrying exactly 1
+# clock (clk_out1_tidelink_design_clk_wiz_0_0). See [BD-CLK] for the output.
+#
+# This line itself never failed. The set_clock_groups BELOW it did, and it took
+# the WHOLE command with it: because [4a]/[4b] had died, two of the four -group
+# arguments resolved to nothing, and Vivado aborted the command outright
+# (build_design.log: "Common 17-39 'set_clock_groups' failed due to earlier
+# errors"). So the shipped build ALSO lost the pad_clk_rx_0 <-> hclk async
+# isolation, which had nothing wrong with it - one dead selector three stanzas
+# up silently deleted a working constraint. With [4a]/[4b] live, all four groups
+# resolve and the command runs.
+#
+# GROUPING UNCHANGED, deliberately: four separate -group clauses, byte-for-byte
+# the same shape as the FPGA-proven eth file
+# (kr260-eth-chiplet/kr260_eth_chiplet_tidelink_timing.xdc:346). Note the prose
+# above says gpiotx0_word_clk is "kept grouped" with the /8 island while the
+# command actually puts it in its OWN group (= async to user_ref_clk_0_div8).
+# The command, not the comment, matches eth. NOT changed here: re-grouping is a
+# timing-methodology decision, not a selector fix, and this change deliberately
+# alters nothing but the dead selectors.
+#
+# pad_clk_tx_0_fwd is intentionally in NO group, so the
+# user_ref_clk_0_div8 -> pad_tx_0[*] output paths from [2] stay TIMED.
 set hclk_pin [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}]
 
 set_clock_groups -asynchronous \
@@ -211,8 +373,15 @@ set_false_path -to [get_ports {led0 led1}]
 # functionally-correct combinational loop on the HREADY net. Per-net waiver as
 # backup (the primary severity downgrade lives in *_tidelink_drc.xdc so it
 # survives save_constraints round-trips).
-# SCOPING-TODO [BD-AHB]: confirm the compute IP's response-mux net path
-# (eth: *u_xhb_sub/u_core/u_resp/*). Compute may expose two D2D AHB subs.
+# RESOLVED [BD-AHB] 2026-09-17: the eth net path resolves on compute unchanged.
+# MEASURED: get_nets -hierarchical -filter {NAME =~ "*u_xhb_sub/u_core/u_resp/*"}
+#   -> 161 nets. Non-empty, so no 12-1411 silent-drop. This line never appeared
+# in build_design.log's error block and was never one of the broken five;
+# recorded here only so the TODO is closed with a number behind it.
+# NOT verified: whether 161 is the RIGHT number, i.e. whether both D2D AHB subs
+# are represented or only one. The selector is a severity waiver, not a timing
+# constraint, so an over- or under-match does not silently mistime anything -
+# left as-is rather than narrowed on a guess.
 set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAME =~ "*u_xhb_sub/u_core/u_resp/*"}]
 
 #=============================================================================
@@ -242,8 +411,32 @@ set_property ALLOW_COMBINATORIAL_LOOPS true [get_nets -hierarchical -filter {NAM
 #   - Do NOT create_clock pad_clk_rx_1 (no toggling source -> unconstrained/
 #     dropped). If the tie-off leaves internal link-1 PHY logic clocked, its
 #     clock comes from user_ref_clk_1.
-#   - user_ref_clk_1: unlike link-0, this is expected to come from a PL clock
-#     (a clk_wiz output or a divided fabric clock), NOT a board pin. Add its
-#     create_generated_clock + async group here once the BD wires it. Until
-#     then link-1 timing is INTENTIONALLY absent from this file.
+#   - user_ref_clk_1: CONFIRMED 2026-09-17 - the BD already wires it, to
+#     clk_wiz_0/clk_out1 UNDIVIDED (tidelink_design.tcl:219), not to a divider.
+#     So link 1's hsclk is the 25 MHz core clock and is ALREADY a constrained
+#     clock; it needs no create_generated_clock of its own.
+#=============================================================================
+# [RESIDUE] KNOWN-UNCONSTRAINED CLOCK ROOTS THIS CHANGE DOES NOT TOUCH
+#=============================================================================
+# Measured from the shipped build's check_timing (fpga/build/cwallow/reports/
+# timing_summary.rpt, "1. checking no_clock (15956)"). Fixing the five dead
+# selectors above declares the user_ref_clk_0 /8 island and link-0's TX word
+# clock. These roots remain undeclared AFTERWARDS, on purpose - each would be a
+# NEW constraint, not a re-resolution of a broken one:
+#
+#   (R1) link-0 RX WORD CLOCKS, 8 of them - the largest single residue.
+#        .../u_tidelink_0/.../gpio/gpiorx_<n>/g_t3a_passthru.count_reg[3]/Q
+#        MEASURED: get_pins -hier -filter
+#          {NAME =~ "*u_tidelink_0*gpiorx_*/g_t3a_passthru.count_reg[3]/Q"} -> 8
+#        check_timing attributes 8990 (gpiorx_0) + 569 x 7 (gpiorx_1..7)
+#        = 12973 no-clock register pins to these eight roots. They are the RX
+#        mirror of [4b]'s TX word clock and would plausibly take the same
+#        create_generated_clock -divide_by 16 treatment. NOT ADDED: the eth file
+#        does not declare them either, so adding them here would be new,
+#        unproven methodology on a target that has never had a timed build.
+#        Declare them as a deliberate follow-up, with their own before/after.
+#
+#   (R2) link-1 TX word clock, 540 no-clock pins - see [4b](b).
+#
+#   (R3) swclk, 330 no-clock pins - already covered by the [DBG] TODO above.
 #=============================================================================

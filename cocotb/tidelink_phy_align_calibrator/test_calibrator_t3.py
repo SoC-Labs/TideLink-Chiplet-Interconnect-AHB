@@ -57,7 +57,7 @@ lane_locked directly:
                                   must clear it.
 
 Invocation:
-    cd /home/dam1n19/td_idelay_wt && source set_env.sh
+    cd <your tidelink worktree> && source set_env.sh
     rm -rf cocotb/tidelink_phy_align_calibrator/sim_build
     make -C cocotb/tidelink_phy_align_calibrator
 

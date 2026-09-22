@@ -15,8 +15,8 @@
 # _apb_slave_mux) resolve to IDENTICAL absolute paths under a single CMSDK_DIR,
 # so VCS dedups them — no manual collision surgery. HEAVYWEIGHT deps pulled in
 # by the subsystem (read-only, flist-referenced, never modified):
-#   * Cortex-M0+ core     ARM_CORTEXM0PLUS_IP_PATH (/research/AAA)
-#   * OpenCores EthMAC     ETHMAC_IP_DIR  (/research/AAA)  + HA1588 HA1588_IP_DIR
+#   * Cortex-M0+ core     ARM_CORTEXM0PLUS_IP_PATH 
+#   * OpenCores EthMAC     ETHMAC_IP_DIR    + HA1588 HA1588_IP_DIR
 #   * eth_ss bootrom .sv   $(ETH_SS_HOME)/build/firmware/bootloader/out
 #
 # Run:
@@ -31,7 +31,11 @@ TOPLEVEL_LANG   = verilog
 
 TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
-export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
+# Site configuration: per-machine tool + IP roots, with NO default path.
+# mk/site.mk reads site.env and names anything missing. site.env.example
+# says what each variable locates.
+SITE_VARS_REQUIRED += CMSDK_DIR
+include $(TIDELINK_HOME)/mk/site.mk
 
 # Ethernet subsystem repo (read-only reference). The subsystem's set_env.sh must
 # be sourced first (sets ETH_SS_HOME, ETHMAC_AHB_HOME, SOCLABS_*, ARM_CORTEXM0PLUS

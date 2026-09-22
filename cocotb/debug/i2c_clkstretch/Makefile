@@ -1,7 +1,7 @@
 SIM             = vcs
 TOPLEVEL_LANG   = verilog
 
-TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
+TIDELINK_HOME ?= $(realpath $(CURDIR)/../../..)
 export TIDELINK_HOME
 
 I2C_RTL = $(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/i2c/rtl

@@ -16,7 +16,7 @@
 #     PS write. DIFFERENT defect, different fix.
 # sub_r_done vs sub_b_done are probed separately so we can see WHICH resets it.
 set -u
-ROOT=/home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet
+ROOT="${CHIPLET_HOME:?not set — it locates the nanosoc-ethernet-chiplet superproject checkout that holds this tidelink worktree. Set it in site.env or export it; there is no default.}"
 SC="$ROOT/tidelink/pynq_host/scripts"
 SCR=/tmpdir/claude-74755/-home-dam1n19-SoCLabs-tidelink/029fa128-e7f4-41b2-a3bf-6880af5cca50/scratchpad
 export TIDELINK_HOME="$ROOT/tidelink"; export PYTHONPATH="$SC/coverage"

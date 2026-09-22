@@ -9,10 +9,18 @@
 #   Gate-level sim:   make run_gate / run_all_gate / coverage_gate
 ###############################################################################
 
-# Tool paths
-VCS_HOME    ?= /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2
-VERDI_HOME  ?= /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
-VIP_HOME    ?= /eda/synopsys/2022-23/RHELx86/VC-VIP-SOC_2022.12
+# ── Site configuration ──────────────────────────────────────────────────────
+# Tool installs and IP roots are per-machine facts with NO default: see
+# mk/site.mk and site.env.example. `source set_env.sh` sets them too.
+TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
+SITE_VARS_REQUIRED += VCS_HOME VIP_HOME CMSDK_DIR
+include $(TIDELINK_HOME)/mk/site.mk
+
+# The gate-level run needs the physical-IP root as well. An RTL run must not
+# require a PDK, so it is checked in the compile_gate recipe rather than at
+# parse time. PHYS_IP_PATH has no default; the library subdirectory below
+# carries a release code, so set STDCELL_SIM whole in site.env if it differs.
+STDCELL_SIM  ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/verilog/sc12_cln65lp_base_rvt.v
 AMBA_HOME    = $(VIP_HOME)/vip/svt/amba_svt/latest
 SVT_HOME     = $(VIP_HOME)/vip/svt/common/latest
 
@@ -26,16 +34,10 @@ AGENT_DIR    = $(CURDIR)/agents/apb_master_agent
 SEQ_DIR      = $(CURDIR)/sequences
 TEST_DIR     = $(CURDIR)/tests
 
-# CMSDK path (for cmsdk_ahb_to_sram). Convention: CMSDK_DIR points at the
-# package root (parent of `logical/`), matching cocotb / lint / .gitlab-ci.yml.
-CMSDK_DIR   ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0
-
 # Synthesis / gate-level paths
 SYN_DIR      = $(PROJ_HOME)/syn/asic/design-compiler
 NETLIST      = $(SYN_DIR)/tidelink_dc_output/tidelink.mapped.v
 SDF_FILE     = $(SYN_DIR)/tidelink_dc_output/tidelink.sdf
-PHYS_IP_PATH ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp
-STDCELL_SIM  ?= $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/verilog/sc12_cln65lp_base_rvt.v
 
 # Simulation output
 SIM_DIR      = sim_build
@@ -230,6 +232,8 @@ coverage:
 # Gate-level targets
 # ---------------------------------------------------------------
 compile_gate: | $(SIM_DIR_GATE)
+	@$(SITE_REQUIRE) PHYS_IP_PATH "the Arm physical-IP root (gate-level cell models)"
+	@$(SITE_REQUIRE) STDCELL_SIM "the standard-cell Verilog model file"
 	$(VCS) $(VCS_GATE_FLAGS)
 
 $(SIM_DIR_GATE):

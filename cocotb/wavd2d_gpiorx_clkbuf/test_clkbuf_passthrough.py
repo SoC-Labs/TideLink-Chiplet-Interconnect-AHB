@@ -44,7 +44,7 @@ this test. The cocotb/tidelink_rxclk_buf test covers an analogous opt-OUT
 on a SINGLE-clock boundary BUFG, where the proof IS load-bearing.
 
 Invocation:
-    cd /home/dam1n19/td_idelay_wt && source set_env.sh
+    cd <your tidelink worktree> && source set_env.sh
     rm -rf cocotb/wavd2d_gpiorx_clkbuf/sim_build
     make -C cocotb/wavd2d_gpiorx_clkbuf
 

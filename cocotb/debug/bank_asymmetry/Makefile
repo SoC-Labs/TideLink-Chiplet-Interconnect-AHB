@@ -22,14 +22,14 @@
 #                          best-of-sweep convergence rate.
 #
 # Run (always clean sim_build first):
-#   cd /home/dam1n19/td_idelay_wt && source set_env.sh
+#   cd <your tidelink worktree> && source set_env.sh
 #   rm -rf cocotb/bank_asymmetry/sim_build
 #   make -C cocotb/bank_asymmetry
 # =============================================================================
 SIM             = vcs
 TOPLEVEL_LANG   = verilog
 
-TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
+TIDELINK_HOME ?= $(realpath $(CURDIR)/../../..)
 export TIDELINK_HOME
 
 VERILOG_SOURCES = $(CURDIR)/tb_top.sv \

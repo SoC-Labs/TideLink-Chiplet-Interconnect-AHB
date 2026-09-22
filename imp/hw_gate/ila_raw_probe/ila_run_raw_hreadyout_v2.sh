@@ -20,7 +20,7 @@
 # THE QUESTION: is xhb_sub_hreadyout_raw 0 or 1 at the wedge?
 #   See imp/hw_gate/PREREG_RAW_HREADYOUT_PROBE_2026_08_13.md for P1/P2/P3.
 set -u
-ROOT=/home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet
+ROOT="${CHIPLET_HOME:?not set — it locates the nanosoc-ethernet-chiplet superproject checkout that holds this tidelink worktree. Set it in site.env or export it; there is no default.}"
 TIDELINK_HOME="$ROOT/tidelink"; export TIDELINK_HOME
 SC="$TIDELINK_HOME/pynq_host/scripts"
 HG="$TIDELINK_HOME/imp/hw_gate"

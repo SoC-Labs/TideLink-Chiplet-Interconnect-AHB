@@ -62,7 +62,7 @@ was actually 1:
 
 This is silently correct whenever the read's one-shot address-phase edge does
 NOT collide with `fc_active` (src/rtl/fifo/tidelink_fifo_mem.sv:91,105,119):
-cmsdk_ahb_to_sram (/research/AAA/ip_library/.../cmsdk_ahb_to_sram.v:208) always
+cmsdk_ahb_to_sram ($ARM_IP_LIBRARY_PATH/.../cmsdk_ahb_to_sram.v:208) always
 asserts its own HREADYOUT=1'b1 (zero-wait-state), so the outer
 `hreadyout = ahb_hreadyout_raw && !fc_active` (tidelink_fifo_mem.sv:206) is
 normally 1 immediately and the poll loop's first iteration just happens to

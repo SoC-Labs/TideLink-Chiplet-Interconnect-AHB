@@ -79,7 +79,13 @@ if [ -z "${REMOTE_ROOT:-}" ]; then
     _ck_hash="$(printf '%s' "$TIDELINK_HOME" | sha1sum | cut -c1-8)"
     REMOTE_ROOT=".cache/tidelink-farm-${_ck_base}-${_ck_hash}"
 fi
-VIVADO_BIN="${VIVADO_BIN:-/apps/Xilinx/Vivado/2024.1/bin/vivado}"
+# Vivado: VIVADO_BIN wins; else derive from XILINX_VIVADO; else whatever is
+# on PATH. Checked below, once die() exists, so the failure names the
+# SETTING rather than arriving as "no such file" inside an ssh session.
+if [ -z "${VIVADO_BIN:-}" ]; then
+    if [ -n "${XILINX_VIVADO:-}" ]; then VIVADO_BIN="$XILINX_VIVADO/bin/vivado"
+    else VIVADO_BIN="$(command -v vivado || true)"; fi
+fi
 # Vivado's own launch_runs default ssh opts — same here for the build login.
 read -r -a SSH_OPTS_ARR <<< "${SSH_OPTS:--q -o ConnectTimeout=30 -o ConnectionAttempts=3 -o BatchMode=yes}"
 SSH=(ssh -T "${SSH_OPTS_ARR[@]}")
@@ -88,13 +94,25 @@ ts()  { date '+%Y-%m-%d %H:%M:%S'; }
 say() { printf '[farm %s@%s %s] %s\n' "$TARGET" "$HOST" "$(ts)" "$*"; }
 die() { printf '[farm %s@%s %s] ERROR: %s\n' "$TARGET" "$HOST" "$(ts)" "$*" >&2; exit 1; }
 
-# Shared EDA-env preamble. Pin CMSDK to the standalone BP210 install (the
-# Corstone-101 BP210 is missing cmsdk_fpga_sram.v — see the cmsdk_fpga_sram
-# workaround); set_env.sh then derives XHB500_IP_DIR and skips XHB500
-# regeneration because deps/xhb500/generated/ is rsynced along (it is
-# gitignored but a real on-disk artefact, deliberately NOT excluded).
-ARM_IP_LIBRARY_PATH="${ARM_IP_LIBRARY_PATH:-/research/AAA/ip_library}"
-CMSDK_DIR="${CMSDK_DIR:-$ARM_IP_LIBRARY_PATH/BP210/BP210-BU-00000-r1p1-00rel0}"
+[ -n "$VIVADO_BIN" ] || die "Vivado not found. Set VIVADO_BIN=<path/to/vivado>, or
+    XILINX_VIVADO=<install root>, in site.env or your environment; or put
+    vivado on PATH. There is no default — a hard-coded install path resolves
+    on one machine and nowhere else."
+
+# Host facts (tool installs, vendor IP roots) come from site.env or the
+# environment. NOTHING here carries a default path: a default pointing at
+# one lab's mount resolves on exactly one machine and fails everywhere else
+# as a missing FILE rather than as a missing SETTING.
+# shellcheck disable=SC1091
+[ -f "$TIDELINK_HOME/site.env" ] && . "$TIDELINK_HOME/site.env"
+#
+# CMSDK must be the package that ships cmsdk_fpga_sram.v; some Arm packages
+# do not (see the cmsdk_fpga_sram workaround note). set_env.sh then derives
+# XHB500_IP_DIR and skips XHB500 regeneration because deps/xhb500/generated/
+# is rsynced along (gitignored but a real on-disk artefact, deliberately NOT
+# excluded).
+: "${ARM_IP_LIBRARY_PATH:?not set — it locates the Arm IP library root. Set it in site.env or export it; there is no default.}"
+: "${CMSDK_DIR:?not set — it locates the Arm CMSDK package root (the one shipping cmsdk_fpga_sram.v). Set it in site.env or export it; the package directory name carries a release code, so it is set whole, not assembled.}"
 CMSDK_FPGA_SRAM_V="${CMSDK_FPGA_SRAM_V:-$CMSDK_DIR/logical/models/memories/cmsdk_fpga_sram.v}"
 FPGA_INSERT_DEBUG_CORE="${FPGA_INSERT_DEBUG_CORE:-}"
 FPGA_USE_IDELAY="${FPGA_USE_IDELAY:-}"

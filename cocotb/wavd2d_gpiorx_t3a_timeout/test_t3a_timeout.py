@@ -47,7 +47,7 @@ single-instance TB sidesteps that — `u_dut.g_t3a_realign.align_state`
 is a flat hierarchical path.
 
 Invocation:
-    cd /home/dam1n19/td_idelay_wt && source set_env.sh
+    cd <your tidelink worktree> && source set_env.sh
     rm -rf cocotb/wavd2d_gpiorx_t3a_timeout/sim_build
     make -C cocotb/wavd2d_gpiorx_t3a_timeout
 

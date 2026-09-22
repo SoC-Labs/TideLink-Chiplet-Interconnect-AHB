@@ -24,7 +24,11 @@ TIDECHART_HOME ?= $(realpath $(TIDELINK_HOME)/../tidechart)
 CHIPLET_HOME   ?= $(realpath $(TIDELINK_HOME)/../nanosoc-ethernet-chiplet)
 export TIDELINK_HOME
 export TIDECHART_HOME
-export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
+# Site configuration: per-machine tool + IP roots, with NO default path.
+# mk/site.mk reads site.env and names anything missing. site.env.example
+# says what each variable locates.
+SITE_VARS_REQUIRED += CMSDK_DIR
+include $(TIDELINK_HOME)/mk/site.mk
 # CMSDK fpga_sram model — mirrors set_env.sh (prefer the vendor path under
 # CMSDK_DIR, else the in-repo stub). Referenced by flists/tidelink_top.flist.
 export CMSDK_FPGA_SRAM_V ?= $(firstword \

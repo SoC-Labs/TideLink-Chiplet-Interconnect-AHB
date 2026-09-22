@@ -51,8 +51,8 @@ Two tests:
 
 Documented invocation (sim_build per-test to avoid clobbering peer envs):
 
-    source /home/dam1n19/SoCLabs/tidelink/set_env.sh
-    cd /home/dam1n19/SoCLabs/tidelink/cocotb/tidelink_top_pair
+    source ./set_env.sh
+    cd <your tidelink worktree>
     timeout 1500 make MODULE=test_bug_a_master_tx_wedge \
         SIM_BUILD=sim_build_bug_a_wedge TB_TOP_NO_DUMP=1
 
@@ -63,7 +63,7 @@ re-run; expected behaviour is the assertions in test 1 sub-step (b) and
 See the run-log capture at the bottom of
 ``docs/BUG_A_L9_FIX_DESIGN_2026_05_31.md`` for actual outputs.
 
-DO NOT touch RTL. DO NOT touch /research/AAA/ip_library/**.
+DO NOT touch RTL. DO NOT touch the shared vendor IP library (read-only).
 """
 import cocotb
 from cocotb.triggers import RisingEdge, ClockCycles

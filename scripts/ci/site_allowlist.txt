@@ -1,0 +1,51 @@
+# scripts/ci/site_allowlist.txt — documented exemptions for `make site-check`
+#
+# Copyright (C) 2026, SoC Labs (www.soclabs.org)
+#
+# FORMAT: three TAB-separated fields.
+#
+#     <tracked path>	<extended regex>	<reason>
+#
+# All three are MANDATORY. A line missing the reason is a hard error, not a
+# silent pass: an exemption nobody wrote a reason for is an exemption nobody
+# is reviewing. An entry that stops matching anything is also a hard error,
+# so a stale exemption cannot outlive the line it covered.
+#
+# THE ONLY CLASS EXEMPTED TODAY: absolute paths on the TARGET BOARD.
+#
+# The KR260 / PYNQ boards run a fixed vendor image in which `/home/xilinx`
+# and `/home/ubuntu` are that image's own layout, reached over ssh or scp.
+# They are not paths on any build host, they are not this site's filesystem
+# layout, and they cannot be relocated by setting a variable here — the
+# board is what it is. Each one below is already overridable by an
+# environment variable where it is a default rather than a literal.
+#
+# NOT exempted, and deliberately so: tool installs, vendor IP roots, and any
+# path under a developer's home directory on a build host. Those became
+# site.env entries — see site.env.example and mk/site.mk.
+
+fpga/Makefile	/home/xilinx/tidelink_overlay	PYNQ_DEST: the deploy directory ON THE BOARD. Overridable (?=); the board image fixes this path.
+fpga/hw_regression/td_v2_hwlib.sh	/home/xilinx/tl39\.py	Default location of the poke helper ON THE BOARD, already overridable via $TD_TL39.
+fpga/hw_regression/td_v2_channels.sh	/home/xilinx	Board-side staging path for tl39.py (one default, one comment describing it). Overridable via $TD_TL39.
+fpga/hw_regression/lib/instrument_preamble.sh	/home/xilinx/tl_poke\.py	Comment naming an example board-side tool path; no path is resolved here.
+pynq_host/scripts/tl39.sh	/home/xilinx/tl39\.py	Remote command run over ssh — the argument is a path in the board filesystem.
+pynq_host/scripts/char_session.sh	/home/xilinx/tlchar\.py	scp destination and the matching remote python3 / pkill invocations — all board-side.
+pynq_host/scripts/kr260_deploy.sh	home /home/ubuntu	Comment recording the KR260 Ubuntu image's login home directory.
+pynq_host/scripts/run_ptp_pair.sh	/home/ubuntu/td/scripts/tl39\.py	TD_TL39 override passed to a board-side run; a path in the board filesystem.
+pynq_host/stress/runner.py	/home/xilinx/(\.ssh/id_ed25519|tidelink_overlay)	Board-side ssh key and overlay directory, used inside remote commands.
+imp/hw_gate/ila_raw_probe/ila_run_raw_hreadyout.sh	/home/ubuntu/td/tidelink\.bin	fpgautil argument executed ON THE BOARD — the bitstream's board-side path.
+imp/hw_gate/ila_raw_probe/ila_run_raw_hreadyout_v2.sh	/home/ubuntu/td/tidelink\.bin	fpgautil argument executed ON THE BOARD — the bitstream's board-side path.
+imp/hw_gate/ila_raw_probe/ila_run_raw_hreadyout_v3.sh	/home/ubuntu/td/tidelink\.bin	fpgautil argument executed ON THE BOARD — the bitstream's board-side path.
+
+# ── The checker's own test fixtures ──────────────────────────────────────────
+#
+# test_site_check.sh seeds a real violation of every rule and asserts the
+# scanner fires on it. Those literals ARE the test: remove them and the test
+# passes vacuously, which is the exact failure this whole guard exists to
+# prevent. They are written into files under a mktemp directory and are never
+# a path this repository resolves.
+#
+# Scoped to the one file, by the one pattern each case needs — not a blanket
+# exemption for scripts/ci/tests/, so a REAL site path added to that file
+# still fails.
+scripts/ci/tests/test_site_check.sh	(printf|expect|^#     TL39=).*((/eda|/research|/apps|/home)/|-r[0-9]+p[0-9]+-[0-9]+rel[0-9]+)	Seeded violations that prove each rule fires (both classes), plus the verbatim line quoted in the header as the reason case 2 exists. They are the test's fixtures, written to a mktemp dir, never resolved by this repository.

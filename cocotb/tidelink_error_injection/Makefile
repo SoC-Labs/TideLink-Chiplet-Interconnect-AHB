@@ -23,7 +23,11 @@ TOPLEVEL_LANG   = verilog
 
 TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
 export TIDELINK_HOME
-export CMSDK_DIR ?= $(ARM_IP_LIBRARY_PATH)/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0
+# Site configuration: per-machine tool + IP roots, with NO default path.
+# mk/site.mk reads site.env and names anything missing. site.env.example
+# says what each variable locates.
+SITE_VARS_REQUIRED += CMSDK_DIR
+include $(TIDELINK_HOME)/mk/site.mk
 
 # My own bench SV (tb_top is a local copy of the v2 pair harness with the F14
 # err_inject module spliced onto both pad directions; pad_skid is a verbatim

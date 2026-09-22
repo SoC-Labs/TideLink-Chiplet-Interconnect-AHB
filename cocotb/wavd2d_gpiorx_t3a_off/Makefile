@@ -22,7 +22,7 @@
 # Run (always clean sim_build first — VCS does NOT rebuild simv on RTL edits
 # or +define+ changes, so a stale simv would give a false PASS):
 #
-#   cd /home/dam1n19/td_idelay_wt && source set_env.sh
+#   cd <your tidelink worktree> && source set_env.sh
 #   rm -rf cocotb/wavd2d_gpiorx_t3a_off/sim_build
 #   make -C cocotb/wavd2d_gpiorx_t3a_off
 # =============================================================================

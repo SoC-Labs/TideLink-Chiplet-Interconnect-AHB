@@ -14,10 +14,19 @@
 #   make coverage               - Generate merged coverage report
 ###############################################################################
 
-# Tool paths
-VCS_HOME    ?= /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2
-VERDI_HOME  ?= /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
-VIP_HOME    ?= /eda/synopsys/2022-23/RHELx86/VC-VIP-SOC_2022.12
+# ── Site configuration ──────────────────────────────────────────────────────
+# Tool installs and IP roots are per-machine facts with NO default: see
+# mk/site.mk and site.env.example. `source set_env.sh` sets them too.
+TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
+SITE_VARS_REQUIRED += VCS_HOME VIP_HOME CMSDK_DIR
+# The gate-level netlist run (GATE=1) additionally needs the physical-IP
+# and memory-macro roots. An RTL run must not require a PDK, so they are
+# demanded only when GATE=1 — and named HERE, before the include, because
+# mk/site.mk reads SITE_VARS_REQUIRED as it is included.
+ifeq ($(GATE),1)
+  SITE_VARS_REQUIRED += PHYS_IP_PATH MEM_BASE
+endif
+include $(TIDELINK_HOME)/mk/site.mk
 AMBA_HOME    = $(VIP_HOME)/vip/svt/amba_svt/latest
 SVT_HOME     = $(VIP_HOME)/vip/svt/common/latest
 
@@ -50,18 +59,12 @@ INT_UVM_DIR  = $(PROJ_HOME)/uvm/tidelink_integration
 AGENT_DIR    = $(UNIT_UVM_DIR)/agents/apb_master_agent
 INT_SEQ_DIR  = $(INT_UVM_DIR)/sequences
 
-# CMSDK path (for cmsdk_ahb_to_sram and cmsdk_ahb_to_apb). Convention:
-# CMSDK_DIR is the package root (parent of `logical/`), matching cocotb/lint.
-CMSDK_DIR   ?= $(HOME)/Downloads/BP210-BU-00000-r1p1-00rel0
-
 # XHB500 generated bridge directories (set by 'source ../../set_env.sh')
 XHB500_GEN_DIR ?= $(PROJ_HOME)/deps/xhb500/generated
 XHB500_SLV_DIR ?= $(XHB500_GEN_DIR)/xhb_chiplet_slv
 XHB500_MST_DIR ?= $(XHB500_GEN_DIR)/xhb_chiplet_mst
 
 # Physical-IP paths for GATE=1 gate-level sim (mirror syn/asic/common.mk)
-PHYS_IP_PATH ?= /research/AAA/phys_ip_library/arm/tsmc/cln65lp
-MEM_BASE     ?= /research/precompiled_mems/TSMC65
 
 # Simulation output. Per-FCSM_SRC build dir so the deps baseline and the
 # local_overrides override each keep their own simv (no clobber between arms).

@@ -183,13 +183,35 @@ create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAM
 # Transmit eye: source-synchronous SDR centred-edge forward. Budget +/-20 ns for
 # board trace + peer setup/hold.
 #
-# These +/-20 ns are ABSOLUTE nanoseconds (ribbon flight time + the far die's
-# setup/hold), NOT a fraction of the link period — do NOT rescale them if you
-# change the rate knob. The Z2 lineage of this comment framed them as
-# "12.5% of the 160 ns period"; that framing was a coincidence of its rate, and
-# is what made it look period-dependent. At the KR260's 320 ns period the same
-# +/-20 ns is simply a larger relative margin (6.25%), i.e. strictly more
-# conservative. Only create_clock / -divide_by track the rate knob.
+# THE NUMBER BELOW IS A BUDGET. NOTHING HAS EVER MEASURED THIS INTERFACE.
+#
+# An earlier version of this comment asserted that the then +/-20 ns were
+# "ABSOLUTE nanoseconds (ribbon flight time + the far die's setup/hold), NOT a
+# fraction of the link period", and that the Z2 lineage's "12.5% of the period"
+# framing "was a coincidence of its rate". Git says the opposite. Commit
+# 9aee1d39, verbatim:
+#
+#     set_output_delay pad_tx +/-5 -> +/-20 ns (period-scaled 4x, same
+#     12.5%-of-period fraction; far die samples mid-cell so >=60 ns margin)
+#
+# The 12.5% fraction WAS the derivation method. +/-20 was +/-5 multiplied by
+# four because the link rate dropped by four, and +/-5 itself entered at
+# 5ad4b0c7 as "budget +/-5 ns of the 40 ns period for board trace + peer
+# setup/hold" - also a fraction, also underived. The comment was a
+# rationalisation written after the fact, and it instructed the reader not to
+# rescale on the strength of a history that did not happen.
+#
+# What is actually known: no receiver setup/hold requirement is documented in
+# any of these repositories; the Wavious IP that owns this PHY constrains
+# nothing on its pads; and NO TRANSMIT EYE HAS EVER BEEN MEASURED, on FPGA or
+# silicon. The instruments exist (pynq_host/scripts/eye_toolkit) and have never
+# been run to completion against this interface.
+#
+# So treat the number as a budget to be replaced, not a fact to be preserved.
+# The measurement that would replace it is the DUTY CYCLE of pad_clk_tx at the
+# connector: the entire sampling window below exists because the far die
+# captures on the opposite edge, so the window is a direct function of a duty
+# cycle that nothing here constrains or measures.
 #
 # SYMMETRIC window measured against the forwarded clock pad_clk_tx_fwd (NOT an
 # asymmetric absolute window vs an internal clock), so it does not recreate the
@@ -197,8 +219,34 @@ create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAM
 # edge, so Vivado balances rather than hold-pads every lane. The far die samples
 # MID-CELL (160 ns from either pad transition at 320 ns), so +/-20 ns leaves
 # >=140 ns of true eye margin each side.
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max 20.000 [get_ports {pad_tx[*]}]
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -20.000 [get_ports {pad_tx[*]}]
+# -clock_fall IS THE LOAD-BEARING WORD HERE. The far die captures on the
+# FALLING edge of the forwarded clock - WavD2DGpio.v's reset default selects the
+# inverted pad clock, and both shipped routed netlists name the capture cells'
+# clock `pad_clk_rx'` (82 endpoints on kr260-pair-nptp, 86 on the flip). The
+# comment fifteen lines above already said the far die samples MID-CELL; the
+# constraint simply never encoded it.
+#
+# Vivado infers the capture edge from the capture flop on the RX side, which is
+# why pad_rx[*] shows no phantom violation. On TX the capture flop is off-chip
+# and invisible, so the edge has to be DECLARED. Omitting -clock_fall described
+# a window around the RISING edge and manufactured a -22.145 ns hold "failure"
+# on all eight pad_tx lanes - a check against a requirement that does not exist
+# in the hardware.
+#
+# Measured, two builds differing only in these two lines (same design sha, same
+# toolkit, same gated-clock setting, carried to a bitstream):
+#
+#                        stock +/-20 rising    this
+#     WNS                +0.332                +0.276
+#     failing setup      0                     0
+#     WHS                -22.145               +0.010
+#     failing hold       8 (all pad_tx[*])     0
+#     pad_tx worst hold  -22.145               +151.592
+#     LUT / FF / BUFGCE  59851/54337/23        59851/54337/23
+#
+# IDENTICAL UTILISATION. The design does not change; only what is checked does.
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -clock_fall -max  8.000 [get_ports {pad_tx[*]}]
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -clock_fall -min -8.000 [get_ports {pad_tx[*]}]
 
 #-----------------------------------------------------------------------------
 # [3] RX pad capture: TIMED source-synchronous group, RELATIVE skew bounded
@@ -232,13 +280,73 @@ set_input_delay -clock [get_clocks pad_clk_rx] -min -4.000 [get_ports {pad_rx[*]
 set _xlnx_shared_i0 [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
 set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 8.000
 
-# (3c) THE key build-to-build determinism constraint. set_bus_skew forces
-#      Vivado to EQUALISE the pad_rx[0..7] -> capture delays to within 2 ns
-#      of each other. The defect is per-lane VARIANCE (some lanes land in
-#      the calibrator window, others don't, and which is which changes every
-#      build); bounding relative skew directly removes that variance without
-#      any absolute hold pressure. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
+# (3c) THE key build-to-build determinism constraint --- DELETED 2026-09-09.
+#      It had NEVER APPLIED, on this target or any other, and it CANNOT be made
+#      to apply. It read:
+#
+#        set_bus_skew -from [get_ports {pad_rx[*]}]
+#            -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
+#
+#      Every build emitted, and carried on past:
+#        CRITICAL WARNING [Constraints 18-611] set_bus_skew: ... '8' objects of
+#          types '(port)' other than the types '(pin,cell,clock)' supported ...
+#        CRITICAL WARNING [Constraints 18-612] ... The constraint will not be applied.
+#      -- legacy imp/fpga (impl_1/runme.log:169-170) AND the new BD flow
+#      (fpga/build/bd-fix-impl3.console:3057-3058, where it now also FAILS the
+#      ALLOW_CRITICAL_WARNINGS=0 gate). report_bus_skew on the shipped routed
+#      design says, verbatim, "No bus skew constraints". The shipping KR260
+#      bitstream was built with its self-described "key" constraint inert.
+#
+#      NO -from OBJECT EXISTS. Measured 2026-09-09 against the shipping routed
+#      checkpoint (imp/fpga/output/kr260-eth-chiplet/, Vivado 2024.1); the whole
+#      object space set_bus_skew accepts was tried:
+#        -from [get_ports {pad_rx[*]}]           -> 18-611 + 18-612
+#        -from [get_pins pad_rx_IBUF/O]          -> 18-402 + ERROR 18-513
+#        -from [get_cells pad_rx_IBUF_inst]      -> 18-402 + ERROR 18-513
+#        -from [get_clocks pad_clk_rx]           -> 18-611 + 18-612
+#      18-611 contradicts itself: handed ports it calls '(pin,cell,clock)'
+#      supported; handed a clock it calls '(port,pin,cell)' supported. The real
+#      accepted set is the intersection, pin|cell -- and 18-402 adds that it must
+#      be a valid STARTPOINT, "a clock pin of a sequential cell". A bus launched
+#      from a primary input port has no on-die launch register, so nothing
+#      satisfies both. set_bus_skew is a register-to-register CDC construct; it
+#      cannot express a pad -> capture input bus. That was a misconception, not
+#      a typo, so do NOT "fix" it by swapping the selector.
+#
+#      AND IT WOULD HAVE FAILED. Measured over all 128 pad_rx -> capture paths
+#      on the shipping routed design:
+#        max datapath 3.797 ns  (gpiorx_5/link_data_pad_clk_reg[11])
+#        min datapath 1.405 ns  (gpiorx_6/link_data_pad_clk_reg[5])
+#        => bus skew 2.392 ns against the 2.000 ns asked for: it VIOLATES by
+#           0.392 ns. The achievable bound on this placement is 2.4 ns (2.5 ns
+#           with margin), not 2.0 ns. Lane-to-lane worst-max spread alone is
+#           1.240 ns (lane 5 3.797, lane 4 2.557).
+#
+#      NOR CAN set_min_delay SUBSTITUTE. The obvious legal rewrite -- close the
+#      window (3b) leaves open -- is structurally inert: (3b)'s -datapath_only
+#      REMOVES hold/min analysis on exactly this from/to. Measured,
+#      report_exceptions -from [get_ports {pad_rx[*]}] -to <capture cells>
+#      returns one row: "Setup max_dpo=8 / Hold -", and report_timing
+#      -delay_type min on those paths still reports "Slack: inf, Timing
+#      Exception: False Path" AFTER a set_min_delay is issued (tried -to the
+#      cells and -to the /D pins; both inert). While (3b) keeps -datapath_only
+#      -- and it must, that is what keeps the 2026-05-05 hold explosion away --
+#      this group is bounded ABOVE ONLY. A two-sided skew bound requires
+#      dropping -datapath_only and accepting real hold checks on 128 endpoints;
+#      that trade is unevaluated and needs a validated re-route, not an edit.
+#
+#      WHAT ACTUALLY BOUNDS THIS PATH TODAY is (3b) alone, and it is far tighter
+#      than its own comment claims: of the 8.000 ns ceiling, 4.000 ns is consumed
+#      by the (3a) set_input_delay -max, leaving 4.000 ns of datapath -- and the
+#      worst lane already uses 3.797 ns. Margin is 0.247 ns, not 4.2 ns.
+#
+#      The residual build-to-build variance is the capture CLOCK tree, not this
+#      data path (8 lane-identical mux chains merge into one LUT driving a
+#      high-fanout general-routing net). No constraint can fix that; the proven
+#      fix is RTL (shared BUFG hoist). See the compute chiplet's
+#      fpga/docs/KR260_CAPTURE_CLOCK_TREE.md.
+#
+#      Do NOT re-add a set_bus_skew here in any form.
 
 # (3d) IOB packing is FORCED OFF on KR260. This is a deliberate inversion of
 #      the Z2 constraint (which requests `IOB TRUE` here), and it is required —

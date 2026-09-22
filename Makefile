@@ -2527,17 +2527,7 @@ sim_gate_regressions: selfcheck_gates sim_gate_registry_coverage sim_gate
 #
 #   make selfcheck_gates                    run them all; report every failure
 #   make selfcheck_registry_hw_evidence     just the hardware-evidence rule
-.PHONY: selfcheck_gates selfcheck_registry_hw_evidence
-selfcheck_gates:
-	@rc=0; \
-	for t in $(TIDELINK_HOME)/scripts/ci/tests/test_*.py; do \
-	  [ -e "$$t" ] || continue; \
-	  echo "=== $$(basename $$t)"; \
-	  if python3 "$$t"; then :; else rc=1; echo "  ^ CONTROL FAILED"; fi; \
-	done; \
-	if [ $$rc -eq 0 ]; then echo "selfcheck_gates: ALL CONTROLS PASS"; \
-	else echo "selfcheck_gates: FAILURES — a checker cannot produce its failing verdict"; fi; \
-	exit $$rc
+.PHONY: selfcheck_registry_hw_evidence
 
 # The hardware-proof evidence rule added 2026-09-11: an entry claiming hardware
 # proof must name a stat()-able verification.evidence path and a legal

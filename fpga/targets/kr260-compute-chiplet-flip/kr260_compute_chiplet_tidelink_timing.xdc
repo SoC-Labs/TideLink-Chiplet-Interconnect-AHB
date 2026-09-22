@@ -163,7 +163,27 @@ set_input_delay -clock [get_clocks pad_clk_rx_0] -min -4.000 [get_ports {pad_rx_
 # the hierarchy prefix. As written this matches nothing on compute -> 12-4739.
 set _xlnx_shared_i0 [get_cells -hier -filter {NAME =~ "*d2d0*gpiorx_*/link_data_pad_clk_reg[*]"}]
 set_max_delay -datapath_only -from [get_ports {pad_rx_0[*]}] -to $_xlnx_shared_i0 8.000
-set_bus_skew -from [get_ports {pad_rx_0[*]}] -to $_xlnx_shared_i0 2.000
+# (3c) THE key build-to-build determinism constraint --- DELETED 2026-09-22.
+#      It had NEVER APPLIED here either. The full forensic analysis - the whole
+#      object space set_bus_skew accepts, tried one at a time against a shipping
+#      routed checkpoint - is in
+#      fpga/targets/kr260-eth-chiplet/kr260_eth_chiplet_tidelink_timing.xdc,
+#      where the same line was deleted on 2026-09-09 (commit cbe5e43). It was
+#      deleted from ONE file that day and left live in every other, which is why
+#      it is still here.
+#
+#      MEASURED AGAIN ON THIS TARGET, 2026-09-22. Vivado says it outright:
+#        CRITICAL WARNING [Constraints 18-611] set_bus_skew: ... '8' objects of
+#          types '(port)' other than the types '(pin,cell,clock)' supported ...
+#        CRITICAL WARNING [Constraints 18-612] ... The constraint will be ignored.
+#      Those two were the ONLY remaining critical warnings on the run that
+#      verified the -clock_fall fix, and they are the entire distance between
+#      this build and a clean ALLOW_CRITICAL_WARNINGS=0 budget.
+#
+#      A constraint the tool announces it is ignoring is not a safety net. It is
+#      a line that makes a reader believe skew is bounded when nothing bounds it.
+#      The line, for the record:
+#        set_bus_skew -from [get_ports {pad_rx_0[*]}] -to $_xlnx_shared_i0 2.000
 
 # (3d) IOB packing FORCED OFF on KR260 (deliberate inversion of the Z2 IOB TRUE).
 #      REQUIRED: the HDIO bank-44 pins + the V2 PHY's per-lane wpa_shift_q_reg

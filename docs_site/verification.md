@@ -319,6 +319,21 @@ and `build_farm.sh` consumes its SHA-stamped pass token. Per-check skips and
 `FARM_GATE_STRESS=1` (promotes the silicon tier to blocking) are documented in
 the script header, `fpga/farm_gate.sh:81-101`.
 
+Both baselines are **content-keyed, not line-keyed** (since 2026-08-24). Each
+linter emits a stable discriminator — `[key=<signal>]` for `COMB_NO_DEFAULT`,
+`[key=<case selector>]` for `CASE_NO_DEFAULT`, `[key=<constraint text>]` for the
+XDC rules — and the ratchet compares those, as a *multiset*, ignoring line
+numbers. Two consequences worth knowing before you touch a baseline:
+
+* **Adding lines above a finding no longer turns the gate red.** The previous
+  line-based key drifted six times on one untouched `always_comb`, and each
+  drift was answered by re-ratcheting — a habit that accepts genuinely new
+  findings unread. If the gate is red now, something really changed.
+* **Do not "refresh" a baseline to make it green.** Fix the finding and delete
+  its line, or read it and add it deliberately. A repeated key is listed once
+  per occurrence (`tidelink_lane_deskew_v2.sv` has two `di` iterators), so
+  deleting a duplicate silently widens the waiver.
+
 ## CDC
 
 ```bash

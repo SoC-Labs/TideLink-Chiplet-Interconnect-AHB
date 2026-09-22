@@ -24,7 +24,7 @@ companion API differs, so a mismatch never kills the weekend run.
 
 - die_a = `ubuntu@10.22.24.159` = fpgahub `kr260_01` = image `kr260-eth-chiplet`.
 - die_b = `ubuntu@10.22.24.153` = fpgahub `kr260_02` = image `kr260-eth-chiplet-flip`.
-- Board password default `soclabs2026`.
+- Board password: export `KR260_PASSWORD`. There is no default.
 - PS reaches the SoC ONLY via the `eth_ss_0` backdoor (`0x4_0000_0000 + addr`); the
   AXI data plane wedges the PS bus with **no** timeout, so every peer access is
   subprocess-timeout-wrapped (a timeout == WEDGE), and the soak verify is always a
@@ -45,7 +45,7 @@ python3 $W/campaign_iter.py --seed 1 --print-env
 # 2. confirm leases are free, then launch DETACHED for the weekend (~58h budget)
 fpgahub status                      # kr260_01 / kr260_02 should be free
 cd $W
-setsid nohup env BUDGET_H=58 BASE_SEED=1 KR260_PASSWORD=soclabs2026 \
+setsid nohup env BUDGET_H=58 BASE_SEED=1 KR260_PASSWORD=<board-password> \
     bash weekend_campaign.sh > weekend.boot.log 2>&1 &
 echo "launched pid $!"
 

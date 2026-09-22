@@ -51,7 +51,7 @@
 # Exit 0 = gate ACCEPTed; 1 = retry budget exhausted; 2 = staging fail.
 set -u
 A=${DIE_A:-ubuntu@10.22.24.159}; B=${DIE_B:-ubuntu@10.22.24.153}
-PW=${KR260_PASSWORD:-soclabs2026}
+PW="${KR260_PASSWORD:?KR260_PASSWORD is not set. Export the board ssh password before running this script; it is deliberately not hardcoded (this repository is public).}"
 MAX_TRIES=${MAX_TRIES:-8}
 ANCHOR_GATE_MODE=${ANCHOR_GATE_MODE:-pair}
 PAIR_BU_TIMEOUT=${PAIR_BU_TIMEOUT:-300}

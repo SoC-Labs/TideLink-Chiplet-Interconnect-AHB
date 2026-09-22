@@ -6,7 +6,7 @@
 # Meant to be launched detached on mapstone-dev (the host that owns the fpgahub
 # socket + reaches both boards):
 #
-#     setsid nohup env BUDGET_H=58 KR260_PASSWORD=soclabs2026 \
+#     setsid nohup env BUDGET_H=58 KR260_PASSWORD=<board-password> \
 #         bash weekend_campaign.sh > weekend.boot.log 2>&1 &
 #
 # Per iteration (seed = BASE_SEED + iter, fully reproducible):
@@ -29,7 +29,7 @@
 #   BUDGET_H        wall budget in hours (default 58)
 #   BASE_SEED       first seed (default 1); iteration N uses BASE_SEED+N
 #   OUT             output dir (default runs/weekend_<ts> under this script dir)
-#   KR260_PASSWORD  board password (default soclabs2026)
+#   KR260_PASSWORD  board password (REQUIRED; no default)
 #   KR260_DIEA_IP / KR260_DIEB_IP   board IPs (default .159 / .153)
 #   KEEPALIVE_S     lease re-acquire interval (default 1800 = TTL/2 assuming ~1h)
 #   LEASE_A / LEASE_B   fpgahub lease names (default kr260_01 / kr260_02)
@@ -49,7 +49,7 @@ BRINGUP_SH="$SCRIPTS_DIR/bringup_pair_release.sh"
 
 BUDGET_H=${BUDGET_H:-58}
 BASE_SEED=${BASE_SEED:-1}
-PW=${KR260_PASSWORD:-soclabs2026}
+PW="${KR260_PASSWORD:?KR260_PASSWORD is not set. Export the board ssh password before running this script; it is deliberately not hardcoded (this repository is public).}"
 DIEA_IP=${KR260_DIEA_IP:-10.22.24.159}
 DIEB_IP=${KR260_DIEB_IP:-10.22.24.153}
 KEEPALIVE_S=${KEEPALIVE_S:-1800}

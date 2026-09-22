@@ -86,7 +86,7 @@ the memory's lottery-free path), or (iii) ship the logical fix and document the 
 2. **`kr260_sync_bringup.sh` — BUILT (2026-08-10, `pynq_host/scripts/`, syntax-checked, not yet run).**
    POR→wait-both-sshd→PARALLEL `fpgautil`+AFI→autonomous converge→probe bilateral `anc`→credit-safe delivery
    BOTH directions, looping `ATTEMPTS` times. Just needs a leased pair to run:
-   `source ./set_env.sh; KR260_PASSWORD=soclabs2026 ATTEMPTS=6 bash pynq_host/scripts/kr260_sync_bringup.sh`.
+   `source ./set_env.sh; KR260_PASSWORD=<board-password> ATTEMPTS=6 bash pynq_host/scripts/kr260_sync_bringup.sh`.
 3. **Run A** for ~5 POR cycles; record per-die `anc` land-rate with tight skew vs the sequential baseline
    (die_b 1/4, die_a 0/4). If die_a's rate rises → skew was the blocker.
 4. **Interleave B** (synchronized recal) as a fast inner loop between A's POR cycles.

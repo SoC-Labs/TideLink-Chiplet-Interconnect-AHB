@@ -27,7 +27,7 @@
 #   CABLE_RETRY   retries of a single POR issue on "cable-not-found" (default 3)
 #   PING_WAIT     seconds to wait for ping after a POR (default 150)
 #   SSH_WAIT      seconds to wait for ssh-up after ping (default 120)
-#   KR260_PASSWORD board ssh password (default soclabs2026)
+#   KR260_PASSWORD board ssh password (REQUIRED; no default)
 #   KR260_USER    board login user (default ubuntu)
 #
 # Copyright (C) 2026, SoC Labs (www.soclabs.org)
@@ -47,7 +47,7 @@ MAX_POR=${MAX_POR:-3}
 CABLE_RETRY=${CABLE_RETRY:-3}
 PING_WAIT=${PING_WAIT:-150}
 SSH_WAIT=${SSH_WAIT:-120}
-PW=${KR260_PASSWORD:-soclabs2026}
+PW="${KR260_PASSWORD:?KR260_PASSWORD is not set. Export the board ssh password before running this script; it is deliberately not hardcoded (this repository is public).}"
 KR260_USER=${KR260_USER:-ubuntu}
 
 # physical board <-> IP (fixed; POR always operates on the physical board)

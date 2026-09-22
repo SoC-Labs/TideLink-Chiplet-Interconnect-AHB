@@ -36,10 +36,40 @@
 
 #   Finding lines : <path>:<line>: <CODE> <message...>
 #   Baseline lines: <path>:<line>: <CODE>            (message dropped)
+# extract_keys: one comparable line per finding.
+#   Keyed findings (the linters emit a trailing `[key=...]` token, 57b6700) are
+#   compared on path + code + KEY, never on the line number, so a finding that
+#   merely moves is not "new" and a baseline never rots on an unrelated edit.
+#   Unkeyed findings fall back to path:line: CODE. Duplicates get a #n suffix so
+#   two identical findings in one file are two entries, not one.
 extract_keys() {
-    # $1 = file of raw lint/baseline text -> stdout: sorted-uniq "path:line: CODE"
-    sed -nE 's#^([^:[:space:]]+:[0-9]+):[[:space:]]+([A-Z_]+).*$#\1: \2#p' "$1" \
-        | sort -u
+    awk '
+        /\[key=.*\]$/ {
+            k = $0
+            sub(/^.*\[key=/, "", k); sub(/\]$/, "", k)
+            hdr = $0
+            if (match(hdr, /^[^: \t]+:[0-9]+:[ \t]+[A-Z_]+/) ||
+                match(hdr, /^[^: \t]+:[ \t]+[A-Z_]+/)) {
+                h = substr(hdr, RSTART, RLENGTH)
+                code = h; sub(/^.*[ \t]/, "", code)
+                path = h
+                sub(/[ \t]+[A-Z_]+$/, "", path)
+                sub(/:[0-9]+:$/, "", path)
+                sub(/:$/, "", path)
+                print path ": " code " [key=" k "]"
+            }
+            next
+        }
+        match($0, /^[^: \t]+:[0-9]+:[ \t]+[A-Z_]+/) {
+            h = substr($0, RSTART, RLENGTH)
+            code = h; sub(/^.*[ \t]/, "", code)
+            loc  = h; sub(/:[ \t]+[A-Z_]+$/, "", loc)
+            print loc ": " code
+        }
+    ' "$1" \
+        | sort \
+        | awk '{ c[$0]++; print $0 "  #" c[$0] }' \
+        | sort
 }
 
 # lint_evaluable <label> <log> <rc>

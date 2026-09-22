@@ -57,7 +57,11 @@ GATES="$OUT_DIR/run_ptp_pair_gates.txt"
 DONE="$OUT_DIR/run_ptp_pair.done"
 : > "$LOG"; : > "$GATES"; rm -f "$DONE"
 
-PW=$(sed -n 's/.*KR260_PASSWORD:-\([^}]*\)}.*/\1/p' kr260_eth_bringup_pair.sh | head -1)
+# Board password from the environment. This USED TO scrape the literal out of
+# kr260_eth_bringup_pair.sh's "${KR260_PASSWORD:-<literal>}" default, which is
+# both a way of depending on a hardcoded credential at a distance and a silent
+# no-op the moment that default goes away (PW="" and mask() stops masking).
+PW="${KR260_PASSWORD:?KR260_PASSWORD is not set. Export the board ssh password before running this script; it is deliberately not hardcoded (this repository is public).}"
 mask(){ if [ -n "$PW" ]; then sed "s/${PW}/***/g" | grep -vaE 'password for|\[sudo\]'
         else grep -vaE 'password for|\[sudo\]'; fi; }
 

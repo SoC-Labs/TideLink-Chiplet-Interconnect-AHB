@@ -19,7 +19,7 @@
 #
 # Usage (from repo root, boards LEASED):
 #   source ./set_env.sh
-#   KR260_PASSWORD=soclabs2026 [ATTEMPTS=6] [STAGE=1] \
+#   KR260_PASSWORD=<board-password> [ATTEMPTS=6] [STAGE=1] \
 #     bash pynq_host/scripts/kr260_sync_bringup.sh
 #   STAGE=1 (default) does a one-time sequential `make deploy_pair_role` to put
 #   ~/td/tidelink.bin + scripts on both boards; set STAGE=0 if already staged.
@@ -28,7 +28,7 @@
 # reachable for kpor, sshpass, both dies reachable (10.22.24.159/.153).
 set -u
 DA=10.22.24.159; DB=10.22.24.153
-PW="${KR260_PASSWORD:-soclabs2026}"
+PW="${KR260_PASSWORD:?KR260_PASSWORD is not set. Export the board ssh password before running this script; it is deliberately not hardcoded (this repository is public).}"
 ATTEMPTS="${ATTEMPTS:-6}"
 STAGE="${STAGE:-1}"
 FPGA_DIR="${TIDELINK_HOME:-$(pwd)}/fpga"

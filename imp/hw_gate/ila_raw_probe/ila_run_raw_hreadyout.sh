@@ -32,7 +32,7 @@ LOG="$OUT/run.log"; SUM="$OUT/summary.txt"; DONE="$OUT/done"
 : > "$LOG"; : > "$SUM"; rm -f "$DONE"
 IP_A=10.22.24.159; IP_B=10.22.24.153
 A=ubuntu@$IP_A;    B=ubuntu@$IP_B
-PW="${KR260_PASSWORD:-soclabs2026}"
+PW="${KR260_PASSWORD:?KR260_PASSWORD is not set. Export the board ssh password before running this script; it is deliberately not hardcoded (this repository is public).}"
 export KR260_PASSWORD="$PW"
 MD5_A_WANT=8045683b6f8cf3d16f7a332c41045e56   # the ILA build, die_a
 MD5_B_WANT=13573e46c3b27bb6b03b41b2ce730aa8   # die_b baseline, ALREADY on board

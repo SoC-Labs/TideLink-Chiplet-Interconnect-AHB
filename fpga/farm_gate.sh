@@ -53,6 +53,10 @@
 ###   Tier-0.c sv_anti_pattern (ms)  first-party latch / incomplete-case lint,
 ###                                  RATCHETED vs fpga/farm_gate_sv_baseline.txt.
 ###                                  (skip: FARM_GATE_SKIP_SV=1)
+###   Both ratchets key on CONTENT, not line numbers (see `extract_keys`): a
+###   finding is identified by its linter-emitted `[key=...]` discriminator, so
+###   inserting lines above it is not a new finding and changing WHAT is flagged
+###   is. Baselines carry no line numbers.
 ###   Tier-1   SIM         (minutes) the V2 pair sim, in two named tiers:
 ###       FUNCTIONAL (always, blocking): zero-epoch bring-up + reduced-lane +
 ###           XHB bridge BFM. Must be green on ANY sound V2 branch.

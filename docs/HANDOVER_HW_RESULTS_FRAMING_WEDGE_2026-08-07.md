@@ -60,7 +60,8 @@ outbound XHB500 `ahb_sub` bridge** (initiator side), not die_b.
 
 ```
 [31:24]=0xB5 marker
-[10]=1  xhb_stall_stuck_sticky   -> bridge HREADYOUT stuck low >= 2^12 hclk (far-B never returned)
+[10]=1  xhb_stall_stuck_sticky   -> hreadyout low >= 2^12 CONSECUTIVE hclk, at least once
+                                    (NOT a deadlock -- see the correction note below)
 [9] =0  sub_err_sticky           -> no read ERROR backstop
 [8] =1  sub_wr_stuck_sticky      -> synth-B backstop FIRED (completed the PS store)
 [7:5]=001 sub_wr_os_hwm=1        -> one outstanding write high-water
@@ -68,6 +69,23 @@ outbound XHB500 `ahb_sub` bridge** (initiator side), not die_b.
 [3:1]=000 sub_wr_os_ctr=0        -> drained (by synth-B)
 [0] =1  xhb_sub_hreadyout_raw=1  -> bridge ready again post-synth-B
 ```
+
+> **CORRECTION 2026-08-24 — bit [10] carried no weight in this decode.**
+> The line above originally read "(far-B never returned)", treating [10] as a
+> deadlock witness. That inference is retracted. On 2026-08-24, kr260-pair-onchip,
+> across TWO bitstreams and BOTH dies, `0x21F8` moved `0xB5000001 -> 0xB5000421`
+> (bit [10] SET) while every one of 24/24 cross-die reads returned 256/256 words
+> BYTE-EXACT and [9] stayed 0 — evidence
+> `td-bisect/kr260-integ-2026-08-24-results/AB_SUMMARY.json`. **Bit [10] sets during
+> entirely healthy traffic**, because it latches on 4096 consecutive unready hclk
+> and a normal cross-die round trip exceeds that; being sticky, the first such
+> transaction latches it for the session.
+>
+> What survives in the decode below is [8]=1 (`sub_wr_stuck_sticky`, synth-B
+> genuinely fired) — that, not [10], is the load-bearing evidence for a write-path
+> problem here. The wedge discriminators are **[9] high** and **[0] low-and-stuck
+> across repeated polls**; in the healthy 2026-08-24 capture [8] and [9] were both
+> 0 and [0] was 1.
 
 This is the `235d758` commit's signature reproduced **exactly**. It matches your causal chain:
 bad framing → W/B round-trip corrupted → **no far-B** → die_a bridge stalls ≥2¹⁶ → synth-B →

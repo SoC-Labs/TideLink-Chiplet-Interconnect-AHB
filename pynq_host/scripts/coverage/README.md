@@ -64,7 +64,7 @@ export KR260_PASSWORD=...        # REQUIRED — never hardcoded (gates exit if u
    check; the sweep here asserts liveness+exactness, so confirm the injector is live
    before trusting a PASS).
 5. **Password handling** deviates deliberately from the older scripts'
-   `soclabs2026` default: `cov_common.password()` requires `KR260_PASSWORD` and
+   hardcoded default: `cov_common.password()` requires `KR260_PASSWORD` and
    exits if unset — nothing is hardcoded.
 6. These gates were **written and syntax/-help/decoder-checked on the dev host
    only; nothing was run against the boards.**

@@ -69,11 +69,25 @@ proc tl_sha256 {path} {
 # uncommitted changes. "-dirty" is the single most useful provenance flag: a
 # dirty bitstream can never be reproduced from a commit, so it must be visible.
 proc tl_git_sha {root} {
+    # FAIL-CLOSED PROVENANCE (2026-08-24). Any failure to EVALUATE the working
+    # tree must record DIRTY, never clean. The previous form scored "could not
+    # tell" as clean two different ways, and both fired on real builds:
+    #   1. `![catch {...}] && ...` short-circuits when git exits non-zero -- e.g.
+    #      rc=128 "expected submodule path 'deps/...' not to be a symbolic link"
+    #      -- leaving dirty unset. Builds with symlinked deps/ were stamped
+    #      git_dirty:false while carrying uncommitted RTL.
+    #   2. rev-parse failure returned "unknown" and skipped the dirty check
+    #      entirely, producing source_commit:"unknown" WITH git_dirty:false --
+    #      a build whose commit git could not determine, recorded as clean.
+    # A bitstream that cannot be reproduced from a commit must never be
+    # indistinguishable from one that can.
     if { [catch { exec git -C $root rev-parse HEAD } sha] } {
-        return "unknown"
+        return "unknown-dirty"
     }
     set dirty ""
-    if { ![catch { exec git -C $root status --porcelain } st] && [string trim $st] ne "" } {
+    if { [catch { exec git -C $root status --porcelain } st] } {
+        set dirty "-dirty"
+    } elseif { [string trim $st] ne "" } {
         set dirty "-dirty"
     }
     return "${sha}${dirty}"
@@ -285,6 +299,32 @@ proc tl_verify_packaged_ip {ip_root} {
 # the campaign proved were load-bearing: the V1/V2 marker, the resolved flist,
 # and the submodule pins. Generated INSIDE build_design.tcl (via the call site)
 # so it cannot be forgotten the way the post-hoc shell script could be.
+# Provenance of deps/xhb500/generated -- see scripts/xhb500_tree_digest.sh for
+# why a gitignored tree needs its own pin. Returns {state digest}.
+proc tl_xhb500_provenance {root} {
+    set gen  [file join $root deps xhb500 generated]
+    set rec  [file join $root deps xhb500 TREE.sha256]
+    set script [file join $root scripts xhb500_tree_digest.sh]
+
+    set recorded "-"
+    if { [file exists $rec] } {
+        set fh [open $rec r]
+        foreach line [split [read $fh] "\n"] {
+            if { [regexp {^tree_digest\s+(\S+)} $line -> d] } { set recorded $d; break }
+        }
+        close $fh
+    }
+    if { ![file isdirectory $gen] } { return [list "absent" $recorded] }
+    if { ![file exists $script] }   { return [list "unknown" $recorded] }
+
+    # The script exits 0 only on an exact match. Its stdout/stderr is not needed
+    # here -- the build log already carries it when run from the gate.
+    if { [catch { exec bash $script } _out] } {
+        return [list "MISMATCH" $recorded]
+    }
+    return [list "match" $recorded]
+}
+
 proc tl_write_manifest {out_path target {bit_path ""}} {
     set root [tl_repo_root]
     set sha  [tl_git_sha $root]
@@ -304,6 +344,18 @@ proc tl_write_manifest {out_path target {bit_path ""}} {
         set bit_sha [tl_sha256 $bit_path]
     }
 
+    # XHB500 generated-tree provenance. git_dirty above is `git status
+    # --porcelain` non-empty, which CANNOT see deps/xhb500/generated: that path
+    # is gitignored, nothing under it is tracked, and it is not a submodule --
+    # yet four flists compile 32 files out of it. Without this field a manifest
+    # reading git_dirty:false says nothing whatsoever about the XHB500 bridge RTL
+    # that went into the build. Values:
+    #   match    the tree matches deps/xhb500/TREE.sha256
+    #   MISMATCH it does not -- this build is not the recorded RTL
+    #   absent   the tree is not on disk (the build cannot have been correct)
+    #   unknown  the checker could not run
+    lassign [tl_xhb500_provenance $root] xhb_state xhb_digest
+
     # Low 32 bits of the (clean) git SHA - the value stamped into the bitstream
     # USR_ACCESS register (see build_design.tcl). Recorded here too so the
     # on-silicon USR_ACCESS read-back can be cross-checked against the manifest.
@@ -319,6 +371,8 @@ proc tl_write_manifest {out_path target {bit_path ""}} {
     puts $fo "  \"sha256\":          \"$bit_sha\","
     puts $fo "  \"source_commit\":   \"$sha\","
     puts $fo "  \"git_dirty\":       $dirty,"
+    puts $fo "  \"xhb500_tree\":     \"$xhb_state\","
+    puts $fo "  \"xhb500_digest\":   \"$xhb_digest\","
     puts $fo "  \"phy_marker\":      \"$marker\","
     puts $fo "  \"flist\":           \"$flist\","
     puts $fo "  \"submodule_pins\": \{"

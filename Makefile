@@ -374,19 +374,38 @@ endef
 #
 # The two tool checks are kept AHEAD of it deliberately: they are the cheapest
 # and by far the commonest failure, and their message is the one users know.
-sim_gate_env_check:
+## Provenance gate for deps/xhb500/generated — the gitignored vendor tree that
+## four flists (including the TAPEOUT selector) hard-depend on. `git status` and
+## therefore `git_dirty` are structurally blind to it, so nothing else in the
+## flow can tell a divergent copy from the recorded one. See the script header.
+.PHONY: xhb500-check xhb500-update
+xhb500-check:
+	@bash scripts/xhb500_tree_digest.sh
+
+## Deliberate re-pin after an intended vendor-release change. Own commit, please.
+xhb500-update:
+	@bash scripts/xhb500_tree_digest.sh --update
+
+sim_gate_env_check: xhb500-check
 	@command -v vcs >/dev/null 2>&1 || \
 	  { echo "sim_gate: vcs not in PATH — run 'source ./set_env.sh' first"; exit 1; }
 	@command -v cocotb-config >/dev/null 2>&1 || \
 	  { echo "sim_gate: cocotb-config not in PATH — run 'source ./set_env.sh' first"; exit 1; }
 	@python3 $(TIDELINK_HOME)/scripts/ci/sim_gate_env_check.py \
 	  --repo $(TIDELINK_HOME) --skip-tools $(SIM_GATE_ENV_CHECK_ARGS)
-	@# The three SIBLING repo checkouts (tidechart, nanosoc-ethernet-chiplet,
-	@# ethernet-subsystem-ahb) are REPORTED by the checker but do NOT fail it.
-	@# They stay checked PER-SUITE (SIM_GATE_REQUIRE below): a missing sibling
-	@# must fail its own suites loudly while the other 15 still run — aborting
-	@# the whole gate on one absent checkout would be worse than the gap it
-	@# reports. See docs/SIM_GATE_COVERAGE.md §"CI prerequisite".
+	@# xhb500-check is a prerequisite HERE, unlike the sibling checkouts noted
+	@# below, and the difference is deliberate. A missing sibling repo affects
+	@# only its own suites. deps/xhb500/generated is compiled by the tapeout
+	@# flists themselves, so a divergent copy silently changes what EVERY
+	@# gate result is a statement about — including the elaboration gates that
+	@# read flists/tidelink_top_full_asic_v2.flist directly. There is no
+	@# per-suite scope to fail it into.
+	@# NOTE: the weekend-2026-07-18 suites additionally need three SIBLING repo
+	@# checkouts (tidechart, nanosoc-ethernet-chiplet, ethernet-subsystem-ahb).
+	@# Those are checked PER-SUITE (SIM_GATE_REQUIRE below), NOT here: a missing
+	@# sibling must fail its own suites loudly while the other 15 still run —
+	@# aborting the whole gate on one absent checkout would be worse than the
+	@# gap it reports. See docs/SIM_GATE_COVERAGE.md §"CI prerequisite".
 
 # --- tidelink_top_pair autonomy suites (V2 flist, shared sim_build_l4) ------
 sim_gate_t31:
@@ -2698,7 +2717,65 @@ clean_syn:
 # NOT pass. Both checkouts report absolute site paths and revision-coded vendor
 # release names at HEAD, concentrated in cocotb/ flists and Makefiles. That is
 # pre-existing debt the guard made visible, not damage the guard did.
+#
+# MEASURED AGAIN 2026-08-24 (scanner run on this tree, exit 1, 4 gates failing).
+# The 08-14 sentence above was right in kind and vague in size, so here is the
+# count, because "known debt" that nobody has counted quietly becomes permanent:
+#
+#   AN INVENTORY OF LEAKS MUST NOT BE A LEAK. The first draft of this block
+#   quoted the offending strings and added 3 ident + 3 path findings of its own,
+#   which the scanner duly reported. Counts and shapes only, below; run
+#   `make vendor-check` for the literals, which is the tool's job, not a
+#   comment's. (That is also the honest answer to "why not just list them here":
+#   because then they are published twice.)
+#
+#   vendor.head.ident       84 findings — revision-coded vendor release names.
+#                           94 occurrences of a drop-coded Arm release string
+#                           across 49 files, in TWO different literal forms: the
+#                           bare-release form (42x) and a longer part-number form
+#                           (52x). The "~42" figure in circulation counts only
+#                           the first and undercounts by more than half. The bare
+#                           FAMILY name also appears 30x and is NOT a finding.
+#                           Two further hits are a different Arm block's release
+#                           string, in deps/xhb500/configs/. Nearly all of the 94
+#                           are one line per file, assembling CMSDK_DIR out of
+#                           $(ARM_IP_LIBRARY_PATH) plus a hardcoded release and
+#                           part directory.
+#   vendor.head.path       111 findings — absolute site mounts, by root: the EDA
+#                           vendor tree 56 (VERDI_HOME in ~34 cocotb Makefiles,
+#                           SPYGLASS_HOME in cdc/Makefile), the FPGA-tool tree
+#                           21, the lab bench-tool tree 25, the shared IP-library
+#                           tree 49, the compiled-memory tree 6.
+#   vendor.head.file.size    9 findings — 7 ILA .csv captures, a vendored
+#                           plotly.min.js, and the 434 KB local_overrides copy of
+#                           axi_chiplet_controller.sv.
+#   vendor.head.value.lef    8 findings — 6 prose/doc lines, 2 real ones at
+#                           syn/asic/fusion-compiler/scripts/pg_mesh.tcl:95-96
+#                           (the M1 PG rail width kept deliberately by 32d20a98).
+#
+# SHAPE OF THE DEBT, which is the useful part: the ASIC flow was cleaned by
+# 32d20a98 (landed here as affbda14) and is clean. What remains is almost
+# entirely the VERIFICATION flow — cocotb/, uvm/, lint/, cdc/, xprop/ Makefiles —
+# which that commit did not touch. The fix is the same one, applied again:
+# declare the variable, no literal fallback, let site.env supply it.
+#
+# ALSO MEASURED 2026-08-24, and NOT a vendor finding, so this scanner never
+# looked: 72 tracked files carry /home/dam1n19 (136 lines) and 5 carry
+# /home/david (12 lines). No FORMER user's home directory remains — the
+# /home/dwn1c21 leak 32d20a98 was written for is CLOSED, 0 occurrences.
+#
 # =============================================================================
+# ── Credentials ──────────────────────────────────────────────────────────────
+# The vendor scanner above guards vendor/foundry collateral. It is NOT a secrets
+# scanner, and on 2026-08-24 that gap was live: the board ssh password was a
+# hardcoded default in 13 shell scripts and one python file, published alongside
+# the boards' reachable addresses and usernames. This target is the other half.
+# It lives IN this repo (unlike the vendor scanner) because it needs no
+# cross-repo maintenance and every clone should be able to run it.
+.PHONY: secrets-check
+secrets-check:
+	@bash scripts/ci/check-secrets.sh
+
 .PHONY: vendor-check vendor-check-staged vendor-check-rev vendor-check-history \
         vendor-scan-guard install-git-hooks
 

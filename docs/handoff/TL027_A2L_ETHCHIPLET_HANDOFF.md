@@ -44,7 +44,7 @@ blocked on a separate root cause).
   `src/rtl/local_overrides/WlinkGenericFCReplayV2_{1,3,5}.v` (grep the run dir), not `deps/`.
 
 ### 3. HARDWARE VALIDATE (the point of the handoff) — supervised, on the kr260 eth-chiplet pair
-Rig: kr260-01 = 10.22.24.159 (die_a), kr260-02 = 10.22.24.153 (die_b). Creds ubuntu/soclabs2026.
+Rig: kr260-01 = 10.22.24.159 (die_a), kr260-02 = 10.22.24.153 (die_b). Creds ubuntu/<board-password>.
 POR = `ssh mapstone-dev '~/bin/kpor kr260-01|02 --wait'`. **Lease first (standalone), never chain acquire
 with board ops.** eth-chiplet deploy REQUIRES `KR260_AFI_NO_CANARY=1` (canaries hang die_a otherwise);
 deploy AFTER uptime≥115s (bootpy reloads base.bit ~85s); never TL-APB-poke a die on base.bit.

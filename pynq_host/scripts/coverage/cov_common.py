@@ -76,7 +76,8 @@ class WedgeTimeout(Exception):
 
 def password():
     """Board ssh password from env only. NEVER hardcode it (deliberate deviation
-    from the older scripts' soclabs2026 default — the coverage gates require the
+    from the older scripts, which used to carry a hardcoded default — every
+    script now requires the
     operator to export it)."""
     pw = os.environ.get("KR260_PASSWORD")
     if not pw:

@@ -23,7 +23,7 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 A=${DIE_A:-ubuntu@10.22.24.159}; B=${DIE_B:-ubuntu@10.22.24.153}
-PW=${KR260_PASSWORD:-soclabs2026}
+PW="${KR260_PASSWORD:?KR260_PASSWORD is not set. Export the board ssh password before running this script; it is deliberately not hardcoded (this repository is public).}"
 SOAK=${SOAK:-10}
 RUN="$HERE/kr260_eth_run.sh"
 ssh_(){ sshpass -p "$PW" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 "$1" "${@:2}"; }

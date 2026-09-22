@@ -68,7 +68,10 @@ except Exception:                                                 # pragma: no c
 DEFAULT_A_IP = os.environ.get("KR260_DIEA_IP", "10.22.24.159")    # kr260_01
 DEFAULT_B_IP = os.environ.get("KR260_DIEB_IP", "10.22.24.153")    # kr260_02
 IP_TO_TARGET = {DEFAULT_A_IP: "kr260_01", DEFAULT_B_IP: "kr260_02"}
-PW = os.environ.get("KR260_PASSWORD", "soclabs2026")
+PW = os.environ.get("KR260_PASSWORD") or sys.exit(
+    "ERROR: KR260_PASSWORD is not set. Export the board ssh password before\n"
+    "running this campaign; it is deliberately not hardcoded (public repo)."
+)
 KR260_USER = os.environ.get("KR260_USER", "ubuntu")
 DEST_DIR = os.environ.get("KR260_DEST", "td")
 

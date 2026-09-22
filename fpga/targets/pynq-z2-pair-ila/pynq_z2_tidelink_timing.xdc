@@ -64,6 +64,27 @@ create_clock -name pad_clk_rx -period 20.0 [get_ports pad_clk_rx]
 
 # Output delays on TX data lanes relative to the launching hclk
 # (clk_wiz/clk_out1). Source-sync SDR centred-eye launch.
+#
+# NOT SWEPT BY THE 2026-09-22 -clock_fall PORT, AND THAT IS DELIBERATE.
+# Seven targets gained -clock_fall on these two lines that day (the five KR260
+# pair/chiplet targets and the two pynq-z2-pair *-all targets). This one did not.
+# REASON: THERE IS NO FORWARDED PAD CLOCK HERE TO TAKE AN EDGE FROM.
+# This is the older "Wave B1" lineage, half-migrated. Three things differ from
+# every target that was swept:
+#   1. pad_clk_tx_fwd DOES NOT EXIST in this file - there is no
+#      create_generated_clock for it, and pad_clk_tx is false-pathed outright.
+#   2. The set_output_delay below references */clk_wiz_0*/clk_out1 - the MMCM
+#      output INSIDE the FPGA, i.e. the internal launch clock, not a pad.
+#      -clock_fall on that would shift the checked window by half a period of a
+#      clock that never leaves the die. It would produce a number, and the
+#      number would mean nothing.
+#   3. The rate is stale: create_clock -period 20.0 (50 MHz), against
+#      pynq-z2-pair-all's 426.666 ns. The PHY has since gained a /2 and a /8.
+# The */clk_wiz_0*/ wildcard is also the exact pattern documented in the KR260
+# files as having matched more than one pin and tripped [Constraints 18-359],
+# which silently drops the stanza - so this constraint may not be applying at
+# all. THIS TARGET NEEDS DELETION OR A METHODOLOGY PORT, NOT THIS PATCH.
+# Last built 2026-05-01.
 set_output_delay -clock [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */clk_wiz_0*/clk_out1}]] -min -5.0 [get_ports {pad_tx[*]}]
 set_output_delay -clock [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */clk_wiz_0*/clk_out1}]] -max  5.0 [get_ports {pad_tx[*]}]
 

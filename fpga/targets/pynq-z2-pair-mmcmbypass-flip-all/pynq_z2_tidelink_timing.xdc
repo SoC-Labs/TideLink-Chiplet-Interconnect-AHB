@@ -178,6 +178,19 @@ create_generated_clock -name pad_clk_tx_fwd \
 # asymmetric absolute window vs an internal clock), so it does not recreate
 # the 2026-05-05 hold explosion: launch and capture reference are the same
 # forwarded edge, so Vivado balances rather than hold-pads every lane.
+#
+# NOT SWEPT BY THE 2026-09-22 -clock_fall PORT, AND THAT IS DELIBERATE.
+# Seven targets gained -clock_fall on these two lines that day (the five KR260
+# pair/chiplet targets and the two pynq-z2-pair *-all targets). This one did not.
+# REASON: NEVER BUILT - not a technical objection.
+# This target has no ODDR wrapper: pad_clk_tx is an ordinary combinational
+# forward, exactly like the seven that were swept, so -clock_fall IS the right
+# fix here and the edit is the same two words. It was left out only because no
+# bitstream has ever been produced from it in any checkout, so the change could
+# not be measured, and an unmeasured constraint change is how the +/-8 in
+# 4d87846 got into the tree unexplained.
+# IF YOU BUILD THIS TARGET: apply -clock_fall first, and carry the evidence
+# block from fpga/targets/pynq-z2-pair-all/pynq_z2_tidelink_timing.xdc with it.
 set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max  5.000 [get_ports {pad_tx[*]}]
 set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -5.000 [get_ports {pad_tx[*]}]
 

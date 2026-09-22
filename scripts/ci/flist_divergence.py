@@ -31,6 +31,14 @@ EXPECTED_SHADOW_PAIRS = {
     "WlinkGenericFCSM_3.v":              ("deps/", "src/rtl/local_overrides/"),
     "WlinkGenericFCSM_4.v":              ("deps/", "src/rtl/local_overrides/"),
     "WlinkGenericFCReplayAddrSync_18.v": ("deps/", "src/rtl/local_overrides/"),
+    # AR (_7) / R (_9) replay nodes: FPGA takes the TL-027/TL-032 CDC self-heal
+    # overrides; ASIC still ships deps/ (edge-triggered w_inc, loses ACKs on a
+    # torn mailbox -- proven 8/8 on all five nodes, cocotb a2l_wready_tear).
+    # DECISION 2026-09-22: FPGA-only re-point is deliberate. The ASIC flist is
+    # NOT re-pointed -- that is a separate rev-2 decision (GDS seed chain is keyed
+    # on the flist hash). Recorded here so the divergence is a choice, not drift.
+    "WlinkGenericFCReplayV2_7.v":        ("deps/", "src/rtl/local_overrides/"),
+    "WlinkGenericFCReplayV2_9.v":        ("deps/", "src/rtl/local_overrides/"),
     "i2c_master.v":                      ("deps/", "src/rtl/local_overrides/"),
     "tidelink_sram.sv":                  ("src/rtl/fifo/asic/", "src/rtl/fifo/fpga/"),
 }

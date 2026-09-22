@@ -23,13 +23,13 @@ ifeq ($(NODE),7)
   TB_FILE   := tb_top_7.sv
   NODE_MOD  := WlinkGenericFCReplayV2_7
   A2L_FLIST := tidelink_a2l_replay_cdc_7.flist
-  DUT_SRC_F := $(CURDIR)/dut_src_7.f
+  DUT_SRC_TAG := _7
   MODULE   ?= test_a2l_replay_cdc_7
 else ifeq ($(NODE),9)
   TB_FILE   := tb_top_9.sv
   NODE_MOD  := WlinkGenericFCReplayV2_9
   A2L_FLIST := tidelink_a2l_replay_cdc_9.flist
-  DUT_SRC_F := $(CURDIR)/dut_src_9.f
+  DUT_SRC_TAG := _9
   MODULE   ?= test_a2l_replay_cdc_9
 else ifeq ($(NODE),5)
   TB_FILE   := tb_top_5.sv

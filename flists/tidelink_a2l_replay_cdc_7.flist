@@ -39,7 +39,7 @@
 
 // DUT (prefer local override if present, else deps) — written by the Makefile.
 // Today there is NO override for _7, so this resolves to the raw deps node.
--f ${TIDELINK_HOME}/cocotb/tidelink_a2l_replay_cdc/dut_src_7.f
+-f ${TIDELINK_HOME}/imp/gen/a2l_replay_cdc/dut_src_7.f
 
 // Leaf dependencies (unmodified vendor/Chisel-generated IP)
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v

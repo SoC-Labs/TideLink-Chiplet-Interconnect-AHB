@@ -1,28 +1,40 @@
-"""AR-channel (0x83) a2l replay-FIFO CDC REPRODUCE — the READ-path analogue of
-test_a2l_replay_cdc_1 for the AR (read-address) node WlinkGenericFCReplayV2_7
+"""AR-channel (read-address, 0x83) a2l replay-FIFO CDC self-heal regression — the READ-path
+analogue of test_a2l_replay_cdc_1 for the AR node WlinkGenericFCReplayV2_7
 (101-bit data / 4-bit ptr / depth-8 — geometry IDENTICAL to the AW node _1).
 
-TL-043-ARR. THIS TEST IS EXPECTED TO FAIL TODAY, AND THAT IS THE POINT.
+TL-043-ARR. NO LONGER A REPRODUCE: THIS TEST IS EXPECTED TO **PASS**.
 
-Unlike _1/_3/_5 (AW/W/B) and _12/_13 (sideband), there is NO
-src/rtl/local_overrides/WlinkGenericFCReplayV2_7.v -- the file does not exist.
-The bench Makefile selects "local override if present, else deps", so this env
-compiles the RAW deps node, which is also exactly what the tapeout flist ships
-(flists/tidelink_top_full_asic_v2.flist takes _7 and _9 from deps/).
+  STALE CLAIM, CORRECTED 2026-09-11. This docstring used to say the test was
+  expected to fail today and that that was the point, on the grounds that
+  src/rtl/local_overrides/WlinkGenericFCReplayV2_7.v "does not exist". It does
+  exist -- e88ff7be added the TL-027/TL-032 self-heal overrides for both read-path
+  nodes (_7 and _9) -- and `sim_gate_a2l_replay_cdc_7` has been a BLOCKING suite
+  in `make sim_gate` since the rev2 consolidation. Leaving the old text in place
+  made a green suite read as a known red, which is the fastest way to get a real
+  red ignored.
 
-So a FAIL here is not a broken test; it is the shipping read path reproducing
-the TL-027 CDC self-latch that the write path was hardened against on 2026-08-08
-and the read path never was.
+The bench Makefile selects "local override if present, else deps", so this env now
+compiles the hardened override and the node self-heals:
 
-  deps _7 (what ships, and what this compiles):
+  local_overrides _7 (what this compiles, and what the FPGA-V2 flist ships):
+      assign link_addr_to_app_clk_w_inc = 1'b1;   // TL-027 continuous resend
+    Re-pushes the ACK pointer on the next w_ready, so a torn mailbox transfer
+    heals within one round trip instead of latching.
+
+  deps _7 (the pre-fix form, reachable with USE_DEPS_DUT=1):
       assign link_addr_to_app_clk_w_inc = a2l_link_addr != a2l_link_addr_in;
     Edge-triggered. A torn value delivered through WavMultibitSync that is not
     followed by a further change never re-fires the edge -> the synced ACK ptr
     latches -> a2l_full sticks -> app_ready=0 -> the AR FCSM stops transmitting.
+    That arm is the non-vacuity control and it MUST FAIL; it is gated by
+    `make sim_gate_a2l_replay_cdc_deps_mustfail`.
 
-  local_overrides _1 (the hardened form, for contrast):
-      assign link_addr_to_app_clk_w_inc = 1'b1;   // TL-027 continuous resend
-    Self-heals within one mailbox round trip.
+STILL OPEN, AND NOT WHAT THIS TEST MEASURES: the ASIC file set.
+flists/tidelink_top_full_asic_v2.flist:306 still takes _7 from deps/, so the
+TAPEOUT build carries the pre-fix edge form even though the FPGA-V2 flist
+(flists/tidelink_fpga_v2.flist) carries the override. Re-pointing the AR/R nodes
+in the ASIC flist is an open ASIC-recovery decision, not a test bug. A green here
+is evidence about the FPGA/override file set ONLY.
 
 Silicon correlate on freeze 5e8bdb5a (v0.90): writes 6/6 runs 128/128 byte-exact
 vs cross-die reads 2 PASS / 4 FAIL. The pass/fail split follows the
@@ -30,22 +42,18 @@ hardened/raw split exactly. Three distinct read failure signatures were observed
 so this explains a CLASS of read failure, not necessarily all of it -- reads are
 also eye-sensitive, and the ASIC runs the same GPIO PHY at ~4x the FPGA rate.
 
-⚠ THE REVERT TEST BELOW PASSES VACUOUSLY ON deps, AND MUST NOT BE READ AS HEALTH.
+⚠ THE REVERT TEST BELOW IS VACUOUS ON deps, AND MUST NOT BE READ AS HEALTH THERE.
 It checks that the TL-027 ACK-window guard is revert-aware, i.e. that a rewind
 does not lock the guard out of accepting recovery ACKs. deps _7 contains ZERO
-references to a2l_ack_valid -- there is no guard at all -- so there is nothing
-to lock out and it passes for the wrong reason. Measured: deps _7
-a2l_ack_valid = 0, hardened local_overrides _1 = 7.
-
-So "TESTS=2 PASS=1 FAIL=1" on the shipping source means ONE real reproduce and
-ONE vacuous pass, NOT partial health. The revert test only becomes meaningful
-once an override exists; at that point it is the TL-032 check, and it should be
-re-run with USE_PREFIX_DUT=1 to be non-vacuous.
+references to a2l_ack_valid -- there is no guard at all -- so there is nothing to
+lock out and it passes for the wrong reason. Against the override (the default
+here) the guard is present and the check is real; USE_PREFIX_DUT=1 is the
+non-vacuous A/B for it.
 
 Expected results:
-  today (no override -> deps)        -> FAIL   (the gap, reproduced)
-  once an override _7 is written     -> PASS   (self-heal)
-  USE_DEPS_DUT=1, after the override -> FAIL   (non-vacuity control)
+  default (local override _7)       -> PASS   (self-heal; blocking in sim_gate)
+  USE_DEPS_DUT=1 (pristine deps _7) -> FAIL   (non-vacuity control, gated)
+  USE_PREFIX_DUT=1                     -> the TL-032 revert-aware A/B
 """
 import cocotb
 from cocotb.triggers import RisingEdge

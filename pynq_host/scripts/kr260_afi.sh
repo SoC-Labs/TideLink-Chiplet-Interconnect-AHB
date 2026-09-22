@@ -274,6 +274,8 @@ do_fix() {
     #
     #   pair-onchip  : CAN_ROLE/CAN_MASK at 0x8403_xxxx  (bare link, as before)
     #   eth-chiplet  : marker word 0x4_2E03_21F8, top byte 0xB5 — verified
+#                  (bits [12]/[13]/[14] = TL-042 wr_hol_stuck, TL-044
+#                   xhb_dead / xhb_dead_perm; printed, report-only)
     #                  answering on silicon 2026-08-19 via the PS backdoor
     #   unset/other  : SKIP. An unknown target is exactly the case that wedges.
     case "${KR260_AFI_TARGET:-}" in
@@ -282,6 +284,16 @@ do_fix() {
             _m=$(dm_read 0x42E0321F8 2>/dev/null || echo "")
             if [ -n "$_m" ] && [ $(( (_m >> 24) & 0xFF )) -eq 181 ]; then
                 echo "    [PASS] 0x4_2E03_21F8 = ${_m} (marker 0xB5 present)"
+                # REPORT-ONLY. This is a canary read at deploy time, not a health
+                # gate, but the word now carries the TL-042/TL-044 containment
+                # plane and printing it here costs nothing and has caught a die
+                # that came up already parked. Gating lives in health_snapshot.py
+                # / kr260_recover_gate.py / kr260_sysval.py.
+                echo "           witness bits: wr_hol_stuck(12)=$(( (_m >> 12) & 1 ))" \
+                     "xhb_dead(13)=$(( (_m >> 13) & 1 ))" \
+                     "xhb_dead_perm(14)=$(( (_m >> 14) & 1 ))" \
+                     "stall_stuck(10)=$(( (_m >> 10) & 1 ))" \
+                     "synth_b(8)=$(( (_m >> 8) & 1 ))"
                 echo "AFI: FIX OK — both ports 32-bit and the eth-chiplet marker answers."
             else
                 echo "    [WARN] 0x4_2E03_21F8 did not return the 0xB5 marker (got '${_m:-<none>}')." >&2

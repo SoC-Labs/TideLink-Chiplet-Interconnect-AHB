@@ -212,7 +212,7 @@ TL044_HOL_TESTS := test_tl044_control_aggregate_backstop_fires_without_traffic \
                test_tl044_starvation_defeats_the_aggregate_backstop \
                test_tl044_escape_is_clean_and_normal_path_survives \
                test_tl044_healthy_traffic_never_trips_the_watchdog
-.PHONY: tl044_hol tl044_hol_prefix $(TL044_HOL_TESTS)
+.PHONY: tl044_hol tl044_hol_prefix tl044_hol_prefix_mustfail $(TL044_HOL_TESTS)
 $(TL044_HOL_TESTS):
 	TL044_AGG_LOG2=$(TL044_AGG_LOG2) TL044_HOL_LOG2=$(TL044_HOL_LOG2) \
 	$(MAKE) SIM_BUILD=sim_build_tl044_hol MODULE=test_tl044_hol_write_age \
@@ -235,12 +235,47 @@ tl044_hol_prefix:
 	                       +define+TIDELINK_DISABLE_SUB_WR_HOL" \
 	        TESTCASE=$(TL044_T)
 
+# The SAME isolation build, as a GATE. tl044_hol_prefix above has been documented
+# since it was written as "the PRIMARY test must FAIL here" -- and until
+# 2026-09-11 no gate target invoked it, so nothing ever checked that it did.
+# An A/B whose red arm is never run is an assertion, not a measurement: if the
+# watchdog stopped being what makes the green arm green, the green arm would keep
+# passing and nobody would learn.
+#
+# This target INVERTS the verdict: the run must fail, and a PASS is the error.
+# It refuses to accept just any failure as the expected one -- a compile error, a
+# missing TESTCASE or a typo'd define would otherwise be graded as the mutant
+# being killed, which is a false green wearing a red coat. The log must show the
+# test actually RAN and reported a real failure, so cocotb's own summary line is
+# required.
+tl044_hol_prefix_mustfail:
+	@echo "[tl044-hol] MUST-FAIL ARM: the head-of-line watchdog is tied off"
+	@echo "[tl044-hol]   (+define+TIDELINK_DISABLE_SUB_WR_HOL = the pre-fix RTL)"
+	@echo "[tl044-hol]   $(TL044_T) must FAIL. A pass means the green arm is not"
+	@echo "[tl044-hol]   attributable to the watchdog."
+	@rm -rf sim_build_tl044_hol_prefix tl044_hol_prefix.log
+	@if $(MAKE) tl044_hol_prefix > tl044_hol_prefix.log 2>&1; then \
+	    echo "[tl044-hol] MUTANT ESCAPED — $(TL044_T) PASSED with the head-of-line"; \
+	    echo "[tl044-hol] watchdog DISABLED, so the suite's green result is not"; \
+	    echo "[tl044-hol] evidence that the watchdog does anything."; \
+	    echo "[tl044-hol] see tl044_hol_prefix.log"; exit 1; \
+	fi
+	@# It failed. Now prove it failed for the RIGHT reason: the test ran to a
+	@# cocotb verdict rather than dying in elaboration.
+	@if ! grep -qE '\*\*[[:space:]]+TESTS=|tests? (failed|passed)|FAIL ' tl044_hol_prefix.log; then \
+	    echo "[tl044-hol] COULD-NOT-EVALUATE: the run failed WITHOUT reaching a"; \
+	    echo "[tl044-hol] cocotb verdict — that is a broken build, not a killed"; \
+	    echo "[tl044-hol] mutant. see tl044_hol_prefix.log"; exit 2; \
+	fi
+	@grep -E '\*\*[[:space:]]+(TESTS=|tidelink|test_)' tl044_hol_prefix.log | tail -5 || true
+	@echo "[tl044-hol] mutant killed: $(TL044_T) FAILS with the watchdog disabled (required)"
+
 clean_builds:
 	rm -rf sim_build_axirec sim_build_axirec_* sim_build_bidfix sim_build_gaps* \
 	       sim_build_writehold* sim_build_tl042v2* sim_build_tl037* sim_build_tl044* \
 	       sim_build_xdie_excl* \
 	       sim_build_wrhold_drain_guard* $(LOCAL_FLIST) \
-	       tl044_mutant_green.log
+	       tl044_mutant_green.log tl044_hol_prefix.log
 
 # =============================================================================
 # COVERAGE-GAP suite (test_axi_datanode_gaps.py) — 2026-08-02 verification

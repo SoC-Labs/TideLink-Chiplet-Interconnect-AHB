@@ -10,10 +10,14 @@ export TIDELINK_HOME
 #                    (14/4/depth-8) — TL-027 reproduce-first (lap-ahead ACK = 9).
 # NODE=7  : the AR (read-address 0x83) node (101/4/depth-8) — TL-043-ARR.
 # NODE=9  : the R  (read-data    0x84) node (47/6/depth-32) — TL-043-ARR.
-#           Neither has a local_overrides copy, so the DUT selection below
-#           resolves them to the RAW deps source. That is the point: these two
-#           are what SHIPS, and they are expected to FAIL the self-heal test
-#           until an override is written.
+#           STALE COMMENT CORRECTED 2026-09-11: this used to say neither node
+#           has a local_overrides copy and both are expected to FAIL. e88ff7be
+#           added src/rtl/local_overrides/WlinkGenericFCReplayV2_{7,9}.v, the DUT
+#           selection below therefore resolves both to the OVERRIDE, and
+#           sim_gate_a2l_replay_cdc_7 / _9 are blocking, passing suites.
+#           What is still true, and is a different thing: the TAPEOUT flist
+#           (flists/tidelink_top_full_asic_v2.flist) still sources _7/_9 from
+#           deps/. Re-pointing it is an open ASIC-recovery decision.
 NODE ?= 13
 ifeq ($(NODE),7)
   TB_FILE   := tb_top_7.sv

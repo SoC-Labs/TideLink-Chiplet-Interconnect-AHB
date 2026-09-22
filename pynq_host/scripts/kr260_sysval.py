@@ -7,6 +7,8 @@
 # Tests (build spec 2026-08-08), all wedge-safe by construction:
 #   T1 provenance   : board ~/td/scripts/*.py sha256 == repo (RO)
 #   T2 obs_probe    : marker-gated 0x21E0/0x21F8/0x21E8 + fcsm/cal (RO)
+#                     0x21F8 includes the TL-042/TL-044 containment plane
+#                     ([12] wr_hol_stuck, [13] xhb_dead, [14] xhb_dead_perm)
 #   T3 delivery_soak: die_a write N -> die_b LOCAL verify N (verify cannot wedge)
 #   T6 endurance    : T3 repeated to MAX_BEATS in chunks, Region-F gate each chunk
 #   T10 read_soak   : die_b seed_local -> die_a read over link in <=CHUNK chunks,
@@ -48,6 +50,15 @@
 #   5. every failure record says which of those it was, in words.
 # A verdict that cannot distinguish "the DUT returned wrong data" from "we could
 # not reach the DUT" is not an instrument.
+#
+# 2026-09-11 FALSE-GREEN C4 RE-APPLIED. The transport repair above and the T6
+# false-green fix (736607c) were written on two branches that never saw each
+# other; merge 77db1c5 took this file wholesale from the transport branch and
+# the T6 defect came back -- t6_endurance() ran its final delivery check and
+# dropped the result on the floor, recording PASS unconditionally. It is fixed
+# again below, in THIS file's idiom (Res + classify + marker), and the rc=3 row
+# the two branches disagreed about is now decided in writing at the fix.
+# See docs/MERGE_RECONCILIATION_TODO.md and verify_verdict() below.
 # ---------------------------------------------------------------------------
 import subprocess, sys, os, json, time, hashlib, glob, argparse, socket
 import re, random, tempfile
@@ -249,14 +260,58 @@ def obs(host):
     return None
 obs.last = None
 
+# 0x21F8 witness bits this harness gates on. The [12]/[13]/[14] triple is the
+# TL-042 / TL-044 containment plane added on rev2/integration
+# (src/rtl/tidelink_top.sv:2178). Any of them set means the design has ENGAGED a
+# containment or a watchdog: the link is not healthy even if Region F still reads
+# clean, which is precisely the case Region F cannot see (TL-044's whole premise
+# is an XHB500 park that the FC nodes report as healthy).
+WITNESS_FAULT_BITS = ("wr_hol_stuck", "xhb_dead", "xhb_dead_perm")
+
+
 def healthy(o):
-    """Region-F clean AND fcsm=4 (marker-gated; unknown marker => not healthy)."""
+    """Region-F clean AND fcsm=4 AND the 0x21F8 containment plane quiet.
+
+    MARKER-GATED, FAIL-CLOSED, in both directions:
+      * an absent Region-F (0xAD) or witness (0xB5) marker means the plane could
+        not be read, which is NOT healthy;
+      * a witness field that is MISSING from the board's JSON (an
+        eth_sysval_board.py older than the TL-042/TL-044 decode) is likewise not
+        healthy -- it is "this board cannot tell me", not "this board says 0".
+        T1_provenance is the test that names that cause: it sha256s the board's
+        copy of the script against the repo's.
+    """
     if not o: return False
     if o.get("fcsm") != 4 or o.get("cal") != 1: return False
     if not o.get("regf_present"): return False
     if o.get("data_healthy") != 1: return False
     if (o.get("wedge_tgt") or 0) != 0 or (o.get("wedge_ini") or 0) != 0: return False
+    if not o.get("witness_present"): return False
+    for b in WITNESS_FAULT_BITS:
+        if o.get(b) != 0: return False
     return True
+
+
+def witness_faults(o):
+    """The containment bits that are set / unreadable, in words. Reporting only."""
+    out = []
+    if not o:
+        return ["no obs"]
+    if not o.get("witness_present"):
+        return ["0x21F8 witness marker absent (expect 0xB5) — the TL-042/TL-044 "
+                "containment plane could not be read"]
+    names = {"wr_hol_stuck":  "TL-042 head-of-line write-age watchdog EXPIRED (0x21F8[12])",
+             "xhb_dead":      "TL-044 XHB500 declared DEAD — port in bounded-error "
+                              "containment (0x21F8[13])",
+             "xhb_dead_perm": "TL-044 containment latched PERMANENTLY (0x21F8[14])"}
+    for b in WITNESS_FAULT_BITS:
+        v = o.get(b)
+        if v is None:
+            out.append("%s: NOT REPORTED by this board script (stale "
+                       "eth_sysval_board.py — see T1_provenance)" % b)
+        elif v:
+            out.append(names[b])
+    return out
 
 def por_die_a():
     cmd = ("curl -sS --max-time 90 --unix-socket /run/fpgahub/fpgahub.sock -X POST "
@@ -437,32 +492,138 @@ def t3_delivery_soak(base=0xB6B60000):
     return ok
 
 # ---- T6 endurance (chunked write+verify to ENDUR_BEATS) ----------------------
-def t6_endurance(base=0xC7C70000):
+# FALSE-GREEN C4, first fixed on rev2/fix-falsegreen by 736607c, LOST in merge
+# 77db1c5 (which took the rev2/harness-repair file wholesale), re-applied here in
+# the harness-repair idiom on 2026-09-11. The tail used to read
+#
+#     board(B, "verify %d 0x%08X" % (min(step, ENDUR_BEATS), base), 60, marker="VERIFY")
+#     record("T6_endurance", "PASS", "%d beats, die_a alive, ..." % ENDUR_BEATS)
+#
+# with the Res thrown away on the floor: the final cross-die delivery check ran,
+# its answer was discarded, and PASS was recorded unconditionally. T6 could not
+# report a delivery failure AT ALL, and it writes a JSON verdict artefact that
+# other people read as evidence.
+#
+# THE rc=3 DISAGREEMENT, DECIDED (docs/MERGE_RECONCILIATION_TODO.md).
+# The two branches disagreed about "the command ran and returned non-zero without
+# emitting its marker": harness-repair called it FAIL (it ran, so it failed),
+# fix-falsegreen called it INCONCLUSIVE (conservative). Neither exit code alone
+# settles it, so this file settles it the way its own classifier already does:
+#
+#   THE MARKER, NOT THE EXIT CODE, IS THE DISCRIMINATOR.
+#
+# classify() is explicit that "proof of execution beats any transport guess" —
+# the board's own marker in stdout is that proof. So:
+#   rc=3, output present, marker PRESENT -> FAIL          the verify body ran and
+#                                                         disagreed: a real result
+#   rc=3, output present, marker ABSENT  -> INCONCLUSIVE  a traceback / sudo failure
+#                                                         / truncated first line; there
+#                                                         is NO evidence the verify
+#                                                         body executed, so there is
+#                                                         no data verdict to report
+# That is the same rule t3_delivery_soak already applies one screen above (it
+# records INCONCLUSIVE/BOARD_ERROR when "VERIFY" is missing from the output), so
+# T3 and T6 now agree instead of disagreeing silently.
+#
+# Both invariants the reconciliation note demanded survive, and each has a case in
+# the control: T6 CAN report a delivery failure, and a dead ssh is NEVER reported
+# as a data mismatch.
+def verify_verdict(r, n, marker="VERIFY"):
+    """Pure: the Res of a board `verify N BASE` -> (verdict, detail, info_kind).
+
+    verdict     PASS / FAIL / INCONCLUSIVE — all three are first-class in this
+                file's JSON counts and _summary.
+    info_kind   what to stamp into the record's info: None keeps the Res's own
+                kind, BOARD_ERROR / DATA_MISMATCH name the failure class.
+
+    Order matters, and it is the same order classify() uses."""
+    tag = "%d/%d" % (n, n)
+
+    # (1) We never reached the board. NOT a data verdict. rc=255-with-no-output
+    #     lands here, via classify(); calling it a mismatch is the 2026-08-24
+    #     false-red that cost weeks.
+    if r.transport:
+        return ("INCONCLUSIVE",
+                "TRANSPORT_ERROR: could not reach die_b to verify delivery — the "
+                "verify never ran, so NO conclusion about the data: %s" % r.describe(),
+                None)
+
+    # (2) The board took the command and never came back = a wedged die_b.
+    if r.kind == TIMEOUT:
+        return ("FAIL",
+                "WEDGE: verify timed out on die_b (rc=124, board timeout): %s"
+                % r.describe(),
+                None)
+
+    # (3) It ran but produced no marker -> board-side error (traceback, sudo,
+    #     /dev/mem EPERM, a corrupted first line). THE rc=3-WITHOUT-MARKER ROW:
+    #     no proof the verify body executed, so no data verdict.
+    if marker not in (r.out or ""):
+        return ("INCONCLUSIVE",
+                "BOARD_ERROR: verify produced no %s marker, so there is no "
+                "evidence it ran — delivery UNKNOWN: %s" % (marker, r.describe()),
+                BOARD_ERROR)
+
+    # (4) The marker is present: the verify body ran, and its answer is the
+    #     verdict — whatever the exit code. THE rc=3-WITH-MARKER ROW.
+    if r.rc == 0 and tag in r.out:
+        return ("PASS", "%s beats verified byte-exact" % tag, None)
+    return ("FAIL",
+            "delivery MISMATCH: wanted %s, got %s" % (tag, r.describe()),
+            DATA_MISMATCH)
+
+
+def t6_endurance(base=0xC7C70000, board_fn=None, obs_fn=None,
+                 por_fn=None, record_fn=None):
+    """Endurance: chunked cross-die writes to ENDUR_BEATS, Region-F gate each
+    chunk, then a final die_b-local delivery check whose answer IS READ.
+
+    The four dependencies are injectable (defaulting to the real ones) so the
+    whole function can be driven against a fake board with no ssh and no KR260;
+    see scripts/ci/tests/test_kr260_sysval_t6.py."""
+    _board  = board_fn  or board
+    _obs    = obs_fn    or obs
+    _por    = por_fn    or por_die_a
+    _record = record_fn or record
+
     done = 0; step = 256
     while done < ENDUR_BEATS:
         n = min(step, ENDUR_BEATS - done)
         b = (base + done) & 0xFFFFFFFF
-        r = board(A, "write %d 0x%08X" % (n, b), 60, marker="WRITE")
+        r = _board(A, "write %d 0x%08X" % (n, b), 60, marker="WRITE")
         if r.transport:
-            record("T6_endurance", "INCONCLUSIVE",
-                   "TRANSPORT_ERROR: could not reach die_a at beat %d: %s" % (done, r.describe()),
-                   info=r.info()); return None
+            _record("T6_endurance", "INCONCLUSIVE",
+                    "TRANSPORT_ERROR: could not reach die_a at beat %d: %s" % (done, r.describe()),
+                    info=r.info()); return None
         if not r.ok:
-            record("T6_endurance", "FAIL", "write wedged at beat %d: %s" % (done, r.describe()),
-                   info=r.info()); por_die_a(); return False
-        o = obs(A)
+            _record("T6_endurance", "FAIL", "write wedged at beat %d: %s" % (done, r.describe()),
+                    info=r.info()); _por(); return False
+        o = _obs(A)
         if not healthy(o):
-            if obs.last is not None and obs.last.transport:
-                record("T6_endurance", "INCONCLUSIVE",
-                       "TRANSPORT_ERROR: lost die_a obs at beat %d — health UNKNOWN: %s"
-                       % (done, obs.last.describe()), info=obs.last.info()); return None
-            record("T6_endurance", "FAIL", "Region-F/health fault at beat %d (%s)"
-                   % (done, o.get("witness_raw") if o else "no-obs")); por_die_a(); return False
+            last = getattr(_obs, "last", None)
+            if last is not None and last.transport:
+                _record("T6_endurance", "INCONCLUSIVE",
+                        "TRANSPORT_ERROR: lost die_a obs at beat %d — health UNKNOWN: %s"
+                        % (done, last.describe()), info=last.info()); return None
+            _record("T6_endurance", "FAIL", "Region-F/health fault at beat %d (%s)"
+                    % (done, o.get("witness_raw") if o else "no-obs")); _por(); return False
         done += n
-    # final delivery check (die_b local)
-    board(B, "verify %d 0x%08X" % (min(step, ENDUR_BEATS), base), 60, marker="VERIFY")
-    record("T6_endurance", "PASS", "%d beats, die_a alive, Region-F healthy throughout" % ENDUR_BEATS)
-    return True
+
+    # final delivery check (die_b local) — READ THE ANSWER.
+    n_final = min(step, ENDUR_BEATS)
+    rv = _board(B, "verify %d 0x%08X" % (n_final, base), 60, marker="VERIFY")
+    verdict, detail, kind = verify_verdict(rv, n_final)
+    _record("T6_endurance", verdict,
+            "%d beats, die_a alive, Region-F healthy throughout; final delivery: %s"
+            % (ENDUR_BEATS, detail),
+            info=rv.info(kind))
+    # POR only on a WEDGE, never on a mismatch (a mismatch means the link is alive
+    # and returning wrong data — a reset destroys the only state that explains it),
+    # and never on INCONCLUSIVE (we may not have reached a perfectly healthy board).
+    # Same policy as T10; POR_ON_MISMATCH is the documented opt-in.
+    if verdict == "FAIL" and (rv.kind == TIMEOUT or POR_ON_MISMATCH):
+        _por()
+    return verdict == "PASS"
 
 # ---- T10 cross-die READ soak (die_b seeds local; die_a reads over link) ------
 def t10_read_soak(base):

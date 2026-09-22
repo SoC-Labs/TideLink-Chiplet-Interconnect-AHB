@@ -660,3 +660,62 @@ report generator exits non-zero on that condition rather than printing a score.
   the `src/rtl/local_overrides/` / `fifo/fpga/` twins instead. The report calls
   these out as **SHADOWED ASIC SOURCES**, because coverage of the substitute says
   nothing about the file that tapes out.
+
+---
+
+## 13. Must-fail (mutant) arms, and the controls that were never run
+
+*Added 2026-09-11 on `rev2/land-prep`. Numbered as its own section deliberately —
+§2's numbered table has rotted twice and the Makefile is the source of truth
+(`make sim_gate_inventory`).*
+
+### 13.1 Two red arms that existed and were never executed
+
+This repo is disciplined about writing the reproduce arm of an A/B. It has not
+been disciplined about *running* it. Two were sitting in the tree, documented as
+must-fail, invoked by no gate target:
+
+| new suite | the arm it runs | what it makes attributable |
+|---|---|---|
+| `tl044_hol_prefix_mustfail` | `cocotb/tidelink_axi_datanode_recovery` `tl044_hol_prefix` — `+define+TIDELINK_DISABLE_SUB_WR_HOL` ties the TL-042 head-of-line write-age watchdog off, i.e. the pre-fix RTL. The bench Makefile comment has said "The PRIMARY test must FAIL here" since the day it was written. | `tl044_hol_write_age` (the green suite) had been passing for weeks with nothing checking that its green had anything to do with the watchdog. The aggregate backstops are still present in that build, so a neutered watchdog would very plausibly have left the green arm green. |
+| `a2l_replay_cdc_deps_mustfail` | both `USE_DEPS_DUT=1` arms on all five data-plane nodes — `test_a2l_replay_cdc_<n>` (lap-ahead-ACK self-latch) and `test_a2l_wready_tear` (w_inc continuous-resend), 10 runs. | **Seven** green suites (`a2l_replay_cdc_{1,3,5,7,9}`, `a2l_wready_tear`) document their red arm as `USE_DEPS_DUT=1` and the gate ran only their green halves. |
+
+### 13.2 A must-fail arm is not "make exited non-zero"
+
+Both targets refuse to grade a build failure as a killed mutant. A compile error,
+a mistyped `MODULE`, a missing flist or a bad define all exit non-zero, and
+accepting that as "the mutant died" is a false green wearing a red coat.
+
+* `tl044_hol_prefix_mustfail` requires the log to contain a cocotb verdict line;
+  otherwise it exits **2** and says COULD-NOT-EVALUATE.
+* `a2l_replay_cdc_deps_mustfail` requires each arm to leave a cocotb results XML
+  **containing a `<failure>`**, and requires all 10 arms to have been graded —
+  `ok -ne 10` is a failure even if nothing escaped.
+
+Both were exercised in all three directions on 2026-09-11: mutant killed (the
+expected result), mutant escaped, and could-not-evaluate.
+
+### 13.3 `selfcheck_gates` is now a prerequisite of `sim_gate`
+
+`make sim_gate` now depends on `selfcheck_gates` the same way it depends on
+`sim_gate_integrity`, and `selfcheck_gates` itself grew two families of control
+that nothing had ever run:
+
+* **`ci/checker_controls/run_all.sh`** — five sign-off checker controls (LVS
+  verdict, `fc_drc`, farm-gate ratchet, `verify_build`, Vivado message gate). The
+  script existed, worked, and was referenced by no Makefile target and no CI job.
+* **the UVM scoreboard self-tests** — `uvm/tidelink` and `uvm/tidelink_integration`
+  `sb_loss_selftest` (new targets) plus `uvm/tidelink_top_system` `sb_selftest`.
+
+⚠ **Wiring the UVM controls in through `make run` / `make run_all` would NOT have
+gated them.** Both decide on `simv`'s exit code, and **simv exits 0 with
+`UVM_ERROR` > 0** — measured 2026-09-11 in `uvm/tidelink/sim_build`:
+`./simv +UVM_TESTNAME=no_such_test_at_all` exited **0** with `UVM_FATAL : 1` in
+its log. The new targets therefore grade the **log**, via
+`scripts/ci/grade_uvm_selftest_log.sh`, which returns 2 (COULD-NOT-EVALUATE) for a
+missing log, a log with no UVM report summary, or a log with no `[SB_SELFTEST]`
+output at all.
+
+`SELFCHECK_SKIP_UVM=1` runs the Python + shell controls only (~15 s, no
+simulator) and prints a loud line saying the UVM controls did **not** run, so a
+skipped run cannot be mistaken for a clean one.

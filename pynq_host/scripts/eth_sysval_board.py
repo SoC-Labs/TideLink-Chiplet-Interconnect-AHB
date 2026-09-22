@@ -11,6 +11,18 @@
 #                                   [14:10]wedge_tgt [19:15]wedge_ini
 #   0x21F8 witness    marker 0xB5 : [0]hreadyout [3:1]wr_os [4]buf [7:5]hwm
 #                                   [8]synth_b [9]err [10]stall_stuck
+#                                   [11]ext_stall_err  (TL-021)
+#                                   [12]wr_hol_stuck   (TL-042 head-of-line
+#                                                       write-age watchdog EXPIRED)
+#                                   [13]xhb_dead       (TL-044 XHB500 declared DEAD,
+#                                                       port in bounded-error containment)
+#                                   [14]xhb_dead_perm  (TL-044 containment latched
+#                                                       PERMANENTLY after RELAPSE_MAX)
+#     The [12]/[13]/[14] triple is the TL-042/TL-044 containment plane added on
+#     rev2/integration (src/rtl/tidelink_top.sv:2178 xhb_sub_obs_word). Every
+#     field below is gated on the 0xB5 presence marker: on a bitstream without
+#     this plane the marker is absent and the fields read None (= "could not
+#     evaluate"), never 0 (= "healthy").
 #   0x21E8 WINSCAN_EYE marker 0x25: [5:0]best_run [13]lane_passed [16:14]lane_sel
 #   0x2108 SWI_LANE            : [16]cal [19:17]fcsm
 #
@@ -73,6 +85,11 @@ def _obs():
         "synth_b":     (wt >> 8) & 1 if witness_present else None,
         "wr_err":      (wt >> 9) & 1 if witness_present else None,
         "wr_hwm":      (wt >> 5) & 7 if witness_present else None,
+        # TL-021 / TL-042 / TL-044 containment plane (rev2). Same marker gate.
+        "ext_stall_err":  (wt >> 11) & 1 if witness_present else None,
+        "wr_hol_stuck":   (wt >> 12) & 1 if witness_present else None,
+        "xhb_dead":       (wt >> 13) & 1 if witness_present else None,
+        "xhb_dead_perm":  (wt >> 14) & 1 if witness_present else None,
         "eye_raw": "0x%08x" % ey, "eye_present": eye_present,
         "best_run":    ey & 0x3F if eye_present else None,
         "lane_passed": (ey >> 13) & 1 if eye_present else None,

@@ -11,7 +11,9 @@
 #   1. JTAG-POR BOTH dies (por_recover.sh -> fpgahub socket; flock/MAX_POR/PARK).
 #   2. bilateral bring-up (bringup_pair_release.sh).
 #   3. require FCSM=4 both; capture PRE-SOAK obs (fcsm/cal, Region-F 0x21E0,
-#      witness 0x21F8 if witness_present, eye 0x21E8 best_run if eye_present [CC-1:
+#      witness 0x21F8 if witness_present (incl. [12] wr_hol_stuck TL-042 and
+#      [13]/[14] xhb_dead/xhb_dead_perm TL-044), eye 0x21E8 best_run if
+#      eye_present [CC-1:
 #      the eye reg is 0x21E8, NOT 0x2150]).
 #   4. fixed budget: die_a `soak_fwd write K` (distinct addresses in ONE invocation)
 #      then die_b LOCAL `verify K`.
@@ -109,6 +111,11 @@ def capture_obs(ip):
         o["witness_present"] = wp
         o["stall_stuck"] = (v >> 10) & 1 if wp else None
         o["synth_b"] = (v >> 8) & 1 if wp else None
+        # TL-042 / TL-044 containment plane (rev2, src/rtl/tidelink_top.sv:2178).
+        # Same 0xB5 marker gate: absent marker -> None, never 0.
+        o["wr_hol_stuck"] = (v >> 12) & 1 if wp else None
+        o["xhb_dead"] = (v >> 13) & 1 if wp else None
+        o["xhb_dead_perm"] = (v >> 14) & 1 if wp else None
     except cc.WedgeTimeout:
         o["witness_present"] = False
     try:
@@ -120,9 +127,12 @@ def capture_obs(ip):
     except cc.WedgeTimeout:
         o["eye_present"] = False
     print("    pre-soak obs die_a: fcsm=%s cal=%s regf_present=%s data_healthy=%s "
-          "witness_present=%s stall=%s eye_present=%s best_run=%s"
+          "witness_present=%s stall=%s wr_hol=%s xhb_dead=%s xhb_dead_perm=%s "
+          "eye_present=%s best_run=%s"
           % (o.get("fcsm"), o.get("cal"), o["regf_present"], o.get("data_healthy"),
-             o["witness_present"], o.get("stall_stuck"), o["eye_present"], o.get("best_run")))
+             o["witness_present"], o.get("stall_stuck"), o.get("wr_hol_stuck"),
+             o.get("xhb_dead"), o.get("xhb_dead_perm"),
+             o["eye_present"], o.get("best_run")))
     return o
 
 
@@ -287,13 +297,16 @@ def main():
                 for r in results:
                     jf.write(json.dumps(r) + "\n")
             with open(os.path.join(args.out, "sweep.csv"), "w") as cf:
-                cf.write("cycle,class,verified,budget,fcsm,cal,regf_present,best_run,witness_present,stall\n")
+                cf.write("cycle,class,verified,budget,fcsm,cal,regf_present,best_run,"
+                         "witness_present,stall,wr_hol_stuck,xhb_dead,xhb_dead_perm\n")
                 for r in results:
                     o = r.get("obs") or {}
-                    cf.write("%d,%s,%d,%d,%s,%s,%s,%s,%s,%s\n"
+                    cf.write("%d,%s,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s,%s\n"
                              % (r["cycle"], r["class"], r.get("verified", 0), r.get("budget", 0),
                                 o.get("fcsm"), o.get("cal"), o.get("regf_present"),
-                                o.get("best_run"), o.get("witness_present"), o.get("stall_stuck")))
+                                o.get("best_run"), o.get("witness_present"), o.get("stall_stuck"),
+                                o.get("wr_hol_stuck"), o.get("xhb_dead"),
+                                o.get("xhb_dead_perm")))
             print("  wrote %s/reliability.jsonl + sweep.csv" % args.out)
         except OSError as e:
             print("  (could not write --out artefacts: %s)" % e)

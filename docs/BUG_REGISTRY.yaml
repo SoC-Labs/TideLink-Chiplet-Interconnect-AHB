@@ -1645,7 +1645,7 @@ bugs:
       PASSES while silicon sees DUAL-ROOT -- a live sim/silicon divergence; TC_ERROR[2] dual_root never
       asserted-on by any test.
     fix: {approach: "tidechart owner: implement or remove force_root; fix the TC_CTRL[3] map; add a dual-root test that reproduces the silicon divergence", files: [tidechart], commit: null, branch: null, netlist_affecting: true}
-    verification: {sim_test: "sim_gate_tc_pair_election (vacuous n_roots==1 -- needs a dual-root repro)", in_sim_gate: true, hw_tested: false}
+    verification: {sim_test: "tc_pair_election_datamode (sim_gate suite label; was vacuous: n_roots==1 with device_strap floating X in the bench; straps restored 4433f65 -- dual-root repro still owed)", in_sim_gate: true, hw_tested: false}
     signoff: {claude_verdict: "MIGRATED unregistered TideChart defects. Register-map wrong as documented; the election gate is vacuous vs the silicon dual-root. TideChart owner. Couples TL-025.", evidence: ["VERIFICATION_REVIEW_AXI_DATANODE_PUSHBACK_2026_08_02:229-243", "tidechart_apb_regs.sv:176,319"], approved: false}
     related: [TL-025]
 

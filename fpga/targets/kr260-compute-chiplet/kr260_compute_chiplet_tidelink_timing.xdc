@@ -147,14 +147,48 @@ create_generated_clock -name pad_clk_tx_0_fwd \
     -source [get_pins -hier -filter {NAME =~ "tidelink_design_i/clk_wiz_0/clk_out1"}] \
     -divide_by 8 [get_ports pad_clk_tx_0]
 
-# Transmit eye: source-synchronous SDR centred-edge forward. +/-20 ns is an
-# ABSOLUTE budget (ribbon flight time + the far die's setup/hold); do NOT rescale
-# it if you change the rate knob - only create_clock / -divide_by track the rate.
+# Transmit eye: source-synchronous SDR centred-edge forward.
+#
+# THE NUMBER BELOW IS A BUDGET. NOTHING HAS EVER MEASURED THIS INTERFACE.
+# This paragraph used to call the +/-20 ns "an ABSOLUTE budget ... do NOT rescale
+# it if you change the rate knob". Git says otherwise: 9aee1d39 records
+# "+/-5 -> +/-20 ns (period-scaled 4x, same 12.5%-of-period fraction)", and the
+# +/-5 entered at 5ad4b0c7 as a fraction of the 40 ns period. The fraction WAS
+# the derivation method; the "absolute" framing was written after the fact.
 # Symmetric window vs the forwarded clock (launch and capture share the forwarded
 # edge) so Vivado BALANCES rather than hold-pads every lane. At 320 ns the far die
 # samples mid-cell (160 ns), leaving >=140 ns of true eye each side.
-set_output_delay -clock [get_clocks pad_clk_tx_0_fwd] -max  20.000 [get_ports {pad_tx_0[*]}]
-set_output_delay -clock [get_clocks pad_clk_tx_0_fwd] -min -20.000 [get_ports {pad_tx_0[*]}]
+#
+# -clock_fall IS THE LOAD-BEARING WORD BELOW. The far die captures on the
+# FALLING edge of the forwarded clock. Two independent pieces of evidence:
+# the PHY's reset default selects the INVERTED pad clock
+# (out_prepend_swi_polarity <= 1'h1 - WavD2DGpio.v:1154, WavD2DGpio_v2.v:2190),
+# and every shipped routed netlist names the capture cells' clock pad_clk_rx' -
+# 82 endpoints on kr260-pair-nptp, 86 on kr260-pair-flip-nptp, 69 on
+# pynq-z2-pair-all.
+#
+# Vivado infers the capture edge from the capture flop on the RX side, which is
+# why pad_rx_0[*] shows no phantom violation. On TX the capture flop is OFF-CHIP
+# and invisible, so the edge has to be DECLARED.
+#
+# MEASURED ON THIS TARGET, NOT INHERITED. Run 'xdcfix', 2026-09-17, the first
+# build in which the five re-resolved selectors made user_ref_clk_0_div8 exist
+# and so gave the pad_tx_0[*] check a launch clock at all:
+#
+#     WHS -22.363    THS -178.767    8 failing hold endpoints, all pad_tx_0[*]
+#
+# That is the same signature the eth twin carried before 4d87846 (-22.145, 8 EP),
+# on a design that is not wrong - the constraint was checking an edge nothing
+# captures on. design.mk:710-737 predicted the phantom "will not even show" until
+# both fixes were on this lineage; the selector half landed in 63cfbfd and the
+# phantom duly showed. This is the other half.
+#
+# THE BUDGET IS DELIBERATELY UNCHANGED. 4d87846 added this word upstream on
+# kr260-eth-chiplet and ALSO cut +/-20 to +/-8 without saying why. Only the word
+# is derived, so only the word is carried here. What would replace the number is
+# the DUTY CYCLE of pad_clk_tx_0 at the connector, which nothing here measures.
+set_output_delay -clock [get_clocks pad_clk_tx_0_fwd] -clock_fall -max  20.000 [get_ports {pad_tx_0[*]}]
+set_output_delay -clock [get_clocks pad_clk_tx_0_fwd] -clock_fall -min -20.000 [get_ports {pad_tx_0[*]}]
 
 #-----------------------------------------------------------------------------
 # [3] RX pad capture: TIMED source-synchronous group, RELATIVE skew bounded

@@ -35,25 +35,25 @@ else ifeq ($(NODE),5)
   TB_FILE   := tb_top_5.sv
   NODE_MOD  := WlinkGenericFCReplayV2_5
   A2L_FLIST := tidelink_a2l_replay_cdc_5.flist
-  DUT_SRC_F := $(CURDIR)/dut_src_5.f
+  DUT_SRC_TAG := _5
   MODULE   ?= test_a2l_replay_cdc_5
 else ifeq ($(NODE),3)
   TB_FILE   := tb_top_3.sv
   NODE_MOD  := WlinkGenericFCReplayV2_3
   A2L_FLIST := tidelink_a2l_replay_cdc_3.flist
-  DUT_SRC_F := $(CURDIR)/dut_src_3.f
+  DUT_SRC_TAG := _3
   MODULE   ?= test_a2l_replay_cdc_3
 else ifeq ($(NODE),1)
   TB_FILE   := tb_top_1.sv
   NODE_MOD  := WlinkGenericFCReplayV2_1
   A2L_FLIST := tidelink_a2l_replay_cdc_1.flist
-  DUT_SRC_F := $(CURDIR)/dut_src_1.f
+  DUT_SRC_TAG := _1
   MODULE   ?= test_a2l_replay_cdc_1
 else
   TB_FILE   := tb_top.sv
   NODE_MOD  := WlinkGenericFCReplayV2_13
   A2L_FLIST := tidelink_a2l_replay_cdc.flist
-  DUT_SRC_F := $(CURDIR)/dut_src.f
+  DUT_SRC_TAG :=
   MODULE   ?= test_a2l_replay_cdc
 endif
 
@@ -73,20 +73,55 @@ TOPLEVEL = tb_top
 # the guard-lockout residual can only be shown against the TL-027-guarded baseline:
 #   USE_PREFIX_DUT=1 (TL-027 guard, NOT revert-aware) -> revert test FAILS.
 #   default (local override, revert-aware TL-032)     -> revert test PASSES.
-LOCAL_DUT  := $(TIDELINK_HOME)/src/rtl/local_overrides/$(NODE_MOD).v
-DEPS_DUT   := $(TIDELINK_HOME)/deps/axi-chiplet-controller/logical/wlink/$(NODE_MOD).v
-PREFIX_DUT := $(CURDIR)/tl027only_$(NODE_MOD).v
+# Spelled RELATIVE to TIDELINK_HOME: the generated .f below must carry a
+# ${TIDELINK_HOME}-rooted path, not this worktree's absolute path, or the file
+# becomes worktree-specific (see the generation note below).
+LOCAL_DUT_REL  := src/rtl/local_overrides/$(NODE_MOD).v
+DEPS_DUT_REL   := deps/axi-chiplet-controller/logical/wlink/$(NODE_MOD).v
+PREFIX_DUT_REL := cocotb/tidelink_a2l_replay_cdc/tl027only_$(NODE_MOD).v
+
+LOCAL_DUT  := $(TIDELINK_HOME)/$(LOCAL_DUT_REL)
+DEPS_DUT   := $(TIDELINK_HOME)/$(DEPS_DUT_REL)
+PREFIX_DUT := $(TIDELINK_HOME)/$(PREFIX_DUT_REL)
 
 ifeq ($(USE_DEPS_DUT),1)
-  DUT_SRC := $(DEPS_DUT)
+  DUT_SRC     := $(DEPS_DUT)
+  DUT_SRC_REL := $(DEPS_DUT_REL)
 else ifeq ($(USE_PREFIX_DUT),1)
-  DUT_SRC := $(PREFIX_DUT)
+  DUT_SRC     := $(PREFIX_DUT)
+  DUT_SRC_REL := $(PREFIX_DUT_REL)
 else
-  DUT_SRC := $(if $(wildcard $(LOCAL_DUT)),$(LOCAL_DUT),$(DEPS_DUT))
+  DUT_SRC     := $(if $(wildcard $(LOCAL_DUT)),$(LOCAL_DUT),$(DEPS_DUT))
+  DUT_SRC_REL := $(if $(wildcard $(LOCAL_DUT)),$(LOCAL_DUT_REL),$(DEPS_DUT_REL))
 endif
 
-# Regenerate the tiny DUT-source include file every invocation.
-$(shell echo "$(DUT_SRC)" > $(DUT_SRC_F))
+# ── Generated DUT-source include file — NEVER inside the tracked tree ────────
+# HISTORY (fixed 2026-09-11). This used to be $(CURDIR)/dut_src$(DUT_SRC_TAG).f,
+# and those four files were TRACKED. The $(shell ...) below runs at Makefile
+# PARSE time, so ANY invocation of this bench -- `make`, `make clean`, even
+# `make -n` -- rewrote four tracked files with this worktree's ABSOLUTE path.
+# `make sim_gate` therefore dirtied its own tree mid-run: GATE_STAMP (root
+# Makefile) flipped from <sha>-clean to <sha>-dirty partway through, and
+# sim_gate_summary then refused to report PASS because the early suites'
+# .status stamps no longer matched the late ones. Measured 2026-09-09 on
+# cba9774d: a genuine 68 PASS / 3 FAIL / 3 XFAIL run produced 38 clean + 36
+# dirty stamps and exited 2 with "STALE / CROSS-BRANCH -- refusing to report
+# PASS". The standing workaround was `git update-index --assume-unchanged`,
+# which is per-clone and so recurred in every fresh worktree.
+#
+# TWO changes make the write harmless:
+#   1. it lands under imp/ (gitignored build scratch), not in the tracked tree;
+#   2. the content is ${TIDELINK_HOME}-rooted and is only rewritten when it
+#      would actually CHANGE, so the file's mtime does not churn either.
+# Keep BOTH. Moving it back into the bench directory re-arms the self-dirtying
+# gate even if the file is gitignored, because a churning mtime still defeats
+# content-addressed staleness checks. Control: scripts/ci/tests/test_gate_selfclean.py
+DUT_SRC_GEN_DIR := $(TIDELINK_HOME)/imp/gen/a2l_replay_cdc
+DUT_SRC_F       := $(DUT_SRC_GEN_DIR)/dut_src$(DUT_SRC_TAG).f
+$(shell mkdir -p $(DUT_SRC_GEN_DIR); \
+	_new='$${TIDELINK_HOME}/$(DUT_SRC_REL)'; \
+	[ "$$(cat $(DUT_SRC_F) 2>/dev/null)" = "$$_new" ] || \
+	  printf '%s\n' "$$_new" > $(DUT_SRC_F))
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/$(A2L_FLIST)
@@ -97,7 +132,10 @@ SIM_ARGS     += +vcs+dumpvars+waves.vcd
 #     without this an RTL-only edit re-runs the STALE simv. See SIM_GATE_COVERAGE.md.
 include $(TIDELINK_HOME)/cocotb/flist_deps.mk
 _TL_FLIST   := $(TIDELINK_HOME)/flists/$(A2L_FLIST)
-_flist_deps := $(_TL_FLIST) $(call flist_srcs,$(_TL_FLIST))
+# $(DUT_SRC) is added EXPLICITLY: flist_srcs drops `-f` lines, and the DUT now
+# arrives only via the generated dut_src.f `-f` include, so without this an
+# edit to the local-override DUT would re-run the STALE simv.
+_flist_deps := $(_TL_FLIST) $(DUT_SRC) $(call flist_srcs,$(_TL_FLIST))
 CUSTOM_COMPILE_DEPS += $(_flist_deps)
 
 # ── Code coverage (shared wiring; inert unless COVERAGE=1) ──────────────

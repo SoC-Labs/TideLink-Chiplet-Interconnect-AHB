@@ -38,7 +38,7 @@
 +incdir+${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink
 
 // DUT (prefer local override if present, else deps) — written by the Makefile
--f ${TIDELINK_HOME}/cocotb/tidelink_a2l_replay_cdc/dut_src_5.f
+-f ${TIDELINK_HOME}/imp/gen/a2l_replay_cdc/dut_src_5.f
 
 // Leaf dependencies (unmodified vendor/Chisel-generated IP)
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WavDemetReset.v

@@ -22,29 +22,75 @@ ENVS = tidelink_fifo tidelink_returner tidelink_apb_regs tidelink_apb_addr_ctrl 
 # ── Per-environment targets ──────────────────────────────────────────────────
 # Each target runs make inside the subdirectory, collecting the result.
 
+# DRY-RUN GUARD — the same hazard, and the same fix, as the root Makefile's
+# sim_gate_run macro (root Makefile "Wave-0 fix #12a"). The body below is a
+# @-prefixed shell block containing $(MAKE); GNU make EXECUTES any recipe line
+# containing $(MAKE) even under -n/-q/-t. The sub-make inherits the flag and
+# does nothing, so no run.log is produced, `grep -q 'FAIL=0'` fails, and the
+# "dry" run WRITES "FAIL" into <env>/.result and truncates <env>/run.log --
+# destroying a real result for a run that never happened.
+#
+# REPRODUCED 2026-09-11 while fixing this file: a single `make -C cocotb -p -q
+# regression`, run only to read make's database, overwrote all 31 <env>/.result
+# files with FAIL and truncated all 31 run.logs. Nothing simulated.
+#
+# The guard reads MAKEFLAGS' first word (the single-letter option cluster) and
+# covers ALL THREE no-op modes, not just -n: q == --question and t == --touch
+# carry the identical $(MAKE) exemption. The root Makefile's own guard covered
+# only 'n' until this commit; it is widened to match.
 define run_env
 .PHONY: $(1)
 $(1):
-	@echo "========================================"
-	@echo " Running: $(1)"
-	@echo "========================================"
-	@$$(MAKE) -C $(1) clean > /dev/null 2>&1; \
-	 $$(MAKE) -C $(1) 2>&1 | tee $(1)/run.log | grep -E '^\*\*|regression'; \
-	 if grep -q 'FAIL=0' $(1)/run.log 2>/dev/null; then \
-	   echo "  >> $(1): PASS"; \
-	   echo "PASS" > $(1)/.result; \
-	 else \
-	   echo "  >> $(1): FAIL"; \
-	   echo "FAIL" > $(1)/.result; \
-	 fi
-	@echo ""
+	@case "$$$${MAKEFLAGS%% *}" in \
+	  *[nqt]*) echo "[regression] DRY-RUN (-n/-q/-t): would run $(1); NOT touching $(1)/.result or $(1)/run.log"; \
+	       exit 0 ;; \
+	esac; \
+	echo "========================================"; \
+	echo " Running: $(1)"; \
+	echo "========================================"; \
+	$$(MAKE) -C $(1) clean > /dev/null 2>&1; \
+	$$(MAKE) -C $(1) 2>&1 | tee $(1)/run.log | grep -E '^\*\*|regression'; \
+	if grep -q 'FAIL=0' $(1)/run.log 2>/dev/null; then \
+	  echo "  >> $(1): PASS"; \
+	  echo "PASS" > $(1)/.result; \
+	else \
+	  echo "  >> $(1): FAIL"; \
+	  echo "FAIL" > $(1)/.result; \
+	fi; \
+	echo ""
 endef
 
 $(foreach env,$(ENVS),$(eval $(call run_env,$(env))))
 
 # ── Regression target ────────────────────────────────────────────────────────
+# THE SUMMARY RECIPE BELONGS TO THIS TARGET. Between 2ffc21a5 (2026-08-18) and
+# 2026-09-11 it was tab-indented directly under the `.PHONY: link_rate_quick
+# link_rate_full` line further down, which made it the recipe of `.PHONY` -- a
+# target nothing ever builds. `regression: $(ENVS)` was left with NO recipe, so
+# it exited 0 no matter how many environments wrote FAIL into their .result.
+# `make regression` -- the CI job and the recipe in the README -- has reported
+# success unconditionally for that whole period. Confirmed from make's own
+# database: "recipe to execute (from 'cocotb/Makefile', line 79)" appeared under
+# .PHONY, and the `regression:` entry had none.
+#
+# If you move this recipe, move it to a REAL target and re-run
+# scripts/ci/tests/test_regression_exit_code.py, which fails if `regression`
+# stops propagating a FAIL.
 .PHONY: regression
 regression: $(ENVS)
+	@echo "========================================"
+	@echo " Regression Summary"
+	@echo "========================================"
+	@pass=0; fail=0; \
+	for env in $(ENVS); do \
+	  result=$$(cat $$env/.result 2>/dev/null || echo "FAIL"); \
+	  printf "  %-30s %s\n" "$$env" "$$result"; \
+	  if [ "$$result" = "PASS" ]; then pass=$$((pass + 1)); else fail=$$((fail + 1)); fi; \
+	done; \
+	echo "----------------------------------------"; \
+	echo "  PASS=$$pass  FAIL=$$fail  TOTAL=$$(( pass + fail ))"; \
+	echo "========================================"; \
+	[ "$$fail" -eq 0 ]
 
 # ── D2D link-rate gates ──────────────────────────────────────────────────────
 # The divider lets the D2D bit rate be lowered without moving the SoC clock.
@@ -77,19 +123,6 @@ link_rate_full:
 	done
 
 .PHONY: link_rate_quick link_rate_full
-	@echo "========================================"
-	@echo " Regression Summary"
-	@echo "========================================"
-	@pass=0; fail=0; \
-	for env in $(ENVS); do \
-	  result=$$(cat $$env/.result 2>/dev/null || echo "FAIL"); \
-	  printf "  %-30s %s\n" "$$env" "$$result"; \
-	  if [ "$$result" = "PASS" ]; then pass=$$((pass + 1)); else fail=$$((fail + 1)); fi; \
-	done; \
-	echo "----------------------------------------"; \
-	echo "  PASS=$$pass  FAIL=$$fail  TOTAL=$$(( pass + fail ))"; \
-	echo "========================================"; \
-	[ "$$fail" -eq 0 ]
 
 # ── Coverage regression ──────────────────────────────────────────────────────
 # ⚠ THIS IS THE UNIT-TEST CORPUS ONLY, NOT THE GATE.  ENVS above is a 31-bench

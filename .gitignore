@@ -323,3 +323,7 @@ sim_build_sb_selftest/
 # build-dir-local) is TEAM B's change, on a branch from origin/main. Reconcile at
 # merge; this branch deliberately touches only the tracking.
 cocotb/tidelink_a2l_replay_cdc/dut_src*.f
+# The a2l bench (fix/gate-selfclean-failclosed 915b58c) now writes its generated
+# dut_src*.f under imp/gen/ (covered by `imp/*` above); this pattern keeps a
+# stale file from an older checkout out of `git status`.
+imp/gen/

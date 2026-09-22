@@ -263,13 +263,27 @@ set_input_delay -clock [get_clocks pad_clk_rx] -min -4.000 [get_ports {pad_rx[*]
 set _xlnx_shared_i0 [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}]
 set_max_delay -datapath_only -from [get_ports {pad_rx[*]}] -to $_xlnx_shared_i0 8.000
 
-# (3c) THE key build-to-build determinism constraint. set_bus_skew forces
-#      Vivado to EQUALISE the pad_rx[0..7] -> capture delays to within 2 ns
-#      of each other. The defect is per-lane VARIANCE (some lanes land in
-#      the calibrator window, others don't, and which is which changes every
-#      build); bounding relative skew directly removes that variance without
-#      any absolute hold pressure. Requires Vivado >= 2019.1 (2024.1 in use).
-set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
+# (3c) THE key build-to-build determinism constraint --- DELETED 2026-09-22.
+#      It had NEVER APPLIED here either. The full forensic analysis - the whole
+#      object space set_bus_skew accepts, tried one at a time against a shipping
+#      routed checkpoint - is in
+#      fpga/targets/kr260-eth-chiplet/kr260_eth_chiplet_tidelink_timing.xdc,
+#      where the same line was deleted on 2026-09-09 (commit cbe5e43). It was
+#      deleted from ONE file that day and left live in every other, which is why
+#      it is still here.
+#
+#      MEASURED AGAIN ON THIS TARGET, 2026-09-22. Vivado says it outright:
+#        CRITICAL WARNING [Constraints 18-611] set_bus_skew: ... '8' objects of
+#          types '(port)' other than the types '(pin,cell,clock)' supported ...
+#        CRITICAL WARNING [Constraints 18-612] ... The constraint will be ignored.
+#      Those two were the ONLY remaining critical warnings on the run that
+#      verified the -clock_fall fix, and they are the entire distance between
+#      this build and a clean ALLOW_CRITICAL_WARNINGS=0 budget.
+#
+#      A constraint the tool announces it is ignoring is not a safety net. It is
+#      a line that makes a reader believe skew is bounded when nothing bounds it.
+#      The line, for the record:
+#        set_bus_skew -from [get_ports {pad_rx[*]}] -to [get_cells -hier -filter {NAME =~ "*gpiorx_*/link_data_pad_clk_reg[*]"}] 2.000
 
 # (3d) IOB packing is FORCED OFF on KR260. This is a deliberate inversion of
 #      the Z2 constraint (which requests `IOB TRUE` here), and it is required —

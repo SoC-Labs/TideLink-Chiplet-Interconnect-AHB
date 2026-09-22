@@ -376,6 +376,12 @@ module tb_tc_pair #(
         // one-net swap the ASIC integration must make at
         // nanosoc_eth_chiplet.sv's tidechart_shim instance.
         .link_active          ({1'b0, m_data_mode}),
+        // I6 per-die strap tiebreak. tidechart_shim gained device_strap in the
+        // dual-root hardening (tidechart 3005d11); leaving it unwired floats it,
+        // so own_random_r = {device_strap, lfsr[7:0]} goes X, the claim TX word
+        // is X-poisoned and never crosses, and is_root compares X==X => 0.
+        // Convention is the TideLink role_strap: master=0, slave=1.
+        .device_strap         (8'h00),
         .local_link_state_i_flat  ({5'b0, m_tl_link_state}),
         .local_link_state_change_i({1'b0, m_tl_link_state_change}),
         .local_bcast_ack_o        (m_tc_bcast_ack_v),
@@ -411,6 +417,7 @@ module tb_tc_pair #(
         .tc_axis_tx_tready    ({1'b1, s_tc_tx_tready}),
         // G1 SEQUENCING CONTRACT — see u_tc_master above.
         .link_active          ({1'b0, s_data_mode}),
+        .device_strap         (8'h01),   // I6 — see u_tc_master above
         .local_link_state_i_flat  ({5'b0, s_tl_link_state}),
         .local_link_state_change_i({1'b0, s_tl_link_state_change}),
         .local_bcast_ack_o        (s_tc_bcast_ack_v),

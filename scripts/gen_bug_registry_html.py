@@ -1711,8 +1711,19 @@ def main() -> int:
                 stale.append(out)
         if stale:
             for out in stale:
+                # Path(__file__) is RELATIVE when this is invoked as
+                # `python3 scripts/gen_bug_registry_html.py`, and relative_to(REPO)
+                # then raises — so --check used to announce staleness by crashing
+                # with a ValueError traceback instead of printing its verdict. The
+                # exit code was right only because an uncaught exception also exits
+                # 1. Resolve first. (2026-09-11)
+                rel = Path(__file__).resolve()
+                try:
+                    rel = rel.relative_to(REPO)
+                except ValueError:
+                    pass
                 print(f"stale: {out} does not match its registry — "
-                      f"run python3 {Path(__file__).relative_to(REPO)}", file=sys.stderr)
+                      f"run python3 {rel}", file=sys.stderr)
             return 1
         print("up to date: " + ", ".join(str(o) for o, _ in wanted))
         return 0

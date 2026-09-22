@@ -8,7 +8,18 @@ the sim gate so a fixed bug can never silently lose its regression test:
     name a resolvable, existing test  -> else HARD FAIL (exit 1);
   * every FIXED bug (status sim_proven/hw_proven/signed_off) that is NOT gated
     is reported as a COVERAGE GAP (a regression waiting to happen) -> WARN, or
-    HARD FAIL under --strict.
+    HARD FAIL under --strict;
+  * every bug CLAIMING HARDWARE PROOF (status hw_proven/signed_off, or
+    verification.hw_validated: true) must name a stat()-able
+    verification.evidence path AND a verification.vehicle from a fixed set
+    -> else HARD FAIL (exit 1).
+
+The hardware rule was added 2026-09-11, after a truth pass found that all three
+`hw_proven` entries (TL-003, TL-005, TL-007) rested on prose in docs/ with no
+retained artefact of any kind, and that imp/hw_gate/SIGNOFF_LEDGER_2026_08_13.md
+had said so a month earlier without anything changing. A hardware verdict nobody
+can re-open is indistinguishable from one that never happened, and it is the
+expensive direction of wrong: a false red costs time, a false green ships.
 
 Born out of the 2026-08 finding that TL-006's ECC fix was 'in_sim_gate: true'
 in the registry while its gate (gaps_ecc) was never wired into the aggregate,
@@ -66,6 +77,12 @@ MK = os.path.join(ROOT, "Makefile")
 FIXED_STATUSES = {"sim_proven", "hw_proven", "signed_off"}
 NO_TEST = {"", "n/a", "none", "null", "pending", "tbd", "no", "-"}
 
+# --- hardware-proof evidence discipline (2026-09-11) -------------------------
+# Kept in step with docs/BUG_REGISTRY.yaml `legend.vehicle` and
+# `hw_evidence_policy`. Changing either without the other is itself a defect.
+HW_CLAIM_STATUSES = {"hw_proven", "signed_off"}
+VEHICLES = {"onchip", "eth-pair", "z2", "asic-mirror-sim"}
+
 
 def _verification(bug):
     v = bug.get("verification")
@@ -78,6 +95,71 @@ def _sim_test(bug):
 
 def _in_gate(bug):
     return _verification(bug).get("in_sim_gate") is True
+
+
+def _claims_hw(bug):
+    """True iff this entry asserts that hardware proved something.
+
+    Two independent ways to say it, and both must be caught: the coarse `status`
+    (hw_proven / signed_off) and the explicit per-entry flag
+    `verification.hw_validated: true`. `hw_tested` is deliberately NOT a trigger —
+    it is used across this registry for "a board was involved", including runs that
+    FAILED or were inconclusive, and promoting those to a proof claim would produce
+    false reds on honest entries.
+    """
+    if str(bug.get("status", "")) in HW_CLAIM_STATUSES:
+        return True
+    return _verification(bug).get("hw_validated") is True
+
+
+def _evidence_paths(bug):
+    ev = _verification(bug).get("evidence")
+    if ev is None:
+        return []
+    if isinstance(ev, str):
+        ev = [ev]
+    if not isinstance(ev, list):
+        return []
+    return [str(p).strip() for p in ev if str(p).strip()]
+
+
+def _hw_evidence_failures(bugs, root):
+    """HARD failures for entries claiming hardware proof without the receipts.
+
+    Requires BOTH a stat()-able evidence path and a legal vehicle. Not one or the
+    other: a path with no vehicle does not say which rig, and a vehicle with no
+    path is the exact shape (`hw_evidence: "die_a survives ..."`) this check
+    exists to stop.
+    """
+    fails = []
+    for b in bugs:
+        if not _claims_hw(b):
+            continue
+        bid = b.get("id", "?")
+        v = _verification(b)
+        paths = _evidence_paths(b)
+        if not paths:
+            fails.append(
+                f"{bid}: claims hardware proof (status={b.get('status')!r}, "
+                f"hw_validated={v.get('hw_validated')!r}) but verification.evidence "
+                f"is empty. Free-text hw_evidence does not count — name a file.")
+        else:
+            missing = [p for p in paths
+                       if not os.path.exists(os.path.join(root, p))]
+            if missing:
+                fails.append(
+                    f"{bid}: claims hardware proof but verification.evidence does not "
+                    f"exist on disk: {missing}")
+        veh = v.get("vehicle")
+        if veh is None or str(veh).strip() == "":
+            fails.append(
+                f"{bid}: claims hardware proof but verification.vehicle is unset "
+                f"(need one of {sorted(VEHICLES)})")
+        elif str(veh).strip() not in VEHICLES:
+            fails.append(
+                f"{bid}: verification.vehicle {veh!r} is not one of "
+                f"{sorted(VEHICLES)}")
+    return fails
 
 
 def _test_files(sim_test):
@@ -176,9 +258,13 @@ def main():
     ap.add_argument("--strict", action="store_true",
                     help="also fail (exit 1) on FIXED-but-ungated bugs")
     ap.add_argument("--registry", default=REG,
-                    help="path to BUG_REGISTRY.yaml (default: docs/BUG_REGISTRY.yaml)")
+                    help="registry YAML to check (default docs/BUG_REGISTRY.yaml). "
+                         "Exists so scripts/ci/tests/ can feed this checker synthetic "
+                         "specimens and require it to go RED.")
     ap.add_argument("--makefile", default=MK,
-                    help="path to the Makefile that defines the sim_gate suites")
+                    help="Makefile to check suite wiring against")
+    ap.add_argument("--evidence-root", default=ROOT,
+                    help="root that verification.evidence paths resolve against")
     args = ap.parse_args()
 
     with open(args.registry) as f:
@@ -243,6 +329,9 @@ def main():
             gaps.append(f"{bid} ({status}): FIXED but in_sim_gate is not true "
                         f"-> can regress without any gate catching it")
 
+    hw_fails = _hw_evidence_failures(bugs, args.evidence_root)
+    fails.extend(hw_fails)
+
     print("=" * 72)
     print(" sim_gate registry coverage  (docs/BUG_REGISTRY.yaml)")
     print("=" * 72)
@@ -252,6 +341,7 @@ def main():
     print(f"  HARD FAILURES                           : {len(fails)}")
     print(f"  wiring warnings                         : {len(warns)}")
     print(f"  FIXED-but-ungated coverage gaps         : {len(gaps)}")
+    print(f"  unbacked hardware-proof claims          : {len(hw_fails)}")
     print("-" * 72)
     for x in fails:
         print("  FAIL  " + x)

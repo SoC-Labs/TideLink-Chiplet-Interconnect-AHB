@@ -5,7 +5,7 @@
 // WlinkGenericFCReplayV2_7 standalone, for the cocotb/tidelink_a2l_replay_cdc
 // unit env with NODE=7.
 //
-// WHY THIS EXISTS (TL-043-ARR): _1/_3/_5 (AW/W/B) and _12/_13 (sideband) all
+// WHY THIS EXISTS (TL-046): _1/_3/_5 (AW/W/B) and _12/_13 (sideband) all
 // ship the TL-027 CDC self-heal from src/rtl/local_overrides/. _7 and _9 (AR/R)
 // have NO override file at all and ship RAW from deps/ in the tapeout flist.
 // That gap was untracked until 2026-08-23 and has NO test coverage: this env

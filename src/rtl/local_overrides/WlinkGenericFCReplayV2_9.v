@@ -18,7 +18,7 @@
 //   revert-aware rewind of a2l_link_addr on link_revert (see the always block)
 //   so a NACK-driven replay's recovery ACKs are accepted instead of wedging.
 //
-// TL-043-ARR (2026-08-23): _1/_3/_5 (AW/W/B) and _12/_13 (sideband) carried this
+// TL-046 (2026-08-23): _1/_3/_5 (AW/W/B) and _12/_13 (sideband) carried this
 //   hardening since 2026-08-08; the READ path (_7 AR, _9 R) had NO override file
 //   at all and shipped RAW from deps/. This file closes that gap for _9.
 //   Node-specific instances preserved from the deps source (NOT copied from

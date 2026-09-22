@@ -18,7 +18,7 @@
 //   revert-aware rewind has been REMOVED so the revert test has a non-vacuous
 //   'before'. Selected with `make NODE=9 USE_PREFIX_DUT=1`.
 //
-// TL-043-ARR (2026-08-23): _1/_3/_5 (AW/W/B) and _12/_13 (sideband) carried this
+// TL-046 (2026-08-23): _1/_3/_5 (AW/W/B) and _12/_13 (sideband) carried this
 //   hardening since 2026-08-08; the READ path (_7 AR, _9 R) had NO override file
 //   at all and shipped RAW from deps/. This file closes that gap for _9.
 //   Node-specific instances preserved from the deps source (NOT copied from

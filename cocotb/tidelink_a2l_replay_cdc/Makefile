@@ -12,8 +12,8 @@ include $(TIDELINK_HOME)/mk/site.mk
 # NODE=13 (default): the TideLink sideband a2l node (48/5/depth-16).
 # NODE=5           : the B (write-response 0x82) data-plane a2l node
 #                    (14/4/depth-8) — TL-027 reproduce-first (lap-ahead ACK = 9).
-# NODE=7  : the AR (read-address 0x83) node (101/4/depth-8) — TL-043-ARR.
-# NODE=9  : the R  (read-data    0x84) node (47/6/depth-32) — TL-043-ARR.
+# NODE=7  : the AR (read-address 0x83) node (101/4/depth-8) — TL-046.
+# NODE=9  : the R  (read-data    0x84) node (47/6/depth-32) — TL-046.
 #           STALE COMMENT CORRECTED 2026-09-11: this used to say neither node
 #           has a local_overrides copy and both are expected to FAIL. e88ff7be
 #           added src/rtl/local_overrides/WlinkGenericFCReplayV2_{7,9}.v, the DUT

@@ -2,7 +2,7 @@
 analogue of test_a2l_replay_cdc_3 for the R node WlinkGenericFCReplayV2_9
 (47-bit data / 6-bit ptr / depth-32 — pointer geometry as the W node _3).
 
-TL-043-ARR. NO LONGER A REPRODUCE: THIS TEST IS EXPECTED TO **PASS**.
+TL-046. NO LONGER A REPRODUCE: THIS TEST IS EXPECTED TO **PASS**.
 
   STALE CLAIM, CORRECTED 2026-09-11. This docstring used to say the test was
   expected to fail today and that that was the point, on the grounds that
@@ -105,7 +105,7 @@ async def test_r_node_predata_ack_lap_ahead(dut):
     assert full == 0 and rdy == 1, (
         f"R-node a2l false-FULL self-latch REPRODUCED ({src}): after a lap-ahead ACK({LAP_AHEAD}) "
         f"the first write sees a2l_full={full} app_ready={rdy} wbin_ptr={wp} -- w_inc never re-fires, "
-        f"so the R FCSM would never transmit. This is TL-043-ARR: the READ path ships from deps/ "
+        f"so the R FCSM would never transmit. This is TL-046: the READ path ships from deps/ "
         f"WITHOUT the TL-027 self-heal that _1/_3/_5 carry, and this is the shipping configuration.")
 
 

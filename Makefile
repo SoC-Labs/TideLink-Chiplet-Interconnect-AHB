@@ -686,7 +686,7 @@ sim_gate_a2l_replay_cdc_5:
 	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=5 \
 	    SIM_BUILD=sim_build_a2l_5 COCOTB_RESULTS_FILE=sim_build_a2l_5/res_a2l_5.xml)
 
-# TL-043-ARR (2026-08-23/24): the SHIPPING READ-path nodes. b1c9c9b4 added the
+# TL-046 (2026-08-23/24): the SHIPPING READ-path nodes. b1c9c9b4 added the
 # NODE=7 (AR) / NODE=9 (R) benches, flists and tb_tops and 3630b610 added their
 # WlinkGenericFCReplayV2_{7,9}.v self-heal overrides, but NO gate target was ever
 # created for them — so the ARR fix's own regressions never ran in `make sim_gate`
@@ -2031,7 +2031,7 @@ sim_gate_clean_builds:
 # RUNS and the set `sim_gate_summary` SCORES are two hand-maintained lists, and
 # they have diverged in both directions:
 #   - a2l_replay_cdc_7/_9 were invoked but absent from SIM_GATE_ALL_SUITES, so
-#     the gate ran 63 suites and reported on 61. An AR/R-node TL-043-ARR
+#     the gate ran 63 suites and reported on 61. An AR/R-node TL-046
 #     regression — the shipping read path — could not have failed the gate.
 #     The commit that added them said in its message that it had registered them
 #     in SIM_GATE_ALL_SUITES. It added them to .PHONY and the invoke list only.

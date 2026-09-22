@@ -160,7 +160,7 @@ fail cocotb. Another test points at this module as "the REAL executable guard".
 `Makefile:1779-1780` invokes `sim_gate_a2l_replay_cdc_7/_9`; they are absent from
 `SIM_GATE_ALL_SUITES` (`:1665-1677`), which `sim_gate_summary` (`:1849`) iterates.
 `SIM_GATE_NONFATAL=1` is passed to every suite so exit codes never propagate.
-*Cannot detect: a TL-043-ARR regression on the AR/R nodes — the shipping read path.*
+*Cannot detect: a TL-046 regression on the AR/R nodes — the shipping read path.*
 **The commit that introduced this claimed in its message that they were "registered
 in SIM_GATE_ALL_SUITES and invoked in the run sequence"; it added them to `.PHONY`
 and the invoke list only. The commit whose sole purpose was fixing an unscored-suite

@@ -3645,7 +3645,10 @@ module tidelink_top #(
         // parameter declaration for semantics.
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),
         .NEGO_CFG_RESET       (NEGO_CFG_RESET),
-        // PENDING-DECISION #5: terminal role from strap (default 1'b0 = today).
+        // Terminal role from strap. Declared default is 1'b1 (see the parameter
+        // list above; the shipped eth-die GDS carries ROLE_FROM_STRAP1), so the
+        // strap binds on the autoneg-NACK path. An older comment here said
+        // "default 1'b0 = today", which inverted the declaration (fixed 2026-09-22).
         .ROLE_FROM_STRAP      (ROLE_FROM_STRAP),
         .TRAIN_ENTRY_FALLBACK (TRAIN_ENTRY_FALLBACK),
         // Zero-poke winscan converge-lock — forwarded verbatim (default 1'b0).
@@ -3681,14 +3684,17 @@ module tidelink_top #(
         // apb_debug_unlock frees SW APB writes to the Wlink config (incl the
         // lane mask) on the non-master die. Bench-debug straps; revisit when
         // re-enabling autoneg for production.
-        // HONEST_MASK_HS gate (from kr260-pair-onchip): default 0 folds both selects
-        // to the historical 1'b1 ties => byte-identical single-die netlist. With 1 they
-        // drive from the real module ports (:362-363, previously DEAD) so mask_hs_gate_open
-        // = mask_hs_match | mask_hs_bypass_i | apb_debug_unlock_i is no longer forced open
-        // and the peer-mask handshake must genuinely match.
-        // PENDING (DECISION #2) — the two selects are now INDEPENDENT. At the
-        // shipped defaults (DEBUG_UNLOCK_DEFAULT=1, HONEST_MASK_HS=0) both fold
-        // to the historical 1'b1, so this is byte-identical to today.
+        // HONEST_MASK_HS gate (from kr260-pair-onchip). Declared default is 1'b1
+        // (parameter list above), so mask_hs_bypass_i drives from the REAL module
+        // port and mask_hs_gate_open = mask_hs_match | mask_hs_bypass_i |
+        // apb_debug_unlock_i is NOT forced open: the peer-mask handshake must
+        // genuinely match, or the bypass port must be driven high by the wrapper.
+        // Only at HONEST_MASK_HS=0 does the select fold to the historical 1'b1 tie.
+        // DEBUG_UNLOCK_DEFAULT (declared 1'b1) independently forces apb_debug_unlock_i
+        // high; the two selects are INDEPENDENT. Earlier comments here described
+        // HONEST_MASK_HS=0 as the shipped default, which inverted the declaration
+        // and reversed the conclusion about whether role_lock can close without a
+        // software write (fixed 2026-09-22; see the parameter declarations, not this).
         .apb_debug_unlock_i         (DEBUG_UNLOCK_DEFAULT ? 1'b1 : apb_debug_unlock_i),
         .mask_hs_bypass_i           (HONEST_MASK_HS ? mask_hs_bypass_i   : 1'b1),
         .nego_priority_i            (nego_priority_i),

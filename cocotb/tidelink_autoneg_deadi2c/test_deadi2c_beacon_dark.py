@@ -10,8 +10,12 @@ cause pinned by synthesis:
     SELF_ARM_TRAIN_EN=0 (the shipping straps), the autoneg FSM's I2C peer
     transaction NACKs and it parks in the TERMINAL ST_NEGO_DONE (via the
     NEGO_POLL TXN_CHECK MISS_ACK arm, tidelink_autoneg.sv ~:997-1024) WITHOUT
-    ever pulsing local_train_set. `local_training_mode_set` (== the ONLY
-    enabler that raises swi_training_mode_r in the controller) therefore never
+    ever pulsing local_train_set. `local_training_mode_set` (the only enabler
+    of swi_training_mode_r IN THE AUTONOMOUS POSTURE -- software can also raise
+    it by an APB write to SWI_TRAINING_MODE, local_overrides/
+    axi_chiplet_controller.sv:2285, and under TIDELINK_PHY_V2 can set the
+    beacon swi_sync_insert_en_r directly, :2288; this bench pokes neither, so
+    the claim is scoped, not universal) therefore never
     fires, so the autonomous SYNC-config one-shot in
     axi_chiplet_controller.sv:2283 (armed on the swi_training_mode_r rise)
     never runs: swi_sync_insert_en_r stays 0 (SYNC beacon dark),

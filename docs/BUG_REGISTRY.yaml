@@ -2626,6 +2626,72 @@ bugs:
       approved: false
     related: [TL-042, TL-043, TL-044, TL-003]
 
+  - id: TL-047
+    title: "TideChart TX beat ACK-and-drop in tidelink_fc_adapter: tready ignored the arbiter, so a claim presented under bulk TX (qos=0) or behind a sideband word was handshaken and discarded"
+    severity: high
+    area: rtl/fc_adapter
+    status: sim_proven
+    registered: 2026-09-22
+    opened: 2026-09-14            # found by inspection during the rev-2 election-skew campaign (memory: tc_qos_priority tied 3'b000 starves election)
+    summary: >
+      tc_axis_tx_tready for a REMOTE TideChart word was `skid_can_accept &
+      ~sideband_starving` -- the arbiter's decision was not in it. In any cycle where
+      the skid could accept but the arbiter loaded a DIFFERENT source, the TideChart
+      master saw tvalid && tready, retired the beat, and the word was never loaded.
+      Two such cycles exist: (a) the TX aperture holds the arbiter because
+      tc_qos_priority == 0 -- which is how BOTH chiplet wrappers tie it
+      (nanosoc_eth_chiplet.sv:1112, nanosoc_compute_chiplet.sv:1101/1313); (b) a
+      returner or servo sideband word is pending in the same cycle at ANY priority,
+      because those outrank PKT_EXT in arb_data. An election claim is broadcast once
+      and never re-announced, so one dropped beat is a silently lost election.
+      servo_fc_ready already carried the correct exclusion terms; the TideChart port
+      was the odd one out.
+    root_cause: >
+      tidelink_fc_adapter.sv:506 (pre-fix) assigned tready from the skid state only;
+      ext_grant (defined 30 lines later) was used to steer arb_data but never fed back
+      to the handshake. Asymmetric with servo_fc_ready at :576, which does exclude
+      rtn_fc_valid / tc_tx_is_remote / sideband_starving.
+    fix:
+      approach: "ext_selected = ext_grant && !rtn_fc_valid && !servo_fc_valid; tready (remote) = ext_selected & skid_can_accept; arb_data selects on ext_selected. Zero area: the terms already existed. PUF path unchanged."
+      files: [src/rtl/tidelink_fc_adapter.sv, cocotb/tidelink_fc_adapter/test_tc_tready_drop.py, Makefile]
+      commit: null                       # filled at land
+      branch: rev2/fix-tc-tready         # local, from rev2/integration 3fb297f
+      netlist_affecting: true
+    verification:
+      sim_test: "fc_adapter_tc_tready (sim_gate suite label; cocotb/tidelink_fc_adapter/test_tc_tready_drop.py: 2 controls + 2 drop arms)"
+      in_sim_gate: true
+      hw_tested: false
+      hw_validated: false
+      evidence: null
+      vehicle: null
+      red_green: >
+        Pre-fix RTL (3fb297f): controls 2/2 PASS, drop_tx_aperture_collision_qos0 FAIL
+        (tvalid held 1 cycle, delivered 0), drop_returner_collision_qos1 FAIL (held 4,
+        delivered 0). Post-fix: 4/4 PASS (held 2 and 5 cycles, delivered 1 each; the
+        colliding TX/returner words still delivered once). Existing
+        test_tidelink_fc_adapter regression 34/34 on the fixed RTL. The bench's AXIS
+        master is a COMPLIANT master (drops tvalid after one observed handshake); a
+        re-presenting master would mask the defect.
+    residual: >
+      Same block, not fixed here: sideband_burst_r counts a TideChart word that WANTS
+      the arbiter (tc_tx_is_remote) as a sideband grant even when the TX aperture won,
+      so a pending TideChart word under a TX stream saturates the counter and
+      sideband_starving then blocks returner credits while tx_fc_valid holds. Needs its
+      own red test before it is touched. Also: tc_qos_priority is still tied 3'b000 in
+      both wrappers (separate repo) -- with this fix a claim is no longer LOST under bulk
+      TX, but it still WAITS behind it.
+    signoff:
+      claude_verdict: >
+        Mechanism read at the RTL and reproduced cycle-exactly in the unit bench for both
+        drop paths; fix is the missing feedback term and nothing else. Netlist-affecting;
+        David lands. Not yet run on hardware.
+      evidence:
+        - "src/rtl/tidelink_fc_adapter.sv:506 (pre-fix) vs :576 servo_fc_ready -- the asymmetry, read at the file"
+        - "cocotb/tidelink_fc_adapter/test_tc_tready_drop.py run on 3fb297f with and without the RTL change (git stash A/B), logs in the 2026-09-22 session scratchpad"
+        - "sim_gate_fc_adapter_tc_tready run through the gate machinery: PASS 20s"
+      approved: false
+    related: [TL-034, TL-046]
+
   - id: TL-046
     title: "AR/R replay nodes _7/_9 ship WITHOUT the a2l CDC self-heal (read-path gap) — was 'TL-043-ARR'"
     severity: high

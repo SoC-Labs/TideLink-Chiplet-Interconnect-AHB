@@ -820,6 +820,20 @@ sim_gate_fc_adapter_rx_saturation:
 	  rm -rf cocotb/tidelink_fc_adapter/sim_build* && \
 	  $(MAKE) -C cocotb/tidelink_fc_adapter MODULE=test_rx_saturation_throughput)
 
+# TIDECHART TX ACK-AND-DROP (2026-09-22). tc_axis_tx_tready for a remote
+# TideChart word did not include the arbiter's decision, so a beat presented
+# while the TX aperture (tc_qos_priority==0 -- how both chiplet wrappers tie
+# it) or a returner/servo sideband word held the arbiter was handshaken and
+# discarded. An election claim is broadcast once; that is a lost election.
+# Two controls (delivery when idle; TX-aperture path intact) + two drop arms
+# (TX-aperture collision at qos=0; returner collision at qos=1). Both drop
+# arms FAIL on the pre-fix RTL and PASS after it; the controls pass on both.
+# Run by hand 4/4 on rev2/fix-tc-tready before registration.
+sim_gate_fc_adapter_tc_tready:
+	$(call sim_gate_run,fc_adapter_tc_tready,\
+	  rm -rf cocotb/tidelink_fc_adapter/sim_build* && \
+	  $(MAKE) -C cocotb/tidelink_fc_adapter MODULE=test_tc_tready_drop)
+
 sim_gate_fifo_concurrent_race:
 	$(call sim_gate_run,fifo_concurrent_race,\
 	  rm -rf cocotb/tidelink_fifo_concurrent_race/sim_build* && \
@@ -1984,7 +1998,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	a2l_replay_cdc_7 a2l_replay_cdc_9 \
 	a2l_wready_tear a2l_replay_cdc_deps_mustfail \
 	tl044_hol_prefix_mustfail \
-	v2_auto_anchor
+	v2_auto_anchor \
+	fc_adapter_tc_tready
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel

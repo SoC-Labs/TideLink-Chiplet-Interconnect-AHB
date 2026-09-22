@@ -501,10 +501,9 @@ module tidelink_fc_adapter #(
         end
     end
 
-    // TideChart TX tready: PUF requests accepted by local handler;
-    // remote packets accepted by FC arbiter
-    assign tc_axis_tx_tready = tc_tx_is_puf ? (puf_state_r == PUF_IDLE) :
-                               (skid_can_accept & ~sideband_starving);
+    // TideChart TX tready: PUF requests are accepted by the local handler;
+    // REMOTE words only in the cycle the arbiter actually selects them. The
+    // assign lives below the arbiter wires (ext_selected) -- see there.
 
     // Track consecutive sideband grants
     always_ff @(posedge hclk or negedge hresetn) begin
@@ -538,11 +537,25 @@ module tidelink_fc_adapter #(
                      (ext_boosted || !tx_fc_valid);       // If boosted: always win vs TX aperture
                                                           // If not boosted: only win when no TX data
 
+    // A remote TideChart beat is ACCEPTED only when the skid will load THIS
+    // word. ext_grant alone is not enough: the returner and servo sidebands
+    // outrank it in arb_data below. Until 2026-09-22 tready was
+    //     skid_can_accept & ~sideband_starving
+    // with no arbiter term at all, so a beat presented while the TX aperture
+    // (tc_qos_priority == 0, which is how both chiplet wrappers tie it) or a
+    // sideband word held the arbiter was handshaken and DISCARDED. An
+    // election claim is broadcast once; that was a silently lost election.
+    // Repro: cocotb/tidelink_fc_adapter/test_tc_tready_drop.py.
+    wire ext_selected = ext_grant && !rtn_fc_valid && !servo_fc_valid;
+
+    assign tc_axis_tx_tready = tc_tx_is_puf ? (puf_state_r == PUF_IDLE) :
+                               (ext_selected & skid_can_accept);
+
     assign sideband_grant = (rtn_fc_valid || servo_fc_valid || ext_grant) && !sideband_starving;
     assign arb_valid = tx_fc_valid | rtn_fc_valid | servo_fc_valid | ext_wants;
     wire [FC_DATA_W-1:0] arb_data  = (sideband_grant && rtn_fc_valid)          ? rtn_fc_word      :
                                      (sideband_grant && servo_fc_valid)        ? servo_fc_data    :
-                                     ext_grant                                 ? tc_axis_tx_tdata :
+                                     ext_selected                              ? tc_axis_tx_tdata :
                                      tx_fc_word;
 
     // Skid buffer registers

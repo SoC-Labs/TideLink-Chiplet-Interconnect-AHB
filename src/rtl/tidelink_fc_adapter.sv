@@ -174,6 +174,10 @@ module tidelink_fc_adapter #(
     wire skid_can_accept;
     wire rtn_fc_valid;
     wire sideband_grant;
+    // One-hot arbiter selection (assigned with the grant logic below). Every
+    // per-source ready/retire is derived from these, so a source is retired
+    // ONLY in the cycle the skid loads ITS word (rev2 F3/F4/F5, 2026-09-22).
+    wire rtn_selected, servo_selected, ext_selected;
     wire arb_valid;
 
     // Address phase detection.
@@ -404,8 +408,8 @@ module tidelink_fc_adapter #(
             if (rtn_valid_addr_phase && rtn_hready) begin
                 rtn_addr_latched_r <= rtn_addr_offset;
                 rtn_pending_r      <= 1'b1;
-            end else if (rtn_pending_r && skid_can_accept) begin
-                rtn_pending_r <= 1'b0;
+            end else if (rtn_pending_r && rtn_selected && skid_can_accept) begin
+                rtn_pending_r <= 1'b0;   // F5: was skid_can_accept alone -- dropped the word under sideband_starving
             end
         end
     end
@@ -415,7 +419,7 @@ module tidelink_fc_adapter #(
     assign               rtn_fc_valid = rtn_pending_r;
 
     // Returner HREADY: stall when pending FC word can't enter skid buffer
-    assign rtn_hready = rtn_pending_r ? skid_can_accept : 1'b1;
+    assign rtn_hready = rtn_pending_r ? (rtn_selected & skid_can_accept) : 1'b1;
     assign rtn_hresp  = 1'b0;
     assign rtn_hrdata = '0;
 
@@ -510,8 +514,13 @@ module tidelink_fc_adapter #(
         if (!hresetn) begin
             sideband_burst_r <= '0;
         end else if (arb_valid && skid_can_accept) begin
-            if (rtn_fc_valid || servo_fc_valid || tc_tx_is_remote) begin
-                if (!sideband_starving && sideband_burst_r < SB_CNT_W'(MAX_SIDEBAND_BURST))
+            // Count words the skid ACTUALLY took from a sideband source. Before
+            // 2026-09-22 this counted a TideChart word that merely WANTED the
+            // arbiter (tc_tx_is_remote) even when the TX aperture won, so a
+            // pending claim under a TX stream saturated the counter and
+            // sideband_starving then held returner credits off until TX paused.
+            if (sideband_grant) begin
+                if (sideband_burst_r < SB_CNT_W'(MAX_SIDEBAND_BURST))
                     sideband_burst_r <= sideband_burst_r + SB_CNT_W'(1);
             end else begin
                 sideband_burst_r <= '0;  // TX aperture granted, reset counter
@@ -546,16 +555,18 @@ module tidelink_fc_adapter #(
     // sideband word held the arbiter was handshaken and DISCARDED. An
     // election claim is broadcast once; that was a silently lost election.
     // Repro: cocotb/tidelink_fc_adapter/test_tc_tready_drop.py.
-    wire ext_selected = ext_grant && !rtn_fc_valid && !servo_fc_valid;
+    assign rtn_selected   = rtn_fc_valid   && !sideband_starving;
+    assign servo_selected = servo_fc_valid && !rtn_fc_valid && !sideband_starving;
+    assign ext_selected   = ext_grant && !rtn_fc_valid && !servo_fc_valid;   // ext_grant carries !sideband_starving
 
     assign tc_axis_tx_tready = tc_tx_is_puf ? (puf_state_r == PUF_IDLE) :
                                (ext_selected & skid_can_accept);
 
-    assign sideband_grant = (rtn_fc_valid || servo_fc_valid || ext_grant) && !sideband_starving;
+    assign sideband_grant = rtn_selected | servo_selected | ext_selected;
     assign arb_valid = tx_fc_valid | rtn_fc_valid | servo_fc_valid | ext_wants;
-    wire [FC_DATA_W-1:0] arb_data  = (sideband_grant && rtn_fc_valid)          ? rtn_fc_word      :
-                                     (sideband_grant && servo_fc_valid)        ? servo_fc_data    :
-                                     ext_selected                              ? tc_axis_tx_tdata :
+    wire [FC_DATA_W-1:0] arb_data  = rtn_selected   ? rtn_fc_word      :
+                                     servo_selected ? servo_fc_data    :
+                                     ext_selected   ? tc_axis_tx_tdata :
                                      tx_fc_word;
 
     // Skid buffer registers
@@ -586,7 +597,12 @@ module tidelink_fc_adapter #(
     assign tl_fc_a2l_data  = skid_data_r;
 
     // Servo FC ready: can enter arbiter when skid accepts and no higher-priority source active
-    assign servo_fc_ready = skid_can_accept & ~rtn_fc_valid & ~tc_tx_is_remote & ~sideband_starving;
+    // F4: was `skid_can_accept & ~rtn_fc_valid & ~tc_tx_is_remote & ~sideband_starving`
+    // while arb_data selected the servo whenever it was valid and the returner
+    // was not -- so with a TideChart word also valid the skid LOADED the servo
+    // word and did not retire it: duplicate servo packet, and (pre-F3) the
+    // TideChart word was dropped in the same cycle.
+    assign servo_fc_ready = servo_selected & skid_can_accept;
 
     // =========================================================================
     // RX Path — FC RX → Two AHB Masters (FIFO data + Config registers)

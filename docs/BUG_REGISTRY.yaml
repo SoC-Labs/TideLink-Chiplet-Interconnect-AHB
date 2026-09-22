@@ -2627,68 +2627,91 @@ bugs:
     related: [TL-042, TL-043, TL-044, TL-003]
 
   - id: TL-047
-    title: "TideChart TX beat ACK-and-drop in tidelink_fc_adapter: tready ignored the arbiter, so a claim presented under bulk TX (qos=0) or behind a sideband word was handshaken and discarded"
+    title: "tidelink_fc_adapter TX arbiter: per-source ready did not follow the grant -- TideChart beat ACKed-and-dropped (F3), servo word duplicated (F4), returner credit word dropped under sideband_starving (F5), burst counter counted wants as grants"
     severity: high
     area: rtl/fc_adapter
     status: sim_proven
     registered: 2026-09-22
-    opened: 2026-09-14            # found by inspection during the rev-2 election-skew campaign (memory: tc_qos_priority tied 3'b000 starves election)
+    opened: 2026-09-09            # rev-2 review appendix, findings F3/F4/F5 (all "not" fixed then); F3 also memory 2026-09-14 (tc_qos_priority tied 3'b000 starves election)
     summary: >
-      tc_axis_tx_tready for a REMOTE TideChart word was `skid_can_accept &
-      ~sideband_starving` -- the arbiter's decision was not in it. In any cycle where
-      the skid could accept but the arbiter loaded a DIFFERENT source, the TideChart
-      master saw tvalid && tready, retired the beat, and the word was never loaded.
-      Two such cycles exist: (a) the TX aperture holds the arbiter because
-      tc_qos_priority == 0 -- which is how BOTH chiplet wrappers tie it
-      (nanosoc_eth_chiplet.sv:1112, nanosoc_compute_chiplet.sv:1101/1313); (b) a
-      returner or servo sideband word is pending in the same cycle at ANY priority,
-      because those outrank PKT_EXT in arb_data. An election claim is broadcast once
-      and never re-announced, so one dropped beat is a silently lost election.
-      servo_fc_ready already carried the correct exclusion terms; the TideChart port
-      was the odd one out.
+      The TX arbiter feeds a one-entry skid from four sources (returner sideband,
+      PTP servo sideband, TideChart PKT_EXT, TX aperture) with fixed priority
+      rtn > servo > TideChart(if boosted or TX idle) > TX. arb_data selected the
+      word correctly, but three of the four per-source ready/retire signals were
+      NOT derived from that selection, so a source could be retired in a cycle the
+      skid loaded a different source's word:
+      (F3) tc_axis_tx_tready = skid_can_accept & ~sideband_starving -- a TideChart
+      beat presented while the TX aperture held the arbiter (tc_qos_priority == 0,
+      how BOTH chiplet wrappers tie it: nanosoc_eth_chiplet.sv:1112,
+      nanosoc_compute_chiplet.sv:1101/1313) or while a returner/servo word was
+      pending was handshaken and discarded. An election claim is broadcast once;
+      one dropped beat is a silently lost election.
+      (F4) servo_fc_ready carried ~tc_tx_is_remote while arb_data picked the servo
+      whenever it was valid and the returner was not: with a TideChart word also
+      valid the skid loaded the servo word and did not retire it -- duplicate servo
+      packet, and (pre-F3) the TideChart word dropped in the same cycle. Fixing F3
+      alone turns this into a LIVELOCK (the TideChart master now holds, so the servo
+      duplicates every cycle and the claim never gets in) -- measured, see red_green.
+      (F5) rtn_pending_r cleared on skid_can_accept with no grant term and
+      rtn_hready followed it: under sideband_starving (4 consecutive sideband grants
+      with tx_fc_valid high) the arbiter loads the TX word, the returner word is
+      dropped, and the returner sees hready=1. Measured: TWO consecutive credit
+      words lost (5 and 6 of a 6-burst), not one, because the counter stays
+      saturated while TX streams.
+      (+) sideband_burst_r counted a TideChart word that merely WANTED the arbiter
+      (tc_tx_is_remote) as a sideband grant even when TX won, so a pending claim
+      under a TX stream saturated the counter and sideband_starving held returner
+      credits off until TX paused (or dropped them, via F5).
     root_cause: >
-      tidelink_fc_adapter.sv:506 (pre-fix) assigned tready from the skid state only;
-      ext_grant (defined 30 lines later) was used to steer arb_data but never fed back
-      to the handshake. Asymmetric with servo_fc_ready at :576, which does exclude
-      rtn_fc_valid / tc_tx_is_remote / sideband_starving.
+      Grant (arb_data mux) and retire (per-source ready) were written separately
+      and drifted: servo_fc_ready and tc_axis_tx_tready encoded different priority
+      orders from arb_data, and rtn retire encoded none. The review's companion
+      recommendation (appendix section 9) was exactly this: one-hot grant vector
+      with per-source ready derived from it.
     fix:
-      approach: "ext_selected = ext_grant && !rtn_fc_valid && !servo_fc_valid; tready (remote) = ext_selected & skid_can_accept; arb_data selects on ext_selected. Zero area: the terms already existed. PUF path unchanged."
-      files: [src/rtl/tidelink_fc_adapter.sv, cocotb/tidelink_fc_adapter/test_tc_tready_drop.py, Makefile]
-      commit: null                       # filled at land
+      approach: "wire rtn_selected/servo_selected/ext_selected (one-hot, pre-declared beside sideband_grant); arb_data, sideband_grant, rtn_pending_r clear, rtn_hready, servo_fc_ready and tc_axis_tx_tready all derive from them; sideband_burst_r counts sideband_grant (actual loads) and resets on a TX load. Zero area: every term already existed. PUF path unchanged."
+      files: [src/rtl/tidelink_fc_adapter.sv, cocotb/tidelink_fc_adapter/tb_top.sv, cocotb/tidelink_fc_adapter/test_fc_adapter_arbiter.py, cocotb/tidelink_fc_adapter/test_tidelink_fc_adapter.py, Makefile]
+      commit: null                       # filled at land; branch history keeps the F3-only step (de53b32) on purpose -- it is the livelock arm of the A/B
       branch: rev2/fix-tc-tready         # local, from rev2/integration 3fb297f
       netlist_affecting: true
     verification:
-      sim_test: "fc_adapter_tc_tready (sim_gate suite label; cocotb/tidelink_fc_adapter/test_tc_tready_drop.py: 2 controls + 2 drop arms)"
+      sim_test: "fc_adapter_arbiter (sim_gate suite label; cocotb/tidelink_fc_adapter/test_fc_adapter_arbiter.py: 2 controls + 5 defect arms)"
       in_sim_gate: true
       hw_tested: false
       hw_validated: false
       evidence: null
       vehicle: null
       red_green: >
-        Pre-fix RTL (3fb297f): controls 2/2 PASS, drop_tx_aperture_collision_qos0 FAIL
-        (tvalid held 1 cycle, delivered 0), drop_returner_collision_qos1 FAIL (held 4,
-        delivered 0). Post-fix: 4/4 PASS (held 2 and 5 cycles, delivered 1 each; the
-        colliding TX/returner words still delivered once). Existing
-        test_tidelink_fc_adapter regression 34/34 on the fixed RTL. The bench's AXIS
-        master is a COMPLIANT master (drops tvalid after one observed handshake); a
-        re-presenting master would mask the defect.
+        Same bench, three RTL states, 2026-09-22 (git show <rev>:file swapped in, logs
+        arb_new2/arb_prefix2/arb_f3only2 in the session scratchpad):
+        pre-fix 3fb297f  -> 2/7 (controls only; F3 x2, servo dup servo=2 tc=0, returner
+        burst delivered 4 of 6, returner-under-stream tc=0);
+        F3-only de53b32  -> 4/7 (servo arm TimeoutError = livelock; returner 4 of 6;
+        returner-under-stream rtn=0 -- F5 + counter accounting together);
+        one-hot          -> 7/7 (tc held 2/5/13 cycles where it must wait, every word
+        delivered exactly once, TX streams 12/12 intact).
+        Existing test_tidelink_fc_adapter: 34/34 on the one-hot RTL. tc_pair_smoke
+        and tc_pair_election_datamode (real TideChart master) PASS on the F3 RTL;
+        re-run on the one-hot RTL is part of the branch gate.
+        All masters in the bench are COMPLIANT (hold valid until an observed ready,
+        then drop it; AHB masters mirror hreadyout into hready): a re-presenting
+        master would mask F3, and a non-pipelined returner cannot reach F5.
     residual: >
-      Same block, not fixed here: sideband_burst_r counts a TideChart word that WANTS
-      the arbiter (tc_tx_is_remote) as a sideband grant even when the TX aperture won,
-      so a pending TideChart word under a TX stream saturates the counter and
-      sideband_starving then blocks returner credits while tx_fc_valid holds. Needs its
-      own red test before it is touched. Also: tc_qos_priority is still tied 3'b000 in
-      both wrappers (separate repo) -- with this fix a claim is no longer LOST under bulk
-      TX, but it still WAITS behind it.
+      tc_qos_priority is still tied 3'b000 in both wrappers (separate repo): a claim
+      now WAITS behind bulk TX instead of being lost. Whether it should also outrank
+      TX is the wrapper's zero-area one-line decision, not this file's.
+      No hardware run yet.
     signoff:
       claude_verdict: >
-        Mechanism read at the RTL and reproduced cycle-exactly in the unit bench for both
-        drop paths; fix is the missing feedback term and nothing else. Netlist-affecting;
-        David lands. Not yet run on hardware.
+        Mechanisms read at the RTL, all five reproduced cycle-exactly in the unit
+        bench, and the intermediate F3-only fix was shown to livelock -- which is
+        why this lands as one change, as the review recommended. Netlist-affecting;
+        David lands. Not yet on hardware.
       evidence:
-        - "src/rtl/tidelink_fc_adapter.sv:506 (pre-fix) vs :576 servo_fc_ready -- the asymmetry, read at the file"
-        - "cocotb/tidelink_fc_adapter/test_tc_tready_drop.py run on 3fb297f with and without the RTL change (git stash A/B), logs in the 2026-09-22 session scratchpad"
-        - "sim_gate_fc_adapter_tc_tready run through the gate machinery: PASS 20s"
+        - "src/rtl/tidelink_fc_adapter.sv pre-fix :506 (tready), :576 (servo_fc_ready), :407/:418 (rtn clear/hready), :514 (burst counter) -- read at the file"
+        - "docs/reviews/2026-09-09_REV2_REVIEW_APPENDIX.md section 3 (F3/F4/F5) and section 9 companion refactor"
+        - "cocotb/tidelink_fc_adapter/test_fc_adapter_arbiter.py A/B across 3fb297f, de53b32 and the one-hot RTL (see red_green)"
+        - "sim_gate_fc_adapter_arbiter run through the gate machinery on the branch; scripts/ci/tests/test_sim_gate_integrity.py 5/5 (invoked == scored)"
       approved: false
     related: [TL-034, TL-046]
 

@@ -40,6 +40,9 @@ CHECKER = REPO / "scripts" / "ci" / "sim_gate_env_check.py"
 
 ROOT_MK = "sim_gate_fifo:\n\t$(MAKE) -C cocotb/tidelink_fifo MODULE=x\n"
 BENCH_MK = "COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fifo.flist\n"
+BENCH_MK_SITE = ("SITE_VARS_REQUIRED += VIP_HOME\n"
+                 "include $(TIDELINK_HOME)/mk/site.mk\n"
+                 "COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fifo.flist\n")
 FLIST = ("+incdir+${TIDELINK_HOME}/src\n"
          "${TIDELINK_HOME}/src/a.v\n"
          "${CMSDK_DIR}/logical/models/cmsdk_fpga_sram.v\n")
@@ -50,13 +53,18 @@ def git(cwd, argv, **kw):
                           capture_output=True, text=True, **kw)
 
 
-def make_repo(td, with_submodule=False):
+def make_repo(td, with_submodule=False, site_contract=False):
     """A minimal checkout with the shape the checker reads."""
     root = Path(td) / "repo"
-    for d in ("flists", "cocotb/tidelink_fifo", "src"):
+    for d in ("flists", "cocotb/tidelink_fifo", "src", "mk"):
         (root / d).mkdir(parents=True, exist_ok=True)
     (root / "Makefile").write_text(ROOT_MK)
-    (root / "cocotb/tidelink_fifo/Makefile").write_text(BENCH_MK)
+    if site_contract:
+        # the REAL site contract, so the control tests what the benches include
+        (root / "mk/site.mk").write_text((REPO / "mk" / "site.mk").read_text())
+        (root / "cocotb/tidelink_fifo/Makefile").write_text(BENCH_MK_SITE)
+    else:
+        (root / "cocotb/tidelink_fifo/Makefile").write_text(BENCH_MK)
     (root / "flists/tidelink_fifo.flist").write_text(FLIST)
     (root / "src/a.v").write_text("module a; endmodule\n")
 
@@ -155,6 +163,14 @@ def main():
         rc, out = run(checker, root, {"CMSDK_DIR": cmsdk}, extra=("--allow-dirty",))
         failures += case("--allow-dirty downgrades it", 0, "READY", rc, out)
 
+    # ── RED 6: a bench whose site contract (mk/site.mk) names an unset var ───
+    with tempfile.TemporaryDirectory() as td:
+        root, cmsdk = make_repo(td, site_contract=True)
+        rc, out = run(checker, root, {"CMSDK_DIR": cmsdk, "VIP_HOME": None})
+        failures += case("site var unset (mk/site.mk)", 1, "SITE-CONTRACT", rc, out)
+        # ...and with it set, the same bench is READY (the probe itself is inert).
+        rc, out = run(checker, root, {"CMSDK_DIR": cmsdk, "VIP_HOME": str(Path(td))})
+        failures += case("site var set -> READY", 0, "READY", rc, out)
     # ── RED 5: it must refuse to say READY when it examined nothing ──────────
     with tempfile.TemporaryDirectory() as td:
         root, cmsdk = make_repo(td)

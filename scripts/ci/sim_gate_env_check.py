@@ -337,6 +337,34 @@ def main():
         else:
             findings.append(Finding("DIRTY-TREE", "working tree", detail, fix))
 
+    # ── site contract: every gated bench must PARSE under this site ─────────
+    # mk/site.mk (chore/site-path-hygiene) makes each bench's SITE_VARS_REQUIRED
+    # mandatory at parse time with no default. Those are Makefile-level names
+    # (VIP_HOME, VCS_HOME, PHYS_IP_PATH, ...), not flist tokens, so the closure
+    # above cannot see them. Measured 2026-09-22 on a green tree: the one UVM
+    # suite in the gate FAILed in 0 s because VIP_HOME was unset in site.env --
+    # a correctly-stamped, meaningless result. Ask make itself: a dry run of a
+    # target that does not exist parses the bench Makefile (and mk/site.mk)
+    # and executes nothing.
+    for d in sorted(benches):
+        mk = repo / d / "Makefile"
+        if not mk.is_file() or "mk/site.mk" not in mk.read_text(errors="replace"):
+            continue
+        try:
+            r = subprocess.run(["make", "-C", str(repo / d), "-n",
+                                "__sim_gate_env_check_site_probe__"],
+                               capture_output=True, text=True, env=env, timeout=120)
+            text = r.stdout + r.stderr
+        except (OSError, subprocess.TimeoutExpired) as e:
+            text = "unset, with no default: (probe could not run: %s)" % e
+        m = re.search(r"unset, with no default: ([A-Z_0-9 ()a-z:.-]+)", text)
+        if m:
+            findings.append(Finding(
+                "SITE-CONTRACT", d,
+                "mk/site.mk refuses to run this bench: %s" % m.group(1).strip(),
+                "set it in site.env (site.env.example says what each one locates)\n"
+                "and `source set_env.sh`; the gate would otherwise record a 0 s FAIL\n"
+                "for every suite that drives this bench."))
     # ── siblings: reported, never fatal (see the module docstring) ───────────
     for var, probe, why in (
         ("TIDECHART_HOME", "flist/tidechart.flist", "the tc_pair_* co-sim suites"),

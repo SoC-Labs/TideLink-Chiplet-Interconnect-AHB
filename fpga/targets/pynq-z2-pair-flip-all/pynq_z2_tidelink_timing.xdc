@@ -187,8 +187,32 @@ create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAM
 # reference are the same forwarded edge, so Vivado balances rather than
 # hold-pads every lane. Far die samples MID-CELL (80 ns from either pad edge),
 # so +/-20 ns leaves >=60 ns of true eye margin each side.
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max 20.000 [get_ports {pad_tx[*]}]
-set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -20.000 [get_ports {pad_tx[*]}]
+#
+# -clock_fall IS THE LOAD-BEARING WORD BELOW. The far die captures on the
+# FALLING edge of the forwarded clock. Two independent pieces of evidence:
+# the PHY's reset default selects the INVERTED pad clock
+# (out_prepend_swi_polarity <= 1'h1 - WavD2DGpio.v:1154, and WavD2DGpio_v2.v:2190
+# for the v2 PHY), and every shipped routed netlist names the capture cells'
+# clock pad_clk_rx' - 82 endpoints on kr260-pair-nptp, 86 on kr260-pair-flip-nptp,
+# 69 on pynq-z2-pair-all.
+#
+# Vivado infers the capture edge from the capture flop on the RX side, which is
+# why pad_rx[*] shows no phantom violation. On TX the capture flop is OFF-CHIP
+# and invisible, so the edge has to be DECLARED. Omitting -clock_fall describes a
+# window around the RISING edge and manufactures a ~-22 ns hold "failure" on all
+# eight pad_tx lanes - a check against a requirement that does not exist in the
+# hardware. Measured on kr260-eth-chiplet, two builds differing only in these two
+# lines: WHS -22.145 -> +0.010, 8 failing hold endpoints -> 0, pad_tx worst hold
+# -22.145 -> +151.592, and IDENTICAL LUT/FF/BUFGCE (59851/54337/23). The design
+# does not change; only what is checked does.
+#
+# THE BUDGET IS DELIBERATELY UNCHANGED. Commit 4d87846 added this word upstream
+# on kr260-eth-chiplet and ALSO cut +/-20 to +/-8 without saying why, leaving the
+# comment above it still claiming +/-20. Only the word is derived, so only the
+# word is carried here. What would replace the number is the DUTY CYCLE of
+# pad_clk_tx at the connector, which nothing in this file constrains or measures.
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -clock_fall -max 20.000 [get_ports {pad_tx[*]}]
+set_output_delay -clock [get_clocks pad_clk_tx_fwd] -clock_fall -min -20.000 [get_ports {pad_tx[*]}]
 
 #-----------------------------------------------------------------------------
 # [3] RX pad capture: TIMED source-synchronous group, RELATIVE skew bounded

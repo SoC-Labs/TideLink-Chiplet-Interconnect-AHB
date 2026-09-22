@@ -169,6 +169,25 @@ create_generated_clock -name pad_clk_tx_fwd -source [get_pins -hier -filter {NAM
 # asymmetric absolute window vs an internal clock), so it does not recreate
 # the 2026-05-05 hold explosion: launch and capture reference are the same
 # forwarded edge, so Vivado balances rather than hold-pads every lane.
+#
+# NOT SWEPT BY THE 2026-09-22 -clock_fall PORT, AND THAT IS DELIBERATE.
+# Seven targets gained -clock_fall on these two lines that day (the five KR260
+# pair/chiplet targets and the two pynq-z2-pair *-all targets). This one did not.
+# REASON: THIS TARGET FORWARDS pad_clk_tx THROUGH AN INVERTING ODDR.
+# tidelink_clk_tx_oddr.v here is the PRE-FIX-P wrapper: "D1=0, D2=1 emits a clock
+# that is 180 degrees" out of phase. The create_generated_clock above declares the
+# forwarded clock IN PHASE with the ODDR input (-divide_by 1), so this file
+# already misdescribes the waveform by half a period, before any edge question.
+# The far die still captures on the falling edge, so the two inversions CANCEL:
+# capture lands back at the TX data-transition instant instead of mid-eye. That
+# was a real hardware bug - the "exactly-1/2 dirty-word floor", all 8 lanes, both
+# dies, every IDELAY tap - root-caused 2026-06-10 and fixed in
+# deps/tidelink-phy/fpga/targets/pynq-z2-phy-bist-pair/tidelink_clk_tx_oddr.sv
+# as FIX-P (D1=1, D2=0, edge-aligned).
+# Adding -clock_fall on top of an already-inverted-and-undeclared clock is NOT
+# the same fix and would make the constraint agree with neither the RTL nor the
+# hardware. The fix this target needs is FIX-P; then the edge question applies as
+# it does everywhere else. Last built 2026-06-09.
 set_output_delay -clock [get_clocks pad_clk_tx_fwd] -max 5.000 [get_ports {pad_tx[*]}]
 set_output_delay -clock [get_clocks pad_clk_tx_fwd] -min -5.000 [get_ports {pad_tx[*]}]
 

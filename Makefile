@@ -352,7 +352,8 @@ endef
 	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5 \
 	sim_gate_a2l_replay_cdc_7 sim_gate_a2l_replay_cdc_9 \
 	sim_gate_a2l_wready_tear sim_gate_a2l_replay_cdc_deps_mustfail \
-	sim_gate_v2_auto_anchor
+	sim_gate_v2_auto_anchor \
+	sim_gate_fc_adapter_tc_tready
 
 # WHAT THIS CHECKS, AND WHY IT IS NOT JUST TWO `command -v` LINES.
 # Until 2026-09-11 it was exactly the two tool checks below and nothing else. A
@@ -2143,6 +2144,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_wlink_tx_pstate
 	@# HAZARD-3 / N2 fix: AUTO_ANCHOR beacon force must respect io_link_tx_tx_idle.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_auto_anchor
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fc_adapter_tc_tready
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

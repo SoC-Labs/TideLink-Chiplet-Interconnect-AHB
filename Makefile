@@ -352,7 +352,8 @@ endef
 	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5 \
 	sim_gate_a2l_replay_cdc_7 sim_gate_a2l_replay_cdc_9 \
 	sim_gate_a2l_wready_tear sim_gate_a2l_replay_cdc_deps_mustfail \
-	sim_gate_v2_auto_anchor
+	sim_gate_v2_auto_anchor \
+	sim_gate_fc_adapter_arbiter
 
 # WHAT THIS CHECKS, AND WHY IT IS NOT JUST TWO `command -v` LINES.
 # Until 2026-09-11 it was exactly the two tool checks below and nothing else. A
@@ -819,6 +820,23 @@ sim_gate_fc_adapter_rx_saturation:
 	$(call sim_gate_run,fc_adapter_rx_saturation,\
 	  rm -rf cocotb/tidelink_fc_adapter/sim_build* && \
 	  $(MAKE) -C cocotb/tidelink_fc_adapter MODULE=test_rx_saturation_throughput)
+
+# FC_ADAPTER TX ARBITER (2026-09-22, rev-2 review F3/F4/F5). Every per-source
+# ready is now derived from a one-hot selection, so a source retires ONLY in
+# the cycle the skid loads ITS word. Before: TideChart tready ignored the
+# arbiter (beat ACKed and dropped -- a lost election claim, since a claim is
+# broadcast once and tc_qos_priority is tied 0 in both chiplet wrappers); the
+# servo word was loaded but not retired when a TideChart word was also valid
+# (duplicate servo packet); the returner retired on skid_can_accept alone and
+# lost credit/doorbell words under sideband_starving; and the burst counter
+# counted a WANTING TideChart word as a grant, starving returner credits under
+# a TX stream. 2 controls + 5 defect arms. A/B on 3fb297f: pre-fix 2/7, the
+# F3-only intermediate 4/7 (servo LIVELOCK), one-hot 7/7. Run by hand before
+# registration; existing test_tidelink_fc_adapter 34/34 on the new RTL.
+sim_gate_fc_adapter_arbiter:
+	$(call sim_gate_run,fc_adapter_arbiter,\
+	  rm -rf cocotb/tidelink_fc_adapter/sim_build* && \
+	  $(MAKE) -C cocotb/tidelink_fc_adapter MODULE=test_fc_adapter_arbiter)
 
 sim_gate_fifo_concurrent_race:
 	$(call sim_gate_run,fifo_concurrent_race,\
@@ -1984,7 +2002,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	a2l_replay_cdc_7 a2l_replay_cdc_9 \
 	a2l_wready_tear a2l_replay_cdc_deps_mustfail \
 	tl044_hol_prefix_mustfail \
-	v2_auto_anchor
+	v2_auto_anchor \
+	fc_adapter_arbiter
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -2128,6 +2147,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_wlink_tx_pstate
 	@# HAZARD-3 / N2 fix: AUTO_ANCHOR beacon force must respect io_link_tx_tx_idle.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_auto_anchor
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fc_adapter_arbiter
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

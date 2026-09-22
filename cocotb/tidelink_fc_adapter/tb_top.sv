@@ -49,6 +49,10 @@ module tb_top #(
     input  logic                     fc_rx_cfg_pready,
 
     // ── TideChart AXI-Stream Interface ──────────────────────────────────
+    // PTP servo sideband source (was tied 1'b0; exposed 2026-09-22 for the arbiter tests)
+    input  logic                     servo_fc_valid,
+    input  logic   [FC_DATA_W-1:0]  servo_fc_data,
+    output logic                     servo_fc_ready,
     input  logic                     tc_axis_tx_tvalid,
     input  logic   [FC_DATA_W-1:0]  tc_axis_tx_tdata,
     output logic                     tc_axis_tx_tready,
@@ -129,9 +133,9 @@ module tb_top #(
         .fc_rx_cfg_pready  (fc_rx_cfg_pready),
 
         // Servo (not tested at unit level, tied off)
-        .servo_fc_valid    (1'b0),
-        .servo_fc_data     ({FC_DATA_W{1'b0}}),
-        .servo_fc_ready    (),
+        .servo_fc_valid    (servo_fc_valid),
+        .servo_fc_data     (servo_fc_data),
+        .servo_fc_ready    (servo_fc_ready),
 
         // TideChart AXI-Stream
         .tc_axis_tx_tvalid   (tc_axis_tx_tvalid),

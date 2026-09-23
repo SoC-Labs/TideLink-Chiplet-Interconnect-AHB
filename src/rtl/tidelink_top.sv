@@ -145,36 +145,45 @@ module tidelink_top #(
     // drives 1'b1, exactly the NEGO_CFG_RESET plumbing pattern.
     parameter bit    WINSCAN_CONVERGE_LOCK_EN = 1'b0,
     // HONEST_MASK_HS — peer-mask handshake authenticity gate (from kr260-pair-onchip).
-    //   0 (default) = legacy bench tie: the inner axi_chiplet_controller's
-    //       apb_debug_unlock_i / mask_hs_bypass_i are held 1'b1 (see the
+    //   1 (DEFAULT — see the declaration immediately below) = drive the inner
+    //       axi_chiplet_controller from the real top-level apb_debug_unlock_i /
+    //       mask_hs_bypass_i ports (declared in the port list below; they were
+    //       DEAD before this param existed) so the peer-mask handshake must
+    //       GENUINELY match. Used by the kr260 on-chip pair to prove hardware
+    //       autonomy without either bypass strap, and the intended ASIC
+    //       production posture (closes the "APB permanently unlocked"
+    //       chip-killer).
+    //   0 = legacy bench tie: those two controller inputs are held 1'b1 (see the
     //       u_chiplet_controller instantiation below), so mask_hs_gate_open is
-    //       permanently forced open. Single-die Z2/ASIC targets are BYTE-IDENTICAL
-    //       to today — a parameter-constant ternary folds to the historical 1'b1
-    //       ties at elaboration.
-    //   1 = drive the inner controller from the real top-level apb_debug_unlock_i /
-    //       mask_hs_bypass_i ports (declared but previously DISCARDED) so the
-    //       peer-mask handshake must GENUINELY match. Used by the kr260 on-chip pair
-    //       to prove hardware autonomy without either bypass strap — and the intended
-    //       ASIC production posture (closes the "APB permanently unlocked" chip-killer).
+    //       permanently forced open.
     //
-    // PENDING (DECISION #2, David 2026-07-19) — SPLIT PREPARED, NOT APPLIED.
-    // The single HONEST_MASK_HS param above folds TWO independent choices, so
-    // "ship debug unlocked" (which David asked for, and which 1'b0 already
-    // gives) ALSO permanently bypasses the peer-mask handshake. They are now
-    // separable via DEBUG_UNLOCK_DEFAULT below. DEFAULTS ARE UNCHANGED: at
-    // DEBUG_UNLOCK_DEFAULT=1'b1 + HONEST_MASK_HS=1'b0 the two ties fold to the
-    // historical 1'b1/1'b1, byte-identical to today. Nothing is applied here —
-    // David is deciding whether the handshake bypass was intended.
+    // HISTORY — READ THIS BEFORE TRUSTING ANY OLDER NOTE. DECISION #2 (David,
+    // 2026-07-19) is DECIDED AND APPLIED. The default was 1'b0 from 227d1f95
+    // until 27db79f9 ("feat: DECISION #2 — APPLY the split; debug UNLOCKED +
+    // HONEST_MASK_HS=1"), which flipped it to 1'b1 and split the old single
+    // knob into HONEST_MASK_HS + DEBUG_UNLOCK_DEFAULT below. Any comment that
+    // still says "default 0", "SPLIT PREPARED, NOT APPLIED", "nothing is
+    // applied here" or "byte-identical to today" predates that commit and is
+    // WRONG. Ground truth: nanosoc_eth_chiplet.sv instantiates tidelink_top
+    // WITHOUT overriding this, so the taped-out eth-chiplet netlists carry the
+    // 1'b1 default.
     parameter        HONEST_MASK_HS       = 1'b1,
-    // PENDING (DECISION #2) — debug-unlock, now INDEPENDENT of HONEST_MASK_HS.
-    //   1'b1 (default) = apb_debug_unlock_i tied 1 at the controller: APB debug
-    //       permanently unlocked. This is today's effective behaviour and
-    //       matches "ship debug unlocked".
+    // DECISION #2 (David, 2026-07-19) — APPLIED in 27db79f9. Debug-unlock, now
+    // INDEPENDENT of HONEST_MASK_HS.
+    //   1'b1 (DEFAULT, and what the eth-chiplet ships) = apb_debug_unlock_i
+    //       tied 1 at the controller: APB debug permanently unlocked.
+    //       nanosoc_eth_chiplet.sv instantiates tidelink_top without overriding
+    //       this, so the taped-out die carries 1'b1.
     //   1'b0 = drive the controller from the real top-level apb_debug_unlock_i
-    //       port, so APB debug is strap-lockable.
-    // Setting HONEST_MASK_HS=1'b1 while leaving this at 1'b1 gives the
-    // combination that was previously UNREACHABLE: an honest peer-mask
-    // handshake WITH debug still unlocked.
+    //       port, so APB debug is strap-lockable. This is what the ASIC DFT
+    //       wrapper selects (src/rtl/asic/tidelink_dft_wrapper.sv); that
+    //       wrapper is NOT in the eth-chiplet's instantiation path.
+    // HONEST_MASK_HS=1'b1 with this left at 1'b1 — the combination that ships —
+    // is an honest peer-mask handshake WITH debug still unlocked. That holds
+    // only because 5c856024 removed apb_debug_unlock_i from mask_hs_gate_open
+    // in src/rtl/local_overrides/axi_chiplet_controller.sv; against the
+    // unpatched deps/axi-chiplet-controller copy, which still ORs it in,
+    // DEBUG_UNLOCK_DEFAULT=1 forces the gate open regardless of HONEST_MASK_HS.
     parameter        DEBUG_UNLOCK_DEFAULT = 1'b1,
     // Phase 2 autonomy — RETIRE-AUTONOMY enable (the B->A channel fix).
     // Forwards to axi_chiplet_controller.RETIRE_EN. When 1, an event-gated
@@ -3154,7 +3163,11 @@ module tidelink_top #(
         // parameter declaration for semantics.
         .NEGO_TRAIN_CFG_RESET (NEGO_TRAIN_CFG_RESET),
         .NEGO_CFG_RESET       (NEGO_CFG_RESET),
-        // PENDING-DECISION #5: terminal role from strap (default 1'b0 = today).
+        // Terminal role from strap. DEFAULT IS 1'b1, not 1'b0: this landed as
+        // "PENDING-DECISION #5" with default 1'b0 (964e99d7) and 6080ebd4
+        // ("DECISION #3 — ROLE_FROM_STRAP ON, enabled GLOBALLY") flipped it.
+        // Every shipping eth-chiplet netlist carries ROLE_FROM_STRAP1. See the
+        // module parameter declaration for the 0/1 semantics.
         .ROLE_FROM_STRAP      (ROLE_FROM_STRAP),
         .TRAIN_ENTRY_FALLBACK (TRAIN_ENTRY_FALLBACK),
         // Zero-poke winscan converge-lock — forwarded verbatim (default 1'b0).
@@ -3183,21 +3196,27 @@ module tidelink_top #(
         .role_strap_i               (role_strap_i),
         .role_is_master_o           (role_is_master_o),
         .role_locked_o              (role_locked_o),
-        // SoC Labs 2026-06-18 — REDUCED-LANE SW-driven bring-up (autoneg off):
-        // force both to 1. mask_hs_bypass opens mask_hs_gate_open so the SW
-        // ROLE_CFG W1S role-lock latches WITHOUT the autoneg mask handshake
-        // (else role_locked never asserts -> Wlink held in reset -> link dead).
-        // apb_debug_unlock frees SW APB writes to the Wlink config (incl the
-        // lane mask) on the non-master die. Bench-debug straps; revisit when
-        // re-enabling autoneg for production.
-        // HONEST_MASK_HS gate (from kr260-pair-onchip): default 0 folds both selects
-        // to the historical 1'b1 ties => byte-identical single-die netlist. With 1 they
-        // drive from the real module ports (:362-363, previously DEAD) so mask_hs_gate_open
-        // = mask_hs_match | mask_hs_bypass_i | apb_debug_unlock_i is no longer forced open
-        // and the peer-mask handshake must genuinely match.
-        // PENDING (DECISION #2) — the two selects are now INDEPENDENT. At the
-        // shipped defaults (DEBUG_UNLOCK_DEFAULT=1, HONEST_MASK_HS=0) both fold
-        // to the historical 1'b1, so this is byte-identical to today.
+        // HONEST_MASK_HS / DEBUG_UNLOCK_DEFAULT selects. Read the parameter
+        // declarations at the top of the module for the full history; the
+        // SHIPPED state, as of 27db79f9 and confirmed against the taped-out
+        // netlists, is HONEST_MASK_HS=1'b1 and DEBUG_UNLOCK_DEFAULT=1'b1:
+        //   mask_hs_bypass_i   <- the REAL module port (see the port list), so
+        //       the peer-mask handshake genuinely gates. mask_hs_gate_open =
+        //       mask_hs_match | mask_hs_bypass_i in
+        //       src/rtl/local_overrides/axi_chiplet_controller.sv — 5c856024
+        //       ("kill the sham gate") dropped the apb_debug_unlock_i term that
+        //       the unpatched deps/axi-chiplet-controller copy still ORs in.
+        //   apb_debug_unlock_i <- still folded to a constant 1'b1, so SW APB
+        //       writes to the Wlink config (incl. the lane mask) stay unlocked
+        //       on the non-master die. The ASIC DFT wrapper
+        //       (src/rtl/asic/tidelink_dft_wrapper.sv) selects 1'b0 here, but
+        //       the eth-chiplet does not instantiate that wrapper.
+        // WAS, before 27db79f9: HONEST_MASK_HS defaulted 1'b0 and BOTH selects
+        // folded to the historical 1'b1 ties — the 2026-06-18 reduced-lane
+        // SW-driven bring-up posture ("force both to 1", byte-identical
+        // single-die netlist). Only the apb_debug_unlock_i half of that is
+        // still true. Do not reason from the old note; it is kept here only so
+        // the change of posture is visible.
         .apb_debug_unlock_i         (DEBUG_UNLOCK_DEFAULT ? 1'b1 : apb_debug_unlock_i),
         .mask_hs_bypass_i           (HONEST_MASK_HS ? mask_hs_bypass_i   : 1'b1),
         .nego_priority_i            (nego_priority_i),

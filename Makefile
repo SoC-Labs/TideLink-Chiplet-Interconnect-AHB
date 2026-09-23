@@ -354,7 +354,8 @@ endef
 	sim_gate_a2l_wready_tear sim_gate_a2l_replay_cdc_deps_mustfail \
 	sim_gate_v2_auto_anchor \
 	sim_gate_fc_adapter_arbiter \
-	sim_gate_ptp_servo_converge sim_gate_ptp_servo_unit
+	sim_gate_ptp_servo_converge sim_gate_ptp_servo_unit \
+	sim_gate_apb_regs_unit
 
 # WHAT THIS CHECKS, AND WHY IT IS NOT JUST TWO `command -v` LINES.
 # Until 2026-09-11 it was exactly the two tool checks below and nothing else. A
@@ -885,6 +886,18 @@ sim_gate_ptp_servo_converge:
 	  $(SIM_GATE_PHC_DEP) && \
 	  rm -rf cocotb/tidelink_ptp_servo/sim_build_closed && \
 	  $(MAKE) -C cocotb/tidelink_ptp_servo -f Makefile.closed MODULE=test_servo_converge)
+
+# APB REGISTER BLOCK UNIT SUITE (49 tests, 2026-09-23; closes the TL-026 gap).
+# TL-026 pipelined pair_credit_next and was recorded as "44 PASS / 5 FAIL,
+# pre-existing tb float-to-X". The 5 were EXACTLY the pair-counter tests
+# (test_r1_06..10), i.e. the path TL-026 changed was never checked: the tb left
+# hw_credit_consume_vld/val (plus credit_delta_captured, servo_reg_rdata)
+# unconnected. Tied off -> 49/49. Proven able to fail: a mutant that ignores
+# consumes fails test_r1_07 and test_r1_10.
+sim_gate_apb_regs_unit:
+	$(call sim_gate_run,apb_regs_unit,\
+	  rm -rf cocotb/tidelink_apb_regs/sim_build && \
+	  $(MAKE) -C cocotb/tidelink_apb_regs MODULE=test_tidelink_apb_regs)
 
 sim_gate_fifo_concurrent_race:
 	$(call sim_gate_run,fifo_concurrent_race,\
@@ -2052,7 +2065,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	tl044_hol_prefix_mustfail \
 	v2_auto_anchor \
 	fc_adapter_arbiter \
-	ptp_servo_converge ptp_servo_unit
+	ptp_servo_converge ptp_servo_unit \
+	apb_regs_unit
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -2199,6 +2213,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fc_adapter_arbiter
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_ptp_servo_converge
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_ptp_servo_unit
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_apb_regs_unit
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

@@ -44,11 +44,9 @@ from pathlib import Path
 # giving the Makefile line that explains why. Do not add to this list to
 # silence a failure — add the suite to SIM_GATE_ALL_SUITES instead.
 ALLOWED_INVOKED_UNSCORED = {
-    # Makefile ~:1553 "SUPERSEDED (2026-07-19) — DO NOT PROMOTE THIS TARGET."
-    # cocotb/fifo_rx_twin2 pins *.PATCHED.sv copies that are a FORK of the FIFO
-    # RTL and have drifted. sim_gate_fifo_twin2_tree (suite
-    # `fifo_rx_twin2_tree`) is the tree-truthful replacement and IS scored.
-    "fifo_rx_twin2",
+    # Empty since 2026-09-23. The one former entry, fifo_rx_twin2 (a stale
+    # *.PATCHED.sv fork of the FIFO, "DO NOT PROMOTE"), is no longer invoked by
+    # the aggregate, so invoked == scored with no exception.
 }
 
 

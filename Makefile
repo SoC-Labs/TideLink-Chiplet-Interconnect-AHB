@@ -2260,7 +2260,9 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo_twin2_tree
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo_randinit
-	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo_twin2
+	@# sim_gate_fifo_twin2 is NOT run here (2026-09-23): it gates a stale *.PATCHED.sv
+	@# fork ("DO NOT PROMOTE", see its target). fifo_rx_twin2_tree above is the scored,
+	@# shipping-RTL replacement. Running an unscored suite only printed an ignored PASS.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v1elab
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_apb_preempt
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fch_wdog

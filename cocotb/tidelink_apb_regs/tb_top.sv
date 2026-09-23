@@ -130,6 +130,17 @@ module tb_top #(
         .mbox_reg_addr       (mbox_reg_addr),
         .mbox_reg_wdata      (mbox_reg_wdata),
         // PTP register pass-through (tied off — no tidelink_ptp in this testbench)
+        // Hardware credit-consume sideband (tidelink_tx_gen in the real design).
+        // Was left unconnected: both inputs floated to X, the pair-credit
+        // update term went X, and test_r1_06..10 (the pair counter -- the
+        // exact path TL-026 pipelined) failed on every run. Idle here; the
+        // bench drives consumes through the APB PAIR_CREDIT_CONSUME register.
+        // Also unconnected until 2026-09-23: no returner or servo in this bench,
+        // so 'never captured' and a zero servo read-back are the idle values.
+        .credit_delta_captured (1'b0),
+        .servo_reg_rdata       ({SYS_DATA_W{1'b0}}),
+        .hw_credit_consume_vld (1'b0),
+        .hw_credit_consume_val ({SYS_DATA_W{1'b0}}),
         .ptp_reg_rdata       ({SYS_DATA_W{1'b0}})
     );
 

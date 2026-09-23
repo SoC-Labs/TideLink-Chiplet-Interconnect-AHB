@@ -1358,12 +1358,11 @@ bugs:
       not a bookkeeping detail. Its equivalence argument is strong (40k-cycle
       dual-instance harness, 0 mismatches, 12465-mismatch negative control) but that
       is an argument for ratifying, not a substitute for it.
-      STILL UNGATED: in_sim_gate is false and registry_coverage.py reports it as a
-      FIXED-but-ungated coverage gap. The dual-instance harness is not wired into any
-      sim_gate suite, so this fix can regress silently.
+      GATED 2026-09-23 as apb_regs_unit (see verification). The David sign-off gap
+      above still stands; gating makes a regression visible, it does not ratify.
     verification:
-      sim_test: "cocotb/tidelink_apb_regs (44 PASS/5 FAIL identical before+after — the 5 are a PRE-EXISTING tb float-to-X on hw_credit_consume, NOT a regression) + a dual-instance equivalence harness (40k cycles, 0 delayed-compare mismatches; negative control 12465 mismatches proves non-vacuous)"
-      in_sim_gate: false
+      sim_test: "apb_regs_unit (sim_gate suite label; cocotb/tidelink_apb_regs/test_tidelink_apb_regs.py, 49 tests). CORRECTION 2026-09-23: the 5 \"pre-existing\" failures recorded here were test_r1_06..10 -- the pair-counter tests, i.e. exactly the path this fix changed -- failing because tb_top left hw_credit_consume_vld/val (and credit_delta_captured, servo_reg_rdata) unconnected. Tied off: 49/49. Mutant that ignores consumes: test_r1_07 and test_r1_10 FAIL, so the suite can see a regression here. The dual-instance equivalence harness cited originally was never committed."
+      in_sim_gate: true
       hw_tested: false
     followups:
       - "tb deficiency: cocotb/tidelink_apb_regs/tb_top.sv leaves hw_credit_consume_vld/val unconnected (float to X) -> 5 pair-counter tests fail on BOTH baseline and this change. Tie them to 0 so the tests cover this datapath (separate change)."

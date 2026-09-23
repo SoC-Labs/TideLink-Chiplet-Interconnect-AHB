@@ -355,7 +355,8 @@ endef
 	sim_gate_v2_auto_anchor \
 	sim_gate_fc_adapter_arbiter \
 	sim_gate_ptp_servo_converge sim_gate_ptp_servo_unit \
-	sim_gate_apb_regs_unit
+	sim_gate_apb_regs_unit \
+	sim_gate_v2_ahb_compliant
 
 # WHAT THIS CHECKS, AND WHY IT IS NOT JUST TWO `command -v` LINES.
 # Until 2026-09-11 it was exactly the two tool checks below and nothing else. A
@@ -898,6 +899,21 @@ sim_gate_apb_regs_unit:
 	$(call sim_gate_run,apb_regs_unit,\
 	  rm -rf cocotb/tidelink_apb_regs/sim_build && \
 	  $(MAKE) -C cocotb/tidelink_apb_regs MODULE=test_tidelink_apb_regs)
+
+# AHB WRITES ON ahb_sub UNDER A PROTOCOL-CORRECT BUS (2026-09-23, TL-050 / R-03).
+# The master completes an address phase on the bus HREADY (the data-phase
+# slave's HREADYOUT, 1 when idle) and feeds the peer HREADY=1, as the ethernet
+# chiplet does. Isolated and back-to-back SINGLEs, INCR4 on the singles path,
+# a cacheable INCR4 WRITE (the TL-050 red/green arm: beat 0 replicated to all
+# four addresses pre-fix) and an INCR4 read control. The cacheable-READ case is
+# opt-in (R03_BURST_READ=1) so coverage_check's instrument test -- which needs
+# the XHB500 burst arm UNEXERCISED -- stays valid. Pre-fix 4/5, fixed 5/5.
+sim_gate_v2_ahb_compliant:
+	$(call sim_gate_run,v2_ahb_compliant,\
+	  rm -rf cocotb/tidelink_top_pair_v2/sim_build_compliant && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 SIM_BUILD=sim_build_compliant \
+	    COCOTB_RESULTS_FILE=sim_build_compliant/res_ahb_compliant.xml \
+	    MODULE=test_v2_ahb_compliant)
 
 sim_gate_fifo_concurrent_race:
 	$(call sim_gate_run,fifo_concurrent_race,\
@@ -2066,7 +2082,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	v2_auto_anchor \
 	fc_adapter_arbiter \
 	ptp_servo_converge ptp_servo_unit \
-	apb_regs_unit
+	apb_regs_unit \
+	v2_ahb_compliant
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -2214,6 +2231,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_ptp_servo_converge
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_ptp_servo_unit
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_apb_regs_unit
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_ahb_compliant
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

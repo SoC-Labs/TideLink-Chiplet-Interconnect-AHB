@@ -1525,6 +1525,20 @@ module tidelink_top #(
     // re-latch of a held NONSEQ, and the pipe clears exactly at the master's
     // address-phase completion edge (hreadyout==raw whenever pipe_valid_r).
     wire ext_addr_phase = ahb_sub_hsel & ahb_sub_htrans[1];
+    // ── XHB500 burst arm is WRITE-unsafe behind this front end (TL-050, 2026-09-23) ──
+    // XHB500 takes its multi-beat ("non-singles") arm only when HPROT[3]=1
+    // (vendor core_addr.sv:147, singles_burst <= ~hprot[3] || hexcl || INCR).
+    // Measured with a protocol-correct AHB master
+    // (cocotb/tidelink_top_pair_v2/test_v2_ahb_compliant.py): a cacheable INCR4
+    // WRITE on that arm emits one AW but eight W beats and lands beat 0's data at
+    // all four addresses; cacheable INCR4 READS on the same arm are correct (and
+    // ~3.7x faster than the singles path). Until the write front end handles
+    // real bursts, HPROT[3] is cleared toward the bridge for WRITES only, so every
+    // write takes the singles path the gate and silicon have always exercised.
+    // This is the protection the ethernet chiplet applies at its wrapper
+    // ({2'b00, hprot[1:0]} on the peer port) and the compute chiplet applies by
+    // rejecting bufferable/burst peer writes; here it holds for every integrator.
+    wire [3:0] sub_hprot_eff = ahb_sub_hwrite ? {1'b0, ahb_sub_hprot[2:0]} : ahb_sub_hprot;
     wire ext_is_nonseq  = ext_addr_phase & (ahb_sub_htrans == 2'b10);
 
     // XHB500 hreadyout / hresp (raw, before pipeline + timeout insertion)
@@ -1753,7 +1767,7 @@ module tidelink_top #(
                 pipe_hsize_r   <= ahb_sub_hsize;
                 pipe_hwrite_r  <= ahb_sub_hwrite;
                 pipe_hburst_r  <= ahb_sub_hburst;
-                pipe_hprot_r   <= ahb_sub_hprot;
+                pipe_hprot_r   <= sub_hprot_eff;
                 pipe_hsel_r    <= 1'b1;
                 pipe_valid_r   <= 1'b1;
             end else if (pipe_valid_r && xhb_sub_hreadyout_raw) begin
@@ -2230,7 +2244,7 @@ module tidelink_top #(
     wire              [2:0] xhb_sub_hsize  = pipe_valid_r ? pipe_hsize_r  : ahb_sub_hsize;
     wire                    xhb_sub_hwrite = pipe_valid_r ? pipe_hwrite_r : ahb_sub_hwrite;
     wire              [2:0] xhb_sub_hburst = pipe_valid_r ? pipe_hburst_r : ahb_sub_hburst;
-    wire              [3:0] xhb_sub_hprot  = pipe_valid_r ? pipe_hprot_r  : ahb_sub_hprot;
+    wire              [3:0] xhb_sub_hprot  = pipe_valid_r ? pipe_hprot_r  : sub_hprot_eff;
     wire                    xhb_sub_hsel   = pipe_valid_r ? pipe_hsel_r   : ahb_sub_hsel;
     // HREADY to XHB500: during pipeline fill cycle, hold low so XHB500 ignores
     // the stale address; once pipeline is valid, pass through XHB500's own hreadyout

@@ -2662,6 +2662,53 @@ bugs:
       approved: false
     related: [TL-042, TL-043, TL-044, TL-003]
 
+  - id: TL-051
+    title: "CDC: raw I2C pad inputs reached the autoneg next-state and the I2C cores unsynchronised (R1); SWI_TRAINING_MODE crossed into the RX-clock calibrator through one flop (R2)"
+    severity: medium
+    area: cdc
+    status: fix_built            # structural fix; simulation cannot prove a metastability fix, only non-regression
+    registered: 2026-09-23
+    opened: 2026-09-23           # first SpyGlass CDC run on the compute die, cdc_verify_struct, mission mode
+    summary: >
+      From the first CDC run to complete on a TideLink die (compute chiplet,
+      /home/dam1n19/SoCLabs/cdc-compute-20260923/RESULT.md, 2,341 crossings), three
+      root causes were classified real and triaged against the RTL:
+      (R1) i2c_scl_i / i2c_sda_i come off asynchronous pads. u_autoneg's START
+      detector (sda_start_detect = sda_prev_r && !i2c_sda_i && i2c_scl_i) fed them,
+      with no flop, into the next state of state_r, nego_role_r, nego_done_r,
+      nego_lost_r and (via nego_set_role_cfg) role_cfg_reg -- live only in
+      ST_NEGO_WAIT, i.e. when negotiation is armed. u_i2c_slave and u_i2c_master
+      take them through a 4-deep filter whose update compares the freshly captured
+      bit, effectively one flop. The I2C slave is a REGISTER-WRITE path from the
+      peer (I2C -> AXI-Lite -> APB -> ctrl_reg_write): it can write NEGO_CFG,
+      ROLE_CFG and SWI_TRAINING_MODE.
+      (R2) swi_training_hold_i (apb_clk; written by software, by the peer over I2C,
+      and by the autoneg strobes) was captured by ONE flop ("FIX E", added for
+      timing) in the RX-link-clock calibrator and fed the S_HOLD -> S_VALIDATE
+      next-state terms. The firmware recipe's SWI_TRAINING_MODE=0 lands on exactly
+      that transition on every bring-up.
+      (R3) swi_sync_lane_mask_r, 8 bits into the RX SYNC detector: NOT a defect on
+      the ASIC build. LANE_MASK_RESET is 8'hFF (8'hE4 only under the FPGA-only
+      TD_AUTO_LANE_MASK_E4), and the hardware one-shot rewrites 0xFF over 0xFF, so
+      no bit toggles in mission mode. Even on an E4 build the one-shot only clears
+      bits, so every torn intermediate mask requires a superset of the final lanes;
+      the tolerance written in the same cycle (0 -> 5) never passes through a more
+      permissive value. Operating rule: software writes the lane masks only while
+      the link carries no data.
+    fix:
+      approach: "R1: one 2-flop synchroniser on i2c_scl_i/i2c_sda_i at the controller input (apb_clk, reset to 1 on poresetn) feeding all three consumers. R2: second flop (swi_training_hold_s1) ahead of swi_training_mode_r in the calibrator. 10 flops per two-link die."
+      files: [src/rtl/local_overrides/axi_chiplet_controller.sv, src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv]
+      commit: null                       # rev-2: cherry-pick of compute-lineage 53dfd18
+      branch: rev2/cdc-sync-r1-r2
+      netlist_affecting: true
+      compute_lineage: "53dfd180 on origin/fix/kr260-compute-timing-selectors (pushed by David 2026-09-23 for the compute re-synthesis). The first full gate ever on that lineage: 58 suites, 55 PASS, 3 XFAIL, 0 FAIL (td-bisect/simgate-53dfd18-compute.REPORT.md)."
+    verification:
+      sim_test: "non-regression only (all PASS on 4df58bf, clean stamps; fc_adapter 34/34 + 7/7 too): calibrator_wrap, t30_autonomous_fc_handoff and t31_autonomous_training_exit (two dies, a real open-drain I2C bus, negotiation active), i1_selfarm_rolelock and i1_fixe_training_release (the R2 release event)"
+      in_sim_gate: true
+      hw_tested: false
+      cdc_rerun: "not yet -- rerun cdc_verify_struct on the new netlist and confirm R1/R2 classify as synchronised"
+    related: [TL-047]
+
   - id: TL-048
     title: "PTP servo could not converge from a start more than a second out, stepped back onto its own seconds, dropped the reverse-path carry (FALSE LOCK 0.5 s wrong), and ran 25% fast when ahead"
     severity: high

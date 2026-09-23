@@ -2937,6 +2937,14 @@ bugs:
         - "cocotb/tidelink_fc_adapter/test_fc_adapter_arbiter.py A/B across 3fb297f, de53b32 and the one-hot RTL (see red_green)"
         - "sim_gate_fc_adapter_arbiter run through the gate machinery on the branch; scripts/ci/tests/test_sim_gate_integrity.py 5/5 (invoked == scored)"
       approved: false
+    ported_2026_09_23: >
+      Compute-chiplet lineage: 9a59ecdb on origin/fix/kr260-compute-timing-selectors
+      (fast-forward of 4e8dc3c; de53b32+b5013c4 squashed, so no F3-only livelocking
+      SHA exists there). fc_adapter.sv and the three bench files are byte-identical
+      to b5013c4; test_fc_adapter_arbiter 7/7 and test_tidelink_fc_adapter 34/34
+      re-run independently on 9a59ecd. No full aggregate sim_gate was run on that
+      lineage (it predates sim_gate_integrity.py). Confirmed on the server by
+      git ls-remote.
     related: [TL-034, TL-046]
 
   - id: TL-046

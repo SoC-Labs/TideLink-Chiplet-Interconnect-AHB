@@ -3455,7 +3455,7 @@ module tidelink_top #(
     //       stale LL_TX FIFO needs a different mechanism (e.g. slot0=0x3→0x1).
     //
     // Gate predicate covers (a): apb_sel_wlink && apb_pwrite && paddr==0x208
-    // && pwdata[3]==1. (b) reuses the same address+direction predicate via
+    // (TL-052: no pwdata[3] term). (b) reuses the same address+direction predicate via
     // harden_swi_block_swreset (no pwdata[3] dependence — we mask whether the
     // bit is asserted or not, but the bit is W1C inside Wlink so a 0 write
     // is a no-op anyway). Address writes to other registers and reads are
@@ -3464,13 +3464,24 @@ module tidelink_top #(
     wire harden_swi_addr_match = apb_sel_wlink
                                & apb_pwrite
                                & (apb_paddr[12:0] == 13'h208);
+    // TL-052 (2026-09-23): (a) now applies to EVERY 0x208 write, as the text
+    // above always said. It used to carry `& apb_pwdata[3]`, i.e. the force ran
+    // only on the swreset write, so the LL bootstrap 0x27F08 -> 0x27F00 ->
+    // 0x27F07 became 0x27F01 -> 0x27F00 -> 0x27F07 and the MIDDLE write cleared
+    // swi_enable. That dip zeroes fe_tx/fe_rx_credit_max in the five AXI
+    // data-channel FCSMs (WlinkGenericFCSM{,_1.._4}; the July Bug-C fix covered
+    // FCSM_6 only). If it lands after CR/CRACK the peer never re-handshakes: the
+    // data channels die with FCSM_6 still at 4. Measured on KR260 (B19) and
+    // reproduced in cocotb/tidelink_top_pair_v2/test_v2_ll_bootstrap_late.py:
+    // w0-w7 get an OKAY fabricated by the 2^16 backstop with nothing landed,
+    // w8+ ERROR. A forced-late KR260 run without the 0x27F00 write was clean.
+    // Consequence: with HARDEN_SWI_ENABLE=1 software can no longer clear
+    // swi_enable through 0x208 at all.
     wire harden_swi_apply = HARDEN_SWI_ENABLE
-                          & harden_swi_addr_match
-                          & apb_pwdata[3];
+                          & harden_swi_addr_match;
     wire harden_swi_block_swreset = HARDEN_SWI_ENABLE
                                   & harden_swi_addr_match;
-    // (a) OR-force bit[0]=1 when swreset bit would otherwise be set
-    //     and (b) AND-mask bit[3]=0 on every write to 0x208
+    // (a) OR-force bit[0]=1 and (b) AND-mask bit[3]=0 on every write to 0x208
     wire [SYS_DATA_W-1:0] swi_enable_or_mask   = {{(SYS_DATA_W-1){1'b0}}, 1'b1};
     wire [SYS_DATA_W-1:0] swreset_clear_mask   = ~({{(SYS_DATA_W-4){1'b0}}, 1'b1, 3'b000});
     assign apb_pwdata_to_chip =

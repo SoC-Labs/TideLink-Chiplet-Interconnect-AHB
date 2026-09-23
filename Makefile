@@ -356,7 +356,8 @@ endef
 	sim_gate_fc_adapter_arbiter \
 	sim_gate_ptp_servo_converge sim_gate_ptp_servo_unit \
 	sim_gate_apb_regs_unit \
-	sim_gate_v2_ahb_compliant
+	sim_gate_v2_ahb_compliant \
+	sim_gate_v2_ll_bootstrap_late
 
 # WHAT THIS CHECKS, AND WHY IT IS NOT JUST TWO `command -v` LINES.
 # Until 2026-09-11 it was exactly the two tool checks below and nothing else. A
@@ -914,6 +915,19 @@ sim_gate_v2_ahb_compliant:
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 SIM_BUILD=sim_build_compliant \
 	    COCOTB_RESULTS_FILE=sim_build_compliant/res_ahb_compliant.xml \
 	    MODULE=test_v2_ahb_compliant)
+
+# TL-052 (B19): a late LL bootstrap (0x208 <- 0x27F08, 0x27F00, 0x27F07 after
+# CR/CRACK) must not zero the five AXI data-channel FCSM credit maxima. Lockstep
+# control, then the bootstrap repeated on the master die and on the slave die,
+# each followed by 16 spaced SINGLE writes that must land with a real B. Pre-fix
+# (HARDEN_SWI_ENABLE forced swi_enable only on the swreset write) 1/3: both late
+# cases read 0/0 on all five channels; fixed 3/3.
+sim_gate_v2_ll_bootstrap_late:
+	$(call sim_gate_run,v2_ll_bootstrap_late,\
+	  rm -rf cocotb/tidelink_top_pair_v2/sim_build_ll_bootstrap_late && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 SIM_BUILD=sim_build_ll_bootstrap_late \
+	    COCOTB_RESULTS_FILE=sim_build_ll_bootstrap_late/res_ll_bootstrap_late.xml \
+	    MODULE=test_v2_ll_bootstrap_late)
 
 sim_gate_fifo_concurrent_race:
 	$(call sim_gate_run,fifo_concurrent_race,\
@@ -2083,7 +2097,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	fc_adapter_arbiter \
 	ptp_servo_converge ptp_servo_unit \
 	apb_regs_unit \
-	v2_ahb_compliant
+	v2_ahb_compliant \
+	v2_ll_bootstrap_late
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -2232,6 +2247,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_ptp_servo_unit
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_apb_regs_unit
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_ahb_compliant
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_ll_bootstrap_late
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

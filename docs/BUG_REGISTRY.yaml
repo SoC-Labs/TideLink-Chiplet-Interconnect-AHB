@@ -2709,6 +2709,99 @@ bugs:
       cdc_rerun: "not yet -- rerun cdc_verify_struct on the new netlist and confirm R1/R2 classify as synchronised"
     related: [TL-047]
 
+  - id: TL-052
+    title: "HARDEN_SWI_ENABLE forced swi_enable only on the swreset write, so a late LL bootstrap (0x27F08, 0x27F00, 0x27F07 after CR/CRACK) zeroes the five AXI data-channel FCSM credits and kills the link one-sidedly (B19)"
+    severity: high
+    area: rtl/tidelink_top
+    status: sim_proven
+    registered: 2026-09-23
+    opened: 2026-09-23           # KR260 compute+eth chiplet pair, "B19" wedge handover from the compute session
+    summary: >
+      The tidelink_top shim on APB 0x208 (Wlink swi_enable[0], lltx_enable[2:1],
+      swreset[3]) OR-forced bit 0 only when bit 3 was set (`& apb_pwdata[3]`), although
+      its own comment said "any 0x208 write". Both chiplets use the default
+      HARDEN_SWI_ENABLE=1, so their LL bootstrap 0x27F08 -> 0x27F00 -> 0x27F07 reached
+      Wlink as 0x27F01 -> 0x27F00 -> 0x27F07: the MIDDLE write clears swi_enable.
+      en_ff2_rx_demet low zeroes fe_tx_credit_max / fe_rx_credit_max in
+      WlinkGenericFCSM{,_1,_2,_3,_4} (AW, W, B, AR, R). The July Bug-C fix kept them
+      only in FCSM_6 (sideband), and the deps copies used by the ASIC behave the same.
+      Before CR/CRACK this is harmless: the handshake re-loads the credits. After
+      CR/CRACK only the bootstrapping die is reset, the peer never re-handshakes, and
+      the data channels stay at zero credit while FCSM_6 still reads 4.
+      Symptom (KR260, compute bootstrapping late): w0-w7 return an OKAY fabricated by
+      the 2^16 wrapper backstop with nothing landed, w8 onwards ERROR, Region F
+      0xAD400401. Which die is late varies run to run, and so does the detail (one
+      morning run had w0 landing and the eth die's B TX stuck).
+    hw_observation: >
+      Compute session, 2026-09-23, forced compute-late order (compute bootstraps
+      after its own cal_done && FCSM==4): FULL triplet wedges exactly as above
+      (g16c/run_lateFULL.log); the same order WITHOUT the 0x27F00 write gives 32/32
+      stepped + 256 back-to-back words, 0 mismatches, Region F healthy on both dies
+      (g16c/run_lateNODIP.log). The dip alone is the trigger.
+    firmware_workaround: >
+      Order-independent, for images already built: drop the 0x27F00 write on both
+      dies (bootstrap = 0x27F08, 0x27F07). Never write 0x208 with bit 0 = 0 on a
+      live link.
+    root_cause: >
+      tidelink_top.sv harden_swi_apply = HARDEN_SWI_ENABLE & addr_match & pwdata[3]
+      (commit 1b628da, 2026-05-28; docs/R6_HARDEN_SWI_OPTIONS.md section 3 records the
+      narrow intent). Combined with FCSM 0-4 zeroing credit_max on an enable dip.
+    fix:
+      approach: "Drop the `& apb_pwdata[3]` term: with HARDEN_SWI_ENABLE=1 every 0x208 write keeps swi_enable high. The swreset block (b) is unchanged. Consequence, deliberate: on HARDEN_SWI_ENABLE=1 builds software can no longer take the link layer down through 0x208 at all (swreset was already blocked). The kr260-pair-* FPGA targets set HARDEN_SWI_ENABLE=0 (R6) and are not changed by this fix; there the firmware rule above still applies."
+      files: [src/rtl/tidelink_top.sv, cocotb/tidelink_top_pair_v2/test_v2_ll_bootstrap_late.py, Makefile]
+      commit: null
+      branch: rev2/fix-swi-harden     # local, from rev2/cdc-sync-r1-r2 ad48aaf
+      netlist_affecting: true
+    verification:
+      sim_test: "v2_ll_bootstrap_late (sim_gate suite label; cocotb/tidelink_top_pair_v2/test_v2_ll_bootstrap_late.py): lockstep control, then the triplet repeated on the master die and on the slave die after CR/CRACK; asserts the five data-channel credit maxima unchanged and 16 spaced SINGLE writes landing with a real B"
+      in_sim_gate: true
+      hw_tested: false
+      hw_validated: false
+      evidence: null
+      vehicle: null
+      red_green: >
+        Pre-fix ad48aaf: 1/3 (control PASS; late master and late slave read AW/W/B/AR/R
+        credit max 0/0, from 15/63). Fixed: 3/3, credit maxima unchanged, all 16
+        writes land in ~255 hclk. The bench's own bring-up is the same triplet, so
+        the fixed runs also show early bring-up does not need the dip. Unasserted
+        pre-fix behaviour (b19 bench): w0-w7 OKAY at 65539 hclk with nothing
+        landed, w8+ ERROR -- the KR260 signature.
+    open_risk: >
+      The fix also removes the dip from EARLY bring-up. swi_enable resets to 1
+      (Wlink.v swi_enable <= 1'h1 on apb_reset), so the FCSMs run from POR, and on
+      HARDEN_SWI_ENABLE=1 builds the bootstrap's 0x27F00 was the only host-reachable
+      FCSM reset (swreset is blocked). R6 (docs/R6_HARDEN_SWI_OPTIONS.md) records
+      FCSMs parking at fcsm=2 from training garbage on the kr260-pair targets. In
+      sim the early dip is not needed (this suite's bring-up IS the triplet, and
+      the fixed runs pass), but the bench may not put garbage in front of the FCSM.
+      Hardware check before landing: both dies bootstrap WITHOUT 0x27F00 in the
+      normal order from POR, n>=5, logging 0x2108[19:17] on both dies just before
+      the bootstrap. If any die reads fcsm=2 there, the early dip is load-bearing
+      and the shim should suppress it only once the local FCSM has left state 1:
+      the first CRACK is loaded on the state 1->2 edge (WlinkGenericFCSM_6.v
+      ~1450-1460, same in FCSM 0-4), so a dip at 0/1 cannot strand the peer. Caveats
+      for that variant: 0x2108[19:17] is FCSM_6 only (the five data FCSMs have no
+      state readout) and reaches apb_clk through a 2-flop sync.
+    follow_up: >
+      (1) Bug-C for FCSM 0-4: stop zeroing fe_tx/fe_rx_credit_max on an enable dip,
+      as FCSM_6 already does, so a dip that bypasses the shim (HARDEN_SWI_ENABLE=0
+      builds, the internal FCH sequencer) cannot strand the data channels either.
+      Generated Chisel in local_overrides AND the ASIC deps copies. (2) No APB
+      readout of the data-channel credit maxima exists: OBS_FC_CREDIT 0x219C is
+      FCSM_6 only (its [15:8] fe_rx_ptr is also reset by the dip, so it hints at a
+      dip, not at dead credit). A five-channel credit field would let firmware
+      detect this before traffic rather than after, through Region F.
+    signoff:
+      claude_verdict: >
+        Mechanism measured on KR260 by the compute session with a positive control,
+        reproduced in sim, fixed red/green. Netlist-affecting; David lands. Not on
+        hardware; the firmware workaround covers existing images.
+      evidence:
+        - "tl052/red.log and tl052/green.log, 2026-09-23 session scratchpad"
+        - "compute session g16c/run_lateFULL.log vs g16c/run_lateNODIP.log"
+      approved: false
+    related: [TL-045, TL-047]
+
   - id: TL-048
     title: "PTP servo could not converge from a start more than a second out, stepped back onto its own seconds, dropped the reverse-path carry (FALSE LOCK 0.5 s wrong), and ran 25% fast when ahead"
     severity: high

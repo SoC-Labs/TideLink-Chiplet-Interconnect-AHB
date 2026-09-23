@@ -32,9 +32,12 @@
 #
 # So a SoC-internal address A is reachable from the PS at WINDOW_BASE + A. The
 # TideLink APB lives at SoC 0x2E03_0000 (the chiplet-decode tlapb bridge), hence
-# the PS reaches it at 0x4_2E03_0000. This tool ONLY touches the TideLink CONFIG
-# APB (0x2E03_xxxx); it never touches the peer DATA aperture (0x2F..) — that is
-# the historically wedge-prone path (docs/D2D_HREADY_LOOP.md).
+# the PS reaches it at 0x4_2E03_0000. By default this tool ONLY touches the
+# TideLink CONFIG APB (0x2E03_xxxx); it never touches the peer DATA aperture
+# (0x2F..) — that is the historically wedge-prone path (docs/D2D_HREADY_LOOP.md).
+# The ONE exception is the opt-in --traffic-check, which does, deliberately, in a
+# forked child, and only once this die already reports the link up (see
+# traffic_check() below).
 #
 # WHY IN-WINDOW ACCESS IS SAFE (won't wedge like the bare-link canary did)
 # -----------------------------------------------------------------------
@@ -95,6 +98,13 @@ LL_SWRESET_OFF = 0x00027F00
 LL_ENABLE      = 0x00027F07
 
 FCSM_LINK_IDLE = 4                 # link-up criterion (bilateral)
+
+# FCSM states that can only be reached AFTER the CR/CRACK handshake completed:
+# 4 LINK_IDLE, 5 LINK_DATA, 6 SEND_ACK. A live link toggles 4->5/6->4 as it
+# exchanges ACKs (seen within ~40 us of link-up on the V2 pair sim), so a single
+# `== 4` read can land on 5 or 6 and misread a live link as down. 7 (SEND_NACK) is
+# deliberately NOT here: it is an error state, and the bootstrap is its recovery.
+FCSM_LIVE = (4, 5, 6)
 
 # --- TL-018: link-CRC checking on the five AXI data-plane FC nodes ------------
 # Each Wlink FC node has SM Control at base+0x14 with bit[16] = `disable_crc`,
@@ -260,7 +270,87 @@ def set_crc_check(bd, on):
     return ok
 
 
-def bringup(bd, role, cal_timeout, converge_timeout, crc_check="report"):
+def link_live(st):
+    """True when this die's link layer has completed its handshake."""
+    return bool(st["cal_done"]) and st["fcsm"] in FCSM_LIVE
+
+
+def wait_link_live(bd, settle_s, poll_s=0.01):
+    """Poll SWI_LANE_STATUS until the link is live or settle_s elapses.
+    Returns (live, status, seconds_waited)."""
+    t0 = time.time()
+    while True:
+        st = decode_status(bd.rd(REG_SWI_LANE_STATUS))
+        if link_live(st):
+            return True, st, time.time() - t0
+        if time.time() - t0 >= settle_s:
+            return False, st, time.time() - t0
+        time.sleep(poll_s)
+
+
+def traffic_check(window_base, timeout_s=10.0):
+    """Prove the DATA plane, which FCSM==4 && cal_done cannot: round-trip two
+    distinct words through the peer aperture, using the addresses and accessors
+    kr260_eth_xfer.py already uses for its `sender` + `readback` modes (CAM
+    0x2F->0x2D, PEER_ADDR 0x2F00_1000, which lands in the far die's shared SRAM
+    0x2D00_1000 — the same scratch word that tool writes; it IS overwritten).
+
+    Every leg crosses the link in THIS die's transmit direction (the write, and
+    the read request), so a dead eth TX cannot pass. Two different words defeat a
+    stale value left by an earlier run.
+
+    A peer access on a link that carries no data does not return data: tidelink's
+    ahb_sub stall backstop ends it after 2^16 hclk with an AHB ERROR
+    (tidelink_top.sv:1534-1566, :2089), which reaches the PS as a bus error. So the
+    accesses run in a forked child and this reports the child's fate instead of
+    dying with it. Returns (ok, message)."""
+    import signal
+    import kr260_eth_xfer as xfer
+    xfer.WINDOW_BASE = window_base
+    words = (0x7E5A11C3, 0x81A5EE3C)
+    sys.stdout.flush()                             # else the child re-emits our buffer
+    pid = os.fork()
+    if pid == 0:                                   # child: all peer accesses
+        rc = 0
+        try:
+            xfer.program_cam(enable=True)
+            for w in words:
+                xfer.wr(window_base + xfer.PEER_ADDR, w)
+                got = xfer.rd(window_base + xfer.PEER_ADDR)
+                print("   peer round-trip: wrote 0x%08X read back 0x%08X  [%s]"
+                      % (w, got, "OK" if got == w else "MISMATCH"))
+                sys.stdout.flush()
+                if got != w:
+                    rc = 1
+        except BaseException as e:                 # noqa: BLE001 — report, don't die
+            print("   peer access raised: %r" % (e,))
+            rc = 3
+        sys.stdout.flush()                         # os._exit() skips Python's flush
+        os._exit(rc)
+    deadline = time.time() + timeout_s
+    while True:
+        wpid, status = os.waitpid(pid, os.WNOHANG)
+        if wpid:
+            break
+        if time.time() > deadline:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            return False, "peer access HUNG for %.0f s (child killed)" % timeout_s
+        time.sleep(0.05)
+    if os.WIFSIGNALED(status):
+        return False, ("peer access killed by signal %d (bus error: the stall "
+                       "backstop terminated it — this die's link TX carries no data)"
+                       % os.WTERMSIG(status))
+    code = os.WEXITSTATUS(status)
+    if code == 0:
+        return True, "both words round-tripped through the peer aperture"
+    if code == 1:
+        return False, "read-back MISMATCH (a write was dropped or landed wrong)"
+    return False, "peer access raised an exception (exit %d)" % code
+
+
+def bringup(bd, role, cal_timeout, converge_timeout, crc_check="report",
+            ll_settle=2.0, traffic=False, window_base=WINDOW_BASE):
     cfg, want_eff, human = _ROLE_NAMES[role]
     print("=== eth-chiplet TideLink bring-up: %s (%s) ===" % (role, human))
     print("--- initial status ---")
@@ -319,12 +409,56 @@ def bringup(bd, role, cal_timeout, converge_timeout, crc_check="report"):
 
     # 3. FIX-E release: drop training -> S_HOLD->S_VALIDATE (hold_ctr expired) ->
     #    VAL_TIMEOUT_TO_DONE -> S_DONE -> cal_done. Then the 3-write LL bootstrap.
-    print("--- 3. to-data-mode: SWI_TRAINING_MODE<-0 (FIX-E release), then LL enable ---")
+    print("--- 3. to-data-mode: SWI_TRAINING_MODE<-0 (FIX-E release) ---")
     bd.wr(REG_SWI_TRAINING_MODE, 0)
     time.sleep(0.005)
-    for val in (LL_SWRESET_ON, LL_SWRESET_OFF, LL_ENABLE):
-        bd.wr(REG_WL_LINK_ENABLE_RESET, val)
-        time.sleep(0.005)
+
+    # 3a. LL-BOOTSTRAP GUARD. Never re-bootstrap a LIVE link.
+    #
+    #   On the V2 PHY (what the ASIC ships) both link layers are enabled from
+    #   reset (Wlink.v: swi_enable/lltx_enable reset to 1, swreset to 0), so the
+    #   moment the last die drops training the handshake completes BY ITSELF —
+    #   ~11 us after training<-0 in the V2 pair sim, with no LL write at all. The
+    #   unguarded script then slept 5 ms and swreset THIS die's link layer while
+    #   the peer sat at LINK_IDLE: FCSM re-converged to 4 on both dies (so step 4
+    #   still said LINK UP), but everything this die TRANSMITS was lost afterwards
+    #   (peer writes dropped; peer writes into this die never got their response;
+    #   each ended by the 2^16-cycle ahb_sub stall backstop). The same-sim control
+    #   without the three writes delivered both directions in ~5 us.
+    #
+    #   This is the compute chiplet's step-0 guard (the "0. GUARD" block of
+    #   tidelink_d2d_bringup() in its firmware/common/tidelink_bringup.h: "Re-running
+    #   the LL bootstrap on a LIVE link desyncs it and wedges the sender"), made
+    #   robust to two things a single read is not:
+    #     (1) a live link TOGGLES FCSM 4->5/6->4 as it exchanges ACKs, so "live"
+    #         is FCSM in (4,5,6), not FCSM == 4;
+    #     (2) the peer may still be holding training (two boards, two scripts,
+    #         seconds apart), so a not-yet-live read is followed by polling for up
+    #         to --ll-settle seconds rather than bootstrapping at once.
+    #   THE READ-TO-WRITE WINDOW. If the link is not live after the settle, the
+    #   bootstrap runs, and the status is re-read immediately before the first
+    #   write; a link that is live by then is still left alone. What remains is a
+    #   link that was dead for the whole settle and completes its handshake in the
+    #   microseconds between that last read and SWRESET_ON. It is not closed, only
+    #   made improbable. On V2 the branch is effectively dead code: the pair trains
+    #   ~5 orders of magnitude inside the settle (~11 us vs 2 s). It stays for a link that genuinely
+    #   did not come up by itself, where swreset is the recovery, not a hazard.
+    live, st, waited = wait_link_live(bd, ll_settle)
+    if live:
+        print("   link already LIVE (fcsm=%d, cal_done=1) %.0f ms after the training "
+              "release — LL bootstrap SKIPPED (re-bootstrapping a live link loses "
+              "this die's transmit data)." % (st["fcsm"], waited * 1e3))
+    else:
+        print("   link NOT live after %.0f ms (fcsm=%d, cal_done=%d) — running the "
+              "3-write LL bootstrap." % (waited * 1e3, st["fcsm"], st["cal_done"]))
+        st = decode_status(bd.rd(REG_SWI_LANE_STATUS))
+        if link_live(st):
+            print("   ...link went live at the last moment (fcsm=%d) — bootstrap "
+                  "SKIPPED after all." % st["fcsm"])
+        else:
+            for val in (LL_SWRESET_ON, LL_SWRESET_OFF, LL_ENABLE):
+                bd.wr(REG_WL_LINK_ENABLE_RESET, val)
+                time.sleep(0.005)
 
     # 4. converge -> FCSM==4 (LINK_IDLE).
     print("--- 4. poll FCSM==%d (LINK_IDLE) ---" % FCSM_LINK_IDLE)
@@ -384,10 +518,23 @@ def bringup(bd, role, cal_timeout, converge_timeout, crc_check="report"):
         if rea:
             print("RESULT: RE-ANCHORED — %s EPOCH_STATUS bit0=1 (deskew locked, no "
                   "manual pulse). M1 done once BOTH dies report this." % role)
-            return 0
-        print("RESULT: LINK UP but NOT RE-ANCHORED — %s EPOCH_STATUS bit0=0 after "
-              "12s. Marginal-eye lottery; RETRY the bring-up (both dies)." % role)
-        return 4
+            rc = 0
+        else:
+            print("RESULT: LINK UP but NOT RE-ANCHORED — %s EPOCH_STATUS bit0=0 "
+                  "after 12s. Marginal-eye lottery; RETRY the bring-up (both dies)."
+                  % role)
+            rc = 4
+        # 6. OPTIONAL DATA-PLANE PROOF. FCSM==4 && cal_done is a LINK-LAYER
+        #    verdict and cannot see a dead transmit direction (the failure the
+        #    3a guard prevents presented exactly as a clean LINK UP). Only traffic
+        #    can. Run it on ONE die of the pair, after both report LINK UP.
+        if traffic:
+            print("--- 6. traffic check (peer-aperture round trip) ---")
+            ok_t, msg = traffic_check(window_base)
+            print("RESULT: TRAFFIC %s — %s" % ("PASS" if ok_t else "FAIL", msg))
+            if not ok_t:
+                return 5
+        return rc
     print("RESULT: NOT converged — fcsm=%d (want %d), cal_done=%d. See status above."
           % (st["fcsm"], FCSM_LINK_IDLE, st["cal_done"]))
     return 3
@@ -413,7 +560,7 @@ def main():
     ap.add_argument("--cal-timeout", type=float, default=20.0,
                     help="seconds to wait for calibration_done (default 20).")
     ap.add_argument("--converge-timeout", type=float, default=10.0,
-                    help="seconds to wait for FCSM=4 after LL enable (default 10).")
+                    help="seconds to wait for FCSM=4 after step 3 (default 10).")
     ap.add_argument("--crc-check", choices=("report", "on", "off"), default="report",
                     help="TL-018: link-CRC checking on the five AXI data-plane FC "
                          "nodes. 'report' (default) only READS SM_CONTROL[16] and "
@@ -423,6 +570,18 @@ def main():
                          "five (detect + NACK + replay; sim-proven byte-exact, "
                          "NOT yet ratified on hardware). 'off' restores the "
                          "shipping default.")
+    ap.add_argument("--ll-settle", type=float, default=2.0,
+                    help="after the training release, seconds to wait for the link "
+                         "to come up BY ITSELF before running the 3-write LL "
+                         "bootstrap (default 2.0). A live link is never "
+                         "re-bootstrapped — see step 3a.")
+    ap.add_argument("--traffic-check", action="store_true",
+                    help="after LINK UP, prove the DATA plane: round-trip two words "
+                         "through the peer aperture 0x2F00_1000 (CAM 0x2F->0x2D, as "
+                         "kr260_eth_xfer.py). Overwrites the far die's shared SRAM "
+                         "word 0x2D00_1000 and leaves the CAM rule armed. Touches "
+                         "the wedge-prone aperture, so it runs in a forked child. "
+                         "Run on ONE die of the pair. Exit code 5 on failure.")
     args = ap.parse_args()
 
     if os.geteuid() != 0:
@@ -448,7 +607,8 @@ def main():
             print("ERROR: --bringup requires --role die_a|die_b.", file=sys.stderr)
             return 4
         return bringup(bd, args.role, args.cal_timeout, args.converge_timeout,
-                       args.crc_check)
+                       args.crc_check, ll_settle=args.ll_settle,
+                       traffic=args.traffic_check, window_base=wb)
     finally:
         bd.close()
 

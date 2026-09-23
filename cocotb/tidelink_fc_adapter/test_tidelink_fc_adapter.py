@@ -352,6 +352,9 @@ async def do_reset(dut):
     dut.fc_rx_cfg_pready.value  = 1
     dut.fc_rx_cfg_prdata.value  = 0
 
+    # PTP servo sideband source — idle
+    dut.servo_fc_valid.value = 0
+    dut.servo_fc_data.value  = 0
     # TideChart AXI-Stream TX — idle
     dut.tc_axis_tx_tvalid.value = 0
     dut.tc_axis_tx_tdata.value  = 0

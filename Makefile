@@ -295,7 +295,8 @@ endef
 	sim_gate_v2_mbox_writeprotect \
 	sim_gate_calibrator_wrap \
 	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5 \
-	sim_gate_v2_auto_anchor
+	sim_gate_v2_auto_anchor \
+	sim_gate_fc_adapter_arbiter
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -609,6 +610,19 @@ sim_gate_fc_adapter_rx_saturation:
 	$(call sim_gate_run,fc_adapter_rx_saturation,\
 	  rm -rf cocotb/tidelink_fc_adapter/sim_build* && \
 	  $(MAKE) -C cocotb/tidelink_fc_adapter MODULE=test_rx_saturation_throughput)
+
+# FC_ADAPTER TX ARBITER (TL-047, rev-2 review F3/F4/F5). Ported from b5013c4.
+# Every per-source ready is derived from a one-hot selection, so a source
+# retires ONLY in the cycle the skid loads ITS word. Before: TideChart tready
+# ignored the arbiter (election claim ACKed and dropped); the servo word was
+# loaded but not retired when a TideChart word was also valid (duplicate
+# servo packet); the returner lost credit/doorbell words under
+# sideband_starving. 2 controls + 5 defect arms. On this lineage (3ba1337
+# RTL): pre-fix 2/7, one-hot 7/7; existing test_tidelink_fc_adapter 34/34.
+sim_gate_fc_adapter_arbiter:
+	$(call sim_gate_run,fc_adapter_arbiter,\
+	  rm -rf cocotb/tidelink_fc_adapter/sim_build* && \
+	  $(MAKE) -C cocotb/tidelink_fc_adapter MODULE=test_fc_adapter_arbiter)
 
 sim_gate_fifo_concurrent_race:
 	$(call sim_gate_run,fifo_concurrent_race,\
@@ -1479,7 +1493,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
 	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \
-	v2_auto_anchor
+	v2_auto_anchor \
+	fc_adapter_arbiter
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -1551,6 +1566,8 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_xhb_lostresp_pipe
 	@# HAZARD-3 / N2 fix: AUTO_ANCHOR beacon force must respect io_link_tx_tx_idle.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_auto_anchor
+	@# TL-047: fc_adapter one-hot TX arbiter (F3 claim drop, F4 dup servo, F5 credit loss).
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fc_adapter_arbiter
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

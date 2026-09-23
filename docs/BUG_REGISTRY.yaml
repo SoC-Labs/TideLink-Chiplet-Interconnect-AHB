@@ -2663,6 +2663,79 @@ bugs:
       approved: false
     related: [TL-042, TL-043, TL-044, TL-003]
 
+  - id: TL-050
+    title: "XHB500 burst arm (HPROT[3]=1) corrupts WRITES behind tidelink's ahb_sub front end: one AW, eight W beats, beat 0's data at every address"
+    severity: high
+    area: xhb500-integration
+    status: sim_proven
+    registered: 2026-09-23
+    opened: 2026-09-09            # rev-2 review R-03 / V6 / T4 ("non-singles arm never executed; when driven, two AXI bursts, the first all-zero")
+    summary: >
+      XHB500 takes its multi-beat arm only when HPROT[3]=1 (vendor core_addr.sv:147,
+      singles_burst <= ~hprot[3] || hexcl || hburst == BUR_INCR). No gated test had
+      ever driven it. Measured on ad09040 with a PROTOCOL-CORRECT AHB master
+      (cocotb/tidelink_top_pair_v2/test_v2_ahb_compliant.py: address phases complete
+      on the bus HREADY, peer HREADY=1 as the ethernet chiplet wires it):
+      a cacheable INCR4 WRITE emits one AW (awlen=3) but EIGHT W beats and lands
+      beat 0's data at all four addresses -- final memory wrong. Cacheable INCR4
+      READS on the same arm are correct, and ~3.7x faster than the singles path
+      (268 vs 991 hclk for four words). The shipping singles path (HPROT[3]=0) is
+      clean: isolated SINGLE = 1 AXI write, four back-to-back SINGLEs = 4 with no
+      intermediate wrong value, INCR4 = 4.
+    correction_to_review: >
+      The review's "two AXI bursts, the first all-zero" and the doubled writes on
+      EVERY transfer (xhb NONSEQ=2 for one port NONSEQ) in
+      test_v2_burst_encodings.py come from that bench's master, which reads
+      tidelink's own ahb_sub_hreadyout as the bus ready during the ADDRESS phase
+      and so holds NONSEQ through tidelink's deliberate address-phase wait state.
+      A real bus takes HREADY from the data-phase slave. With a compliant master
+      the doubling disappears; the real defect is the one above.
+    silicon_exposure: >
+      None known today. The ethernet chiplet forces {2'b00, hprot[1:0]} on the peer
+      port (nanosoc_eth_chiplet.sv:995), so the arm is unreachable there. The
+      compute chiplet passes HPROT through but rejects bufferable/burst peer WRITES
+      with HRESP=ERROR (UNSAFE_PEER_WRITE_GUARD); reads reach the arm, and reads
+      are correct. Any future integrator without such a guard was exposed.
+    root_cause: >
+      tidelink's ahb_sub front end registers the NONSEQ address (pipe_*_r) and
+      forwards SEQ beats live, with XHB500's HREADY input different from the port
+      HREADYOUT the master sees; on the burst arm XHB500 therefore counts held SEQ
+      beats more than once (xhb SEQ=6 for port SEQ=3) and samples HWDATA live.
+      Not root-caused to the line: the fix below removes the exposure without it.
+    fix:
+      approach: "Clear HPROT[3] toward XHB500 for WRITES only (sub_hprot_eff = hwrite ? {1'b0, hprot[2:0]} : hprot), feeding both the live path and pipe_hprot_r. Every write takes the singles path gate and silicon have always used; reads keep the faster burst arm. Zero area. Full burst-write support in the front end is a separate throughput item (Wave F)."
+      files: [src/rtl/tidelink_top.sv, cocotb/tidelink_top_pair_v2/test_v2_ahb_compliant.py, Makefile]
+      commit: null
+      branch: rev2/r03-compliant-bus     # local, from origin/rev2/integration ad09040
+      netlist_affecting: true
+    verification:
+      sim_test: "v2_ahb_compliant (sim_gate suite label; cocotb/tidelink_top_pair_v2/test_v2_ahb_compliant.py; cacheable-READ arm opt-in via R03_BURST_READ=1)"
+      in_sim_gate: true
+      hw_tested: false
+      hw_validated: false
+      evidence: null
+      vehicle: null
+      red_green: >
+        Pre-fix ad09040: 4/5 (incr4_hprot8 FAIL: final [d0,d0,d0,d0]). Fixed: 5/5
+        (cacheable write = 4 x awlen=0, data correct, no intermediate value outside
+        {seed,data}). Opt-in cacheable read: correct on both. The older
+        test_v2_burst_encodings.py: 11/11 on both; on the fix its transient
+        all-zero peer-memory state is gone.
+    residual: >
+      coverage_check's instrument test requires the XHB500 burst arm to be
+      unexercised, which is why the cacheable-read case is opt-in. Give that check
+      a different known-unexercised marker, then gate the read case.
+    signoff:
+      claude_verdict: >
+        Defect and fix measured red/green with a protocol-correct master; the
+        review's description corrected. Netlist-affecting; David lands. Not on
+        hardware; both chiplets are already protected by their own wrappers.
+      evidence:
+        - "logs compliant1 / compliant_rd / r03_prefix / r03_fixed / burst_fixed, 2026-09-23 session scratchpad"
+        - "nanosoc_eth_chiplet.sv:995 (HPROT tie-down); nanosoc_compute_chiplet.sv:413,579 (UNSAFE_PEER_WRITE_GUARD)"
+      approved: false
+    related: [TL-045, TL-047]
+
   - id: TL-047
     title: "tidelink_fc_adapter TX arbiter: per-source ready did not follow the grant -- TideChart beat ACKed-and-dropped (F3), servo word duplicated (F4), returner credit word dropped under sideband_starving (F5), burst counter counted wants as grants"
     severity: high

@@ -860,12 +860,29 @@ module tidelink_phy_align_calibrator #(
                        | (swreset_fall_eff  & role_locked_sync)
                        | (force_recal_rise  & role_locked_sync);
 
-    // FIX E: single-cycle register for the slow APB swi_training_hold_i input.
-    // Breaks any long combinatorial fan-out path from the CTRL register.
+    // FIX E: register the slow APB swi_training_hold_i input. Breaks any long
+    // combinatorial fan-out path from the CTRL register.
+    //
+    // CDC R2 (2026-09-23, compute-die SpyGlass run): this was ONE flop. The input
+    // is written in the apb_clk domain -- by software (SWI_TRAINING_MODE, also
+    // reachable from the peer over the I2C slave) and by the autoneg ENTER/EXIT
+    // strobes -- and this calibrator runs on the RX link clock. The firmware
+    // recipe's SWI_TRAINING_MODE=0 arrives while the FSM sits in S_HOLD waiting for
+    // exactly that edge, and the captured value feeds the S_HOLD -> S_VALIDATE
+    // next-state terms directly, so a capture still metastable at the next edge
+    // could be seen differently by different state bits. Two flops, same naming
+    // as the role_locked/force_recal synchronisers above. Cost: one flop; the hold
+    // exit lands one RX cycle later on a software-paced event.
+    logic swi_training_hold_s1;
     logic swi_training_mode_r;
     always_ff @(posedge clk or posedge rst)
-        if (rst) swi_training_mode_r <= 1'b0;
-        else     swi_training_mode_r <= swi_training_hold_i;
+        if (rst) begin
+            swi_training_hold_s1 <= 1'b0;
+            swi_training_mode_r  <= 1'b0;
+        end else begin
+            swi_training_hold_s1 <= swi_training_hold_i;
+            swi_training_mode_r  <= swi_training_hold_s1;
+        end
 
     // -------------------------------------------------------------------------
     // §9.9 runtime EARLY_EXIT override hook (cocotb/UVM compat).

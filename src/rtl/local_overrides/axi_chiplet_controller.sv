@@ -3176,6 +3176,35 @@ module axi_chiplet_controller #(
     assign peer_rx_lane_mask_w = autoneg_peer_rx_lane_mask;
 
     // =====================================================================
+    // I2C pad inputs — 2-flop synchroniser (CDC R1, 2026-09-23)
+    // =====================================================================
+    // i2c_scl_i / i2c_sda_i come straight off asynchronous bidirectional pads.
+    // Before this they reached u_autoneg's START detector (sda_start_detect =
+    // sda_prev_r && !i2c_sda_i && i2c_scl_i: raw pins, no flop, into the
+    // next-state of state_r / nego_role_r / nego_done_r / nego_lost_r and, through
+    // nego_set_role_cfg, role_cfg_reg), and the input filters of u_i2c_slave and
+    // u_i2c_master, whose first stage is compared directly (effectively one
+    // flop). One synchroniser here feeds all three, so every consumer sees the
+    // same, resolved value. apb_clk is the clock of all three. Reset value 1 is
+    // the I2C idle level, so reset release cannot fabricate a START. poresetn is
+    // the widest reset among the consumers (u_autoneg runs on it; the I2C cores
+    // are held by hresetn-derived resets). Cost: 4 flops; the consumers see the
+    // bus two apb_clk cycles later, against microsecond I2C phases.
+    reg i2c_scl_s1, i2c_scl_s2;
+    reg i2c_sda_s1, i2c_sda_s2;
+    always @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            i2c_scl_s1 <= 1'b1; i2c_scl_s2 <= 1'b1;
+            i2c_sda_s1 <= 1'b1; i2c_sda_s2 <= 1'b1;
+        end else begin
+            i2c_scl_s1 <= i2c_scl_i; i2c_scl_s2 <= i2c_scl_s1;
+            i2c_sda_s1 <= i2c_sda_i; i2c_sda_s2 <= i2c_sda_s1;
+        end
+    end
+    wire i2c_scl_i_sync = i2c_scl_s2;
+    wire i2c_sda_i_sync = i2c_sda_s2;
+
+    // =====================================================================
     // I2C Core Resets — inactive core held in reset
     // =====================================================================
     wire i2c_mst_reset = ~hresetn | (~role_is_master & ~nego_driving);
@@ -3399,10 +3428,10 @@ module axi_chiplet_controller #(
         .s_axil_rready      (mst_axil_rready),
         .nBSY_IRQ           (i2c_nbsy_irq),
         .nRD_EMPTY_IRQ      (i2c_nrd_empty_irq),
-        .i2c_scl_i          (i2c_scl_i),
+        .i2c_scl_i          (i2c_scl_i_sync),
         .i2c_scl_o          (mst_scl_o),
         .i2c_scl_t          (mst_scl_t),
-        .i2c_sda_i          (i2c_sda_i),
+        .i2c_sda_i          (i2c_sda_i_sync),
         .i2c_sda_o          (mst_sda_o),
         .i2c_sda_t          (mst_sda_t),
         // Bug N7/N8 silicon observability — Region C i2c_master STATUS probe
@@ -3443,10 +3472,10 @@ module axi_chiplet_controller #(
         .clk                (apb_clk),
         .rst                (i2c_slv_reset),
 
-        .i2c_scl_i          (i2c_scl_i),
+        .i2c_scl_i          (i2c_scl_i_sync),
         .i2c_scl_o          (slv_scl_o),
         .i2c_scl_t          (slv_scl_t),
-        .i2c_sda_i          (i2c_sda_i),
+        .i2c_sda_i          (i2c_sda_i_sync),
         .i2c_sda_o          (slv_sda_o),
         .i2c_sda_t          (slv_sda_t),
 
@@ -3584,8 +3613,8 @@ module axi_chiplet_controller #(
         .puf_seed           (puf_seed),
         .puf_ready          (puf_ready),
         .nego_timeout_reg   (nego_timeout_reg),
-        .i2c_sda_i          (i2c_sda_i),
-        .i2c_scl_i          (i2c_scl_i),
+        .i2c_sda_i          (i2c_sda_i_sync),
+        .i2c_scl_i          (i2c_scl_i_sync),
         .i2c_prescale_reg   (i2c_prescale_reg),
         .m_axil_awaddr      (fsm_axil_awaddr),
         .m_axil_awvalid     (fsm_axil_awvalid),

@@ -2101,8 +2101,8 @@ bugs:
       branch: integ/tidelink-consolidated-2026-08-07
       netlist_affecting: true
     verification:
-      sim_test: "cocotb/tidelink_ptp_servo/test_tidelink_ptp_servo.py SRV-016..018 (added SEPARATELY in 9622c3d)"
-      in_sim_gate: false   # VERIFIED 2026-08-13: grep -c ptp_servo Makefile = 0 -> CI sweep only, NOT gated
+      sim_test: "ptp_servo_unit (sim_gate suite label; cocotb/tidelink_ptp_servo/test_tidelink_ptp_servo.py, incl. SRV-016..018 added SEPARATELY in 9622c3d)"
+      in_sim_gate: true    # 2026-09-23: gated as ptp_servo_unit (was 0 references on 2026-08-13). NOTE: this suite passed 18/18 on the pre-TL-048 servo too -- it never closes the loop; ptp_servo_converge is the one that can fail on the convergence defects.
       hw_tested: false
     action_items:
       - "David sign-off required: this is a FUNCTIONAL change to tapeout RTL, not a lint change. Do not let the commit header stand as the record."
@@ -2662,6 +2662,121 @@ bugs:
         - "REUSED, NOT INDEPENDENTLY VERIFIED: the post-fix and red-proof numbers, from commit 35c75ae0 on the off-repo clone branch rev2/fix-exclusives"
       approved: false
     related: [TL-042, TL-043, TL-044, TL-003]
+
+  - id: TL-048
+    title: "PTP servo could not converge from a start more than a second out, stepped back onto its own seconds, dropped the reverse-path carry (FALSE LOCK 0.5 s wrong), and ran 25% fast when ahead"
+    severity: high
+    area: ptp
+    status: sim_proven
+    registered: 2026-09-23
+    opened: 2026-09-09            # rev-2 review LP-13 ("servo cannot converge from an initial offset > 1 s"); re-derived in closed loop 2026-09-22, broadened 2026-09-23
+    summary: >
+      Closed-loop measurement (servo driving a real phc_clock_core, ideal Python
+      grandmaster) on the servo as shipped at ad09040 and the v0.90 freeze
+      (tidelink_ptp_servo.sv is identical in both). Five defects, four of them
+      beyond the review's LP-13:
+      (1) needs_phase_step_r was only ever SET and cleared by reset: after one
+      exchange with |dsec| > 1 (a start > 1 s out, or a software coarse set) every
+      later exchange took the step branch, the servo never frequency-steered and
+      servo_locked could never set.
+      (2) The step wrote sub_t2_sec -- the slave's OWN seconds -- and
+      sub_t2_ns - offset_r[29:0] (30-bit truncation, no borrow): a +/-5 s start
+      stepped ten times and ended exactly +/-5.000000 s out.
+      (3) SUB_COMPUTE_3 adjusted d_rev_r for its seconds carry and computed
+      raw_offset/raw_delay from d_rev_r in the SAME state; non-blocking, so the
+      reverse carry was dropped. At +/-0.5 s with the two paths straddling a
+      second boundary in opposite directions the computed offset was ~0 and the
+      servo asserted servo_locked=1 while 0.5 s wrong -- a FALSE LOCK.
+      (4) d_fwd_r/d_rev_r were 31-bit signed; after a +/-1 s carry a difference
+      reaches +/-1.999999999 s and overflowed above 1.07 s: a +1.5 s start
+      stepped once and ended 1.57 s out.
+      (5) The PI output current_frac_r - (P+I) wrapped when negative; the PHC
+      reads it as an UNSIGNED fraction added to the integer increment, so a slave
+      that was AHEAD and needed to slow ran ~+1 ns/tick (25% fast at 250 MHz):
+      +42 ns grew to +2.7 us in ten exchanges.
+    root_cause: >
+      A pipelined offset computation written with non-blocking assignments read
+      a register in the cycle it was being corrected; sticky state with no clear;
+      a step target built from the slave's own clock; widths sized for the
+      same-second case only; and an unsigned PHC contract driven with a signed
+      result. The 18-test unit bench (cocotb/tidelink_ptp_servo) passed 18/18 on
+      the defective servo: it never closed the loop.
+    fix:
+      approach: "needs_phase_step_r re-derived per exchange (cleared in COMPUTE_1 and on the step); raw_offset/raw_delay use a combinational carry-adjusted d_rev (d_rev_adj); d_fwd/d_rev 32-bit, raw_* 33-bit; step target = master time at t2 = t1 + one-way delay with seconds carry (delay trusted only when both |dsec| <= 1 and 0 <= delay < 1 s, else 0); frequency word saturates to [0, 2^32-1] instead of wrapping."
+      files: [src/rtl/tidelink_ptp_servo.sv, cocotb/tidelink_ptp_servo/test_servo_converge.py, cocotb/tidelink_ptp_servo/test_closed_loop.py, cocotb/tidelink_ptp_servo/tb_closed_loop.sv, cocotb/tidelink_ptp_servo/Makefile.closed, Makefile, site.env.example, scripts/ci/sim_gate_env_check.py]
+      commit: null                       # filled at land
+      branch: rev2/fix-ptp-servo         # local, from origin/rev2/integration ad09040
+      netlist_affecting: true
+    verification:
+      sim_test: "ptp_servo_converge (sim_gate suite label; cocotb/tidelink_ptp_servo/test_servo_converge.py, 12 tests, needs the ptp-hardware-clock-ahb sibling via PHC_HOME)"
+      in_sim_gate: true
+      hw_tested: false
+      hw_validated: false
+      evidence: null
+      vehicle: null
+      red_green: >
+        Pre-fix servo (ad09040): 2/12 -- the two passes are the starts where
+        neither path crosses a second, which the old servo already handled.
+        Fixed: 12/12 (every start one step, then PI within 1 us; no lock outside
+        the lock window; +50 ns control holds at +42 ns). The reproduce-first
+        bench test_closed_loop.py (written by the 2026-09-22 review re-derivation
+        agent, kept as evidence, not gated) passes 12/12 on the pre-fix servo and
+        has its +/-5 s and sticky-flag FINDING arms refuted by the fix. Unit bench
+        18/18 on both. Missing PHC sibling -> suite FAILs in 0 s with a named
+        MISSING DEPENDENCY (checked).
+    residual: >
+      TL-049 (frequency loop) is NOT fixed here: after the step a few hundred ns
+      remain and the PI loop does not remove them. Saturation stops the runaway;
+      it does not let the servo slow the clock.
+    signoff:
+      claude_verdict: >
+        All five mechanisms read at the RTL and reproduced in closed loop; fix
+        verified red/green on the same bench. Netlist-affecting; David lands.
+        Not on hardware.
+      evidence:
+        - "src/rtl/tidelink_ptp_servo.sv pre-fix: COMPUTE_3 carry hazard, SUB_ADJUST step to sub_t2_sec, needs_phase_step_r set-only, 31-bit d_fwd/d_rev, PI_MUL_I unsigned wrap -- read at the file"
+        - "closed-loop logs 2026-09-23: lp13_prefix / lp13_fix2 / conv_prefix / conv_fixed (session scratchpad)"
+      approved: false
+    related: [TL-010, TL-041, TL-049]
+
+  - id: TL-049
+    title: "PTP servo frequency loop cannot slow the clock and barely steers: the PHC takes an unsigned fraction over a software integer increment, and default gains round the correction to ~0 for sub-ms offsets"
+    severity: high
+    area: ptp
+    status: root_caused
+    registered: 2026-09-23
+    opened: 2026-09-22            # noted as an "additional finding" by the review re-derivation agent's closed-loop bench
+    summary: >
+      Two properties of the servo's frequency path, measured in the same closed
+      loop as TL-048 (the bench PHC runs at exactly the master rate, so any
+      residual phase error has to be removed by the loop):
+      (a) DIRECTION. phc_clock_core adds hw_adj_ns_incr_frac (unsigned, 2^-32 ns
+      units) to a software-set 8-bit integer increment (4 at 250 MHz). The servo
+      can therefore only ever make the clock FASTER than the integer rate. A slave
+      that is ahead cannot be slowed by frequency steering at all. Before TL-048
+      the negative word wrapped (runaway); after TL-048 it saturates at 0.
+      (b) MAGNITUDE. P = offset x kp >> 32 with DEFAULT_KP = 0xB333 (~0.7 x 2^16):
+      for a 292 ns residual the correction is ~-0.003 units of 2^-32 ns/tick,
+      i.e. zero. Measured: -292 ns and -92 ns residuals unchanged over nine PI
+      exchanges. A real oscillator's ppm-scale drift is ~10^4 units; the loop as
+      tuned cannot track it, so on silicon the servo would step every time the
+      error crossed the 1 us default threshold and servo_locked would rarely hold.
+    root_cause: >
+      A contract gap between tidelink_ptp_servo and phc_clock_core (sibling repo
+      ptp-hardware-clock-ahb): no representation for "slower than the integer
+      increment", and gain scaling that assumes kp/ki in a Q-format the >>32
+      does not match.
+    fix:
+      approach: "DESIGN DECISION, not taken. Options: (1) run the PHC one integer ns low (ns_incr = 3 at 250 MHz) with the servo seeded at a bias fraction near 1.0, so both directions are representable -- tidelink-side, needs a nominal-fraction register and software to set ns_incr; (2) a signed hw adjust in phc_clock_core -- sibling-repo change; (3) re-scale P/I (>>16, or larger default gains) once (1) or (2) exists. Needs a drift-injection arm in the closed-loop bench first (PHC at master rate + N ppm) so convergence can fail."
+      files: [src/rtl/tidelink_ptp_servo.sv]
+      commit: null
+      branch: null
+      netlist_affecting: true
+    verification:
+      sim_test: null
+      in_sim_gate: false
+      hw_tested: false
+    related: [TL-010, TL-048]
 
   - id: TL-047
     title: "tidelink_fc_adapter TX arbiter: per-source ready did not follow the grant -- TideChart beat ACKed-and-dropped (F3), servo word duplicated (F4), returner credit word dropped under sideband_starving (F5), burst counter counted wants as grants"

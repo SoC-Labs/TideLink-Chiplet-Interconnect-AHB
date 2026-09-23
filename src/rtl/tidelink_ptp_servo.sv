@@ -107,7 +107,7 @@ module tidelink_ptp_servo #(
     // (NS_PER_SECOND was declared here and never referenced; ONE_SEC_NS below
     // is the constant this block actually uses. Removed rather than waived.)
     // One second in nanoseconds
-    localparam signed [30:0] ONE_SEC_NS = 31'sd1_000_000_000;
+    localparam signed [31:0] ONE_SEC_NS = 32'sd1_000_000_000;
 
     // Saturated seconds-difference encodings, shared by the assignment sites
     // and the case tags below. Named because `-2'sd1` is a unary-minus
@@ -368,10 +368,13 @@ module tidelink_ptp_servo #(
     // All arithmetic uses 30-bit nanosecond values (sub-ns dropped).
     // Seconds differences checked separately for phase step decisions.
 
-    logic signed [30:0] d_fwd_r;      // t2 - t1 (forward path, ns)
-    logic signed [30:0] d_rev_r;      // t4 - t3 (reverse path, ns)
-    logic signed [31:0] raw_offset_r;
-    logic signed [31:0] raw_delay_r;
+    // 32 bits: after a +/-1 s carry a path difference reaches +/-1.999999999 s,
+    // which overflowed the old 31-bit form above 1.07 s (rev-2 LP-13, measured
+    // 2026-09-23: a +1.5 s start stepped once and ended 1.57 s off).
+    logic signed [31:0] d_fwd_r;      // t2 - t1 (forward path, ns)
+    logic signed [31:0] d_rev_r;      // t4 - t3 (reverse path, ns)
+    logic signed [32:0] raw_offset_r; // d_fwd - d_rev spans +/-4 s
+    logic signed [32:0] raw_delay_r;
     logic signed [31:0] offset_r;     // raw_offset >>> 1
     logic signed [31:0] delay_r;      // raw_delay >>> 1
 
@@ -427,13 +430,60 @@ module tidelink_ptp_servo #(
     // Subordinate FSM Logic
     // =========================================================================
 
+    // ── Carry-adjusted reverse path, used by SUB_COMPUTE_3 in the same cycle ──
+    logic signed [31:0] d_rev_adj;
+    always_comb begin
+        case (sec_diff_rev_r)
+            SEC_DIFF_POS1: d_rev_adj = d_rev_r + ONE_SEC_NS;
+            SEC_DIFF_NEG1: d_rev_adj = d_rev_r - ONE_SEC_NS;
+            default:       d_rev_adj = d_rev_r;
+        endcase
+    end
+
+    // ── Saturating frequency word (see SUB_PI_MUL_I) ─────────────────────────
+    logic signed [33:0] frac_next;
+    logic        [31:0] frac_next_sat;
+    always_comb begin
+        frac_next = $signed({2'b00, current_frac_r})
+                  - (34'(pi_p_term_r) + 34'($signed(mul_result[63:32])));
+        if (frac_next < 0)
+            frac_next_sat = 32'h0000_0000;
+        else if (frac_next > 34'sh0_FFFF_FFFF)
+            frac_next_sat = 32'hFFFF_FFFF;
+        else
+            frac_next_sat = frac_next[31:0];
+    end
+
+    // ── Phase-step target: master time at t2 = t1 + one-way delay ─────────────
+    // delay_r is trusted only when both seconds differences were representable
+    // (|dsec| <= 1) and it is non-negative and below a second; otherwise the step
+    // lands on t1 itself and the next exchange removes the residual path delay.
+    logic               step_delay_ok;
+    logic signed [31:0] step_delay;
+    logic signed [31:0] step_ns_sum;     // t1_ns (< 1e9) + delay (< 1e9) < 2^31
+    logic        [47:0] step_sec;
+    logic        [29:0] step_ns;
+    always_comb begin
+        step_delay_ok = !sec_diff_fwd_ovf && !sec_diff_rev_ovf &&
+                        !delay_r[31] && (delay_r < ONE_SEC_NS);
+        step_delay    = step_delay_ok ? delay_r : 32'sd0;
+        step_ns_sum   = $signed({2'b00, sub_t1_ns}) + step_delay;
+        if (step_ns_sum >= ONE_SEC_NS) begin
+            step_sec = sub_t1_sec + 48'd1;
+            step_ns  = 30'(step_ns_sum - ONE_SEC_NS);
+        end else begin
+            step_sec = sub_t1_sec;
+            step_ns  = 30'(step_ns_sum);
+        end
+    end
+
     always_ff @(posedge clk or negedge resetn) begin
         if (!resetn) begin
             sub_state_r        <= SUB_IDLE;
-            d_fwd_r            <= 31'sd0;
-            d_rev_r            <= 31'sd0;
-            raw_offset_r       <= 32'sd0;
-            raw_delay_r        <= 32'sd0;
+            d_fwd_r            <= 32'sd0;
+            d_rev_r            <= 32'sd0;
+            raw_offset_r       <= 33'sd0;
+            raw_delay_r        <= 33'sd0;
             offset_r           <= 32'sd0;
             delay_r            <= 32'sd0;
             sec_diff_fwd_r     <= SEC_DIFF_ZERO;
@@ -518,8 +568,15 @@ module tidelink_ptp_servo #(
                     // ── Offset Computation Pipeline ──────────────────────
                     SUB_COMPUTE_1: begin
                         // d_fwd = t2_ns - t1_ns
-                        d_fwd_r <= $signed({1'b0, sub_t2_ns}) -
-                                   $signed({1'b0, sub_t1_ns});
+                        d_fwd_r <= $signed({2'b00, sub_t2_ns}) -
+                                   $signed({2'b00, sub_t1_ns});
+                        // PER-EXCHANGE, not sticky. Until 2026-09-23 this flag was
+                        // only ever SET (COMPUTE_2/3) and cleared by reset, so one
+                        // exchange with |dsec| > 1 (a start more than a second out,
+                        // or a software coarse set) forced the step branch on every
+                        // later exchange: the servo never frequency-steered and
+                        // servo_locked could never set. Re-derived each exchange.
+                        needs_phase_step_r <= 1'b0;
                         // Seconds difference: compressed to -1/0/+1 with overflow flag
                         if (sub_t2_sec == sub_t1_sec) begin
                             sec_diff_fwd_r  <= SEC_DIFF_ZERO;
@@ -539,8 +596,8 @@ module tidelink_ptp_servo #(
 
                     SUB_COMPUTE_2: begin
                         // d_rev = t4_ns - t3_ns
-                        d_rev_r <= $signed({1'b0, sub_t4_ns}) -
-                                   $signed({1'b0, sub_t3_ns});
+                        d_rev_r <= $signed({2'b00, sub_t4_ns}) -
+                                   $signed({2'b00, sub_t3_ns});
                         // Seconds difference for reverse path
                         if (sub_t4_sec == sub_t3_sec) begin
                             sec_diff_rev_r  <= SEC_DIFF_ZERO;
@@ -568,24 +625,22 @@ module tidelink_ptp_servo #(
                     end
 
                     SUB_COMPUTE_3: begin
-                        // Adjust d_rev for seconds borrow/carry
-                        case (sec_diff_rev_r)
-                            SEC_DIFF_ZERO: ; // Same second — no adjustment
-                            SEC_DIFF_POS1: d_rev_r <= d_rev_r + ONE_SEC_NS;
-                            SEC_DIFF_NEG1: d_rev_r <= d_rev_r - ONE_SEC_NS;
-                            default: ;
-                        endcase
+                        // Adjust d_rev for seconds borrow/carry. The adjusted value
+                        // is ALSO what raw_offset/raw_delay below must use: they are
+                        // computed in this same state, and a non-blocking update of
+                        // d_rev_r is not visible to them until the next cycle. Until
+                        // 2026-09-23 they read the UNADJUSTED d_rev_r, so the reverse
+                        // carry was silently dropped: at a +/-0.5 s offset where the
+                        // two paths straddle a second boundary in opposite directions
+                        // the computed offset came out near ZERO and the servo
+                        // declared servo_locked=1 while 0.5 s wrong (measured in the
+                        // closed-loop bench, cocotb/tidelink_ptp_servo/test_closed_loop.py).
+                        d_rev_r <= d_rev_adj;
                         // Compute raw offset and delay.
-                        // d_fwd_r/d_rev_r are `signed [30:0]`, raw_* are
-                        // `signed [31:0]`; the 32'() size cast preserves
-                        // signedness and therefore SIGN-extends bit 30 -- the
-                        // same value the old `$signed({d_fwd_r[30], d_fwd_r})`
-                        // concatenation produced, but without a hand-written
-                        // sign bit that silently goes wrong if the width of
-                        // d_fwd_r ever changes (and without the signed/unsigned
-                        // mix HAL flagged inside the concatenation).
-                        raw_offset_r <= 32'(d_fwd_r) - 32'(d_rev_r);
-                        raw_delay_r  <= 32'(d_fwd_r) + 32'(d_rev_r);
+                        // d_fwd_r/d_rev_adj are `signed [31:0]`, raw_* are
+                        // `signed [32:0]`; the 33'() casts sign-extend.
+                        raw_offset_r <= 33'(d_fwd_r) - 33'(d_rev_adj);
+                        raw_delay_r  <= 33'(d_fwd_r) + 33'(d_rev_adj);
                         if (sec_diff_rev_ovf)
                             needs_phase_step_r <= 1'b1;
                         sub_state_r <= SUB_COMPUTE_4;
@@ -593,8 +648,9 @@ module tidelink_ptp_servo #(
 
                     SUB_COMPUTE_4: begin
                         // Divide by 2 (arithmetic right shift)
-                        offset_r <= raw_offset_r >>> 1;
-                        delay_r  <= raw_delay_r >>> 1;
+                        // raw_* are 33-bit; halved they span +/-2 s and fit 32 bits.
+                        offset_r <= 32'(raw_offset_r >>> 1);
+                        delay_r  <= 32'(raw_delay_r  >>> 1);
                         sub_state_r <= SUB_ADJUST;
                     end
 
@@ -608,10 +664,19 @@ module tidelink_ptp_servo #(
                             (offset_r > $signed(servo_step_thresh_r)) ||
                             (offset_r < -$signed(servo_step_thresh_r))) begin
                             // Phase step — correct time directly
-                            phc_hw_set_time <= 1'b1;
-                            phc_hw_set_seconds    <= sub_t2_sec;
-                            phc_hw_set_nanoseconds <= sub_t2_ns -
-                                                      offset_r[29:0];
+                            // Step to the MASTER's time at the t2 instant: t1 + one-way
+                            // delay, with the seconds carried. Until 2026-09-23 this
+                            // wrote sub_t2_sec (the slave's OWN seconds) and
+                            // sub_t2_ns - offset_r[29:0] (30-bit truncation, no
+                            // borrow), so a start more than a second out was stepped
+                            // back onto itself every exchange and never corrected.
+                            // The delay is taken from this exchange only when its
+                            // seconds differences were representable; otherwise 0,
+                            // leaving one path delay for the next exchange to remove.
+                            phc_hw_set_time        <= 1'b1;
+                            phc_hw_set_seconds     <= step_sec;
+                            phc_hw_set_nanoseconds <= step_ns;
+                            needs_phase_step_r     <= 1'b0;
                             integral_r     <= 32'sd0;
                             lock_counter_r <= '0;
                             servo_locked   <= 1'b0;
@@ -651,9 +716,20 @@ module tidelink_ptp_servo #(
                     SUB_PI_MUL_I: begin
                         mul_start <= 1'b0;
                         if (mul_done) begin
-                            current_frac_r          <= current_frac_r - (pi_p_term_r + mul_result[63:32]);
+                            // SATURATE, never wrap. The PHC consumes this as an UNSIGNED
+                            // fraction added to a software-set integer increment, so a
+                            // negative result used to wrap to ~+1 ns/tick: at 250 MHz the
+                            // subordinate ran 25% FAST exactly when it was ahead and
+                            // needed to slow (measured 2026-09-23 in the closed-loop
+                            // bench: +50 ns grew to +2.7 us in ten exchanges). Clamping
+                            // to [0, 2^32-1] stops the runaway. It does NOT give the
+                            // servo a way to run slower than the integer increment:
+                            // that needs either a signed adjust in the PHC or software
+                            // running the PHC one integer ns low with a biased fraction
+                            // (registered separately; a design decision, not a fix here).
+                            current_frac_r          <= frac_next_sat;
                             phc_hw_adj_valid        <= 1'b1;
-                            phc_hw_adj_ns_incr_frac <= current_frac_r - (pi_p_term_r + mul_result[63:32]);
+                            phc_hw_adj_ns_incr_frac <= frac_next_sat;
 
                             // Lock detection: |offset| < step_thresh/4.
                             //

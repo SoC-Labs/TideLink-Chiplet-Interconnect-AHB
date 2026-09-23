@@ -370,6 +370,7 @@ def main():
         ("TIDECHART_HOME", "flist/tidechart.flist", "the tc_pair_* co-sim suites"),
         ("CHIPLET_HOME", "src/rtl/tidechart_shim.sv", "the tc_pair_* co-sim suites"),
         ("ETH_SS_HOME", "set_env.sh", "the eth_* suites"),
+        ("PHC_HOME", "src/rtl/phc_clock_core.sv", "the ptp_servo_converge suite"),
     ):
         val = env.get(var)
         if not val or not (Path(val) / probe).exists():

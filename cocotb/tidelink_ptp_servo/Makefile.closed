@@ -1,0 +1,25 @@
+# Closed-loop servo + real PHC bench (rev-2 review LP-13 re-derivation).
+#   source ./set_env.sh; make -C cocotb/tidelink_ptp_servo -f Makefile.closed
+# PHC RTL is taken from the ptp-hardware-clock-ahb checkout (PHC_HOME).
+SIM             = vcs
+TOPLEVEL_LANG   = verilog
+
+TIDELINK_HOME ?= $(realpath $(CURDIR)/../..)
+export TIDELINK_HOME
+PHC_HOME ?= $(realpath $(firstword $(wildcard $(TIDELINK_HOME)/../ptp-hardware-clock-ahb \
+                                              $(HOME)/SoCLabs/ptp-hardware-clock-ahb)))
+
+VERILOG_SOURCES = $(CURDIR)/tb_closed_loop.sv \
+                  $(TIDELINK_HOME)/src/rtl/tidelink_mul_iter.sv \
+                  $(TIDELINK_HOME)/src/rtl/tidelink_ptp_servo.sv \
+                  $(PHC_HOME)/src/rtl/phc_clock_core.sv
+
+TOPLEVEL = tb_closed_loop
+MODULE   = test_closed_loop
+SIM_BUILD = sim_build_closed
+
+COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
+SIM_ARGS     += +vcs+dumpvars+waves_closed.vcd
+
+include $(CURDIR)/../coverage.mk
+include $(shell cocotb-config --makefiles)/Makefile.sim

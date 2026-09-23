@@ -353,7 +353,8 @@ endef
 	sim_gate_a2l_replay_cdc_7 sim_gate_a2l_replay_cdc_9 \
 	sim_gate_a2l_wready_tear sim_gate_a2l_replay_cdc_deps_mustfail \
 	sim_gate_v2_auto_anchor \
-	sim_gate_fc_adapter_arbiter
+	sim_gate_fc_adapter_arbiter \
+	sim_gate_ptp_servo_converge sim_gate_ptp_servo_unit
 
 # WHAT THIS CHECKS, AND WHY IT IS NOT JUST TWO `command -v` LINES.
 # Until 2026-09-11 it was exactly the two tool checks below and nothing else. A
@@ -856,6 +857,34 @@ sim_gate_fc_adapter_arbiter:
 	$(call sim_gate_run,fc_adapter_arbiter,\
 	  rm -rf cocotb/tidelink_fc_adapter/sim_build* && \
 	  $(MAKE) -C cocotb/tidelink_fc_adapter MODULE=test_fc_adapter_arbiter)
+
+# PTP SERVO CLOSED-LOOP CONVERGENCE (2026-09-23, TL-048 / rev-2 review LP-13).
+# tidelink_ptp_servo drives a REAL phc_clock_core (from the ptp-hardware-clock-ahb
+# sibling) against an ideal Python grandmaster. Asserts one phase step brings
+# +/-5 s, +/-1.5 s, +/-0.5 s (several master phases) and +/-2 ms starts within
+# 1 us, that the PI branch then runs, that servo_locked is never asserted while
+# out of the lock window, and that a +50 ns start does not run away. Pre-fix
+# servo 2/12, fixed 12/12. Run by hand before registration. The servo's unit
+# bench (cocotb/tidelink_ptp_servo, 18 tests) passed on BOTH -- it never
+# closed the loop, which is how four defects survived.
+PHC_HOME ?= $(realpath $(firstword $(wildcard $(TIDELINK_HOME)/../ptp-hardware-clock-ahb \
+                                              $(HOME)/SoCLabs/ptp-hardware-clock-ahb)))
+export PHC_HOME
+SIM_GATE_PHC_DEP = $(call SIM_GATE_REQUIRE,$(PHC_HOME)/src/rtl/phc_clock_core.sv,ptp_servo_converge closed loop)
+
+# PTP SERVO UNIT SUITE (18 tests, ~10 s). Existed since July, never gated:
+# TL-041 recorded "grep -c ptp_servo Makefile = 0" on 2026-08-13 and asked for
+# exactly this. Registered 2026-09-23 with the closed-loop suite above.
+sim_gate_ptp_servo_unit:
+	$(call sim_gate_run,ptp_servo_unit,\
+	  rm -rf cocotb/tidelink_ptp_servo/sim_build && \
+	  $(MAKE) -C cocotb/tidelink_ptp_servo)
+
+sim_gate_ptp_servo_converge:
+	$(call sim_gate_run,ptp_servo_converge,\
+	  $(SIM_GATE_PHC_DEP) && \
+	  rm -rf cocotb/tidelink_ptp_servo/sim_build_closed && \
+	  $(MAKE) -C cocotb/tidelink_ptp_servo -f Makefile.closed MODULE=test_servo_converge)
 
 sim_gate_fifo_concurrent_race:
 	$(call sim_gate_run,fifo_concurrent_race,\
@@ -2022,7 +2051,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	a2l_wready_tear a2l_replay_cdc_deps_mustfail \
 	tl044_hol_prefix_mustfail \
 	v2_auto_anchor \
-	fc_adapter_arbiter
+	fc_adapter_arbiter \
+	ptp_servo_converge ptp_servo_unit
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -2167,6 +2197,8 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@# HAZARD-3 / N2 fix: AUTO_ANCHOR beacon force must respect io_link_tx_tx_idle.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_auto_anchor
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fc_adapter_arbiter
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_ptp_servo_converge
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_ptp_servo_unit
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

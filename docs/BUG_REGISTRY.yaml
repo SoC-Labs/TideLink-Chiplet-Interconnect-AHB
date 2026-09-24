@@ -2753,6 +2753,33 @@ bugs:
       landed and the first ERROR at w7 (w8 in sim and in run A; the count may
       depend on dip-to-first-write timing, not investigated)
       (g16c/run_ship1_guard.log).
+    history: >
+      A recurrence, not a new mechanism. The July A->B blocker (2026-07-09) was the
+      same post-CR/CRACK swi_enable dip re-zeroing fe_tx_credit_max; it was fixed by
+      the Bug-C twin in FCSM_6, the channel that carried that traffic, and by a
+      corrected host triplet 0x27F09 -> 0x27F01 -> 0x27F07 that keeps bit 0 high
+      (pynq_host/scripts/tl_z2_data_bringup_repro.sh calls the bit0=0 form
+      DOCUMENTED-BAD). Neither reached the five AXI data-channel FCSMs, the chiplet
+      firmware or the eth host script, which kept 0x27F08 -> 0x27F00 -> 0x27F07.
+      The RTL fix removes the dependence on every host recipe getting this right.
+    host_script_exposure: >
+      Z2-window (0x4403_xxxx) scripts, pynq-z2-pair targets (HARDEN_SWI_ENABLE=1
+      default; unreachable on the chiplets, where that window is undecoded):
+      sw_coord_autocal_region8.sh to_data_mode runs the dip triplet on each board
+      in parallel ssh sessions, 10 ms after that board clears training -- same
+      shape as the chiplet recipe, a B19 hazard on the later board.
+      unjam_fc_node.sh "cycle" dips ONE board on a live link -- B19 by definition
+      for the AXI data channels (FCSM_6 recovers, which is why it looked proven).
+      bringup_pair_converge.sh sync_bootstrap / release_link dip BOTH boards and
+      re-enable only after both are down, before traffic -- safe by construction
+      (the sim's re-bootstrap-both recovery). hw_regression td_v2_hwlib.sh /
+      td_v2_channels.sh use 0x27F09/01/07 -- no dip, safe.
+      Consequence of the fix for these flows: on HARDEN_SWI_ENABLE=1 builds the
+      deliberate bilateral dips in bringup_pair_converge.sh and unjam_fc_node.sh
+      become no-ops (by its own comments, bringup_pair_converge.sh also uses
+      CTRL_DIS to re-sync the deskew offsets; not verified here). If a Z2 flow still needs a deliberate link-layer reset, it
+      needs HARDEN_SWI_ENABLE=0 on that target or an explicit reset path in the
+      shim (docs/R6_HARDEN_SWI_OPTIONS.md option (c)).
     firmware_workaround: >
       Order-independent, for images already built: drop the 0x27F00 write on both
       dies (bootstrap = 0x27F08, 0x27F07). Never write 0x208 with bit 0 = 0 on a

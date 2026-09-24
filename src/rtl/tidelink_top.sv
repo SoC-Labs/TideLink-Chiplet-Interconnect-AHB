@@ -2892,7 +2892,7 @@ module tidelink_top #(
     //       stale LL_TX FIFO needs a different mechanism (e.g. slot0=0x3→0x1).
     //
     // Gate predicate covers (a): apb_sel_wlink && apb_pwrite && paddr==0x208
-    // && pwdata[3]==1. (b) reuses the same address+direction predicate via
+    // (TL-052: no pwdata[3] term). (b) reuses the same address+direction predicate via
     // harden_swi_block_swreset (no pwdata[3] dependence — we mask whether the
     // bit is asserted or not, but the bit is W1C inside Wlink so a 0 write
     // is a no-op anyway). Address writes to other registers and reads are
@@ -2901,13 +2901,13 @@ module tidelink_top #(
     wire harden_swi_addr_match = apb_sel_wlink
                                & apb_pwrite
                                & (apb_paddr[12:0] == 13'h208);
+    // TL-052 (B19): force swi_enable on EVERY 0x208 write, not only the
+    // swreset one -- 0x27F00 used to clear it and strand FCSM 0-4 after CR/CRACK.
     wire harden_swi_apply = HARDEN_SWI_ENABLE
-                          & harden_swi_addr_match
-                          & apb_pwdata[3];
+                          & harden_swi_addr_match;
     wire harden_swi_block_swreset = HARDEN_SWI_ENABLE
                                   & harden_swi_addr_match;
-    // (a) OR-force bit[0]=1 when swreset bit would otherwise be set
-    //     and (b) AND-mask bit[3]=0 on every write to 0x208
+    // (a) OR-force bit[0]=1 and (b) AND-mask bit[3]=0 on every write to 0x208
     wire [SYS_DATA_W-1:0] swi_enable_or_mask   = {{(SYS_DATA_W-1){1'b0}}, 1'b1};
     wire [SYS_DATA_W-1:0] swreset_clear_mask   = ~({{(SYS_DATA_W-4){1'b0}}, 1'b1, 3'b000});
     assign apb_pwdata_to_chip =

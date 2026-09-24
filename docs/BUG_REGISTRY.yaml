@@ -2800,7 +2800,29 @@ bugs:
     verification:
       sim_test: "v2_ll_bootstrap_late (sim_gate suite label; cocotb/tidelink_top_pair_v2/test_v2_ll_bootstrap_late.py): lockstep control, then the triplet repeated on the master die and on the slave die after CR/CRACK; asserts the five data-channel credit maxima unchanged and 16 spaced SINGLE writes landing with a real B"
       in_sim_gate: true
-      hw_tested: false
+      hw_tested: true
+      hw_test_note: >
+        2026-09-24, compute session: KR260 compute chiplet image built with the
+        same one-term change on the compute lineage (9d8a8f4 = 53dfd18 + TL-052;
+        full gate 55/0/3, identical to 53dfd18) against the eth chiplet image.
+        Deliberate dip on the LIVE link (0x208 <- 0x27F00, then 0x27F07):
+        OBS_FC_CREDIT reads 0xFC00011F immediately after the dip, as it did at
+        12:49 before it (on pre-fix images the dip resets FCSM_6 fe_rx_ptr to 0 at
+        once, 0x...021F -> 0x...001F, so a non-zero pointer right after the write
+        means swi_enable never dropped), Region F stays 0xAD800000, the next 12 stepped
+        compute->eth words land with 0 mismatches. The same dip on the 9a59ecd
+        image wedged at w7. Log: compute session
+        handoff-psload-20260923/ta/run_rsyn4A_tl052_dip.log.
+        Image provenance: the build's BUILD_MANIFEST.txt (compute session,
+        fpga-fixed-20260924 fixed-link0-20260924/outputs) records tidelink.git_sha
+        9d8a8f4f5c78 with src/rtl, deps and flists clean, the packaged
+        tidelink_top.sv equal to the source file (md5 40be8520, 0 diff lines after
+        the two V2 defines, 0 apb_pwdata[3] terms), and bitstream.bin md5 20058d2d,
+        which matches the built file. The manifest was written after the build by
+        the build session; the flow's own manifest records only the top-level SHA.
+        hw_validated stays false: the vehicle (compute + eth chiplet pair) is not
+        in the vehicle enum, and neither the log nor the manifest is retained in
+        this repo.
       hw_validated: false
       evidence: null
       vehicle: null

@@ -24,7 +24,8 @@ import kr260_eth_bringup as kb  # noqa: E402
 import kr260_eth_xfer as xfer   # noqa: E402
 
 REAL_TIME, REAL_SLEEP = _time.time, _time.sleep
-LL_ALL = [0x00027F08, 0x00027F00, 0x00027F07]
+LL_ALL = [0x00027F08, 0x00027F07]       # swreset ON, ENABLE - no 0x27F00 (B19)
+ALL_LL_WRITES = []                        # every WL_LINK_ENABLE_RESET write, all cases
 
 
 class Clock:
@@ -69,7 +70,7 @@ class FakeBD:
         self.writes.append((off, val))
         if off == self.m.REG_SWI_TRAINING_MODE and val == 0:
             self.t_rel = self.c.t
-        if off == self.m.REG_WL_LINK_ENABLE_RESET and val == LL_ALL[2]:
+        if off == self.m.REG_WL_LINK_ENABLE_RESET and val == LL_ALL[-1]:
             self.enabled = True
 
 
@@ -87,6 +88,7 @@ def run(status_after, patch=None, arm=False, **kw):
     finally:
         _time.time, _time.sleep = REAL_TIME, REAL_SLEEP
     ll = [v for (o, v) in bd.writes if o == m.REG_WL_LINK_ENABLE_RESET]
+    ALL_LL_WRITES.extend(ll)
     return rc, ll, out.getvalue()
 
 
@@ -112,7 +114,7 @@ def main():
     check("link comes up 300 ms after release, inside --ll-settle -> no LL writes", ll, [])
 
     rc, ll, _ = run(lambda dt: (1, 1), arm=True)
-    check("link never self-trains -> bootstrap ON/OFF/ENABLE, in order", ll, LL_ALL)
+    check("link never self-trains -> bootstrap ON/ENABLE, in order", ll, LL_ALL)
     check("... and step 4 then reports LINK UP (rc 0)", rc, 0)
 
     _, ll, _ = run(lambda dt: (1, 7), arm=True)
@@ -136,6 +138,15 @@ def main():
         m.link_live = lambda st: False
     _, ll, _ = run(v2, patch=defeat)
     check("DISCRIMINATION: guard defeated -> bootstrap lands on the live link", ll, LL_ALL)
+
+    # B19: no write to WL_LINK_ENABLE_RESET may land with swi_enable (bit0) clear.
+    # The HARDEN shim forces bit0 only when bit3 (swreset) is set, so a write is
+    # safe iff bit0 or bit3 is set. Read across EVERY case above, including the
+    # guard-defeated one, where the bootstrap lands on a live link.
+    dips = ["0x%08x" % v for v in ALL_LL_WRITES if not (v & 0x1) and not (v & 0x8)]
+    check("B19: no WL_LINK_ENABLE_RESET write drops swi_enable (bit0=0, bit3=0)", dips, [])
+    check("... and the rule was exercised (bootstrap writes were seen)",
+          len(ALL_LL_WRITES) >= 2 * len(LL_ALL), True)
 
     # step 6: traffic_check() reports the forked child's fate
     def fake_xfer(mode):

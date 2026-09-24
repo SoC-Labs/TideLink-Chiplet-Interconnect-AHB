@@ -91,11 +91,22 @@ REG_WINSCAN_STAT         = _TIDELINK_BANK  + 0x01E4   # 0x2E0321E4 (RO winscan; 
 ROLE_CFG_MASTER_LOCK = 0x02        # role_lock=1, role=0 -> master / grandmaster (die_a)
 ROLE_CFG_SLAVE_LOCK  = 0x03        # role_lock=1, role=1 -> slave              (die_b)
 
-# 3-write LL bootstrap into WL_LINK_ENABLE_RESET; order matters (swreset first
-# clears CR/CRACK sticky), exactly as test_g2_soc_pair.py.
+# 2-write LL bootstrap into WL_LINK_ENABLE_RESET: swreset ON, then ENABLE.
+# Order matters (swreset first clears CR/CRACK sticky).
+#
+# THERE IS NO SWRESET-OFF WRITE (0x00027F00), and there must never be one: B19.
+# tidelink_top's HARDEN_SWI_ENABLE shim forces swi_enable (bit0) on only when
+# pwdata[3] is set, so 0x27F00 lands with swi_enable=0. Issued on either die
+# after CR/CRACK, that dip zeroes the five AXI data-node FCSMs' credits: 8 writes
+# return the backstop OKAY and are lost, then ERROR forever, while FCSM_6 (the
+# sideband) still reads 4 - so the link LOOKS up. The eth die has the same shim.
+# Rule: never write 0x208 with bit0=0 on a live link. Hardware-proven clean
+# without it in both orders: compute run B (late), run C 5/5 (eth early at
+# FCSM_6=1, cal_done 0), and compute's shipping bring-up aba9615 against this
+# recipe (handoff-tidelink-b19-20260923). ENABLE (0x27F07) clears swreset.
 LL_SWRESET_ON  = 0x00027F08
-LL_SWRESET_OFF = 0x00027F00
 LL_ENABLE      = 0x00027F07
+LL_BOOTSTRAP   = (LL_SWRESET_ON, LL_ENABLE)
 
 FCSM_LINK_IDLE = 4                 # link-up criterion (bilateral)
 
@@ -408,7 +419,7 @@ def bringup(bd, role, cal_timeout, converge_timeout, crc_check="report",
     time.sleep(1.0)
 
     # 3. FIX-E release: drop training -> S_HOLD->S_VALIDATE (hold_ctr expired) ->
-    #    VAL_TIMEOUT_TO_DONE -> S_DONE -> cal_done. Then the 3-write LL bootstrap.
+    #    VAL_TIMEOUT_TO_DONE -> S_DONE -> cal_done. Then the 2-write LL bootstrap.
     print("--- 3. to-data-mode: SWI_TRAINING_MODE<-0 (FIX-E release) ---")
     bd.wr(REG_SWI_TRAINING_MODE, 0)
     time.sleep(0.005)
@@ -450,13 +461,13 @@ def bringup(bd, role, cal_timeout, converge_timeout, crc_check="report",
               "this die's transmit data)." % (st["fcsm"], waited * 1e3))
     else:
         print("   link NOT live after %.0f ms (fcsm=%d, cal_done=%d) — running the "
-              "3-write LL bootstrap." % (waited * 1e3, st["fcsm"], st["cal_done"]))
+              "2-write LL bootstrap." % (waited * 1e3, st["fcsm"], st["cal_done"]))
         st = decode_status(bd.rd(REG_SWI_LANE_STATUS))
         if link_live(st):
             print("   ...link went live at the last moment (fcsm=%d) — bootstrap "
                   "SKIPPED after all." % st["fcsm"])
         else:
-            for val in (LL_SWRESET_ON, LL_SWRESET_OFF, LL_ENABLE):
+            for val in LL_BOOTSTRAP:
                 bd.wr(REG_WL_LINK_ENABLE_RESET, val)
                 time.sleep(0.005)
 
@@ -572,7 +583,7 @@ def main():
                          "shipping default.")
     ap.add_argument("--ll-settle", type=float, default=2.0,
                     help="after the training release, seconds to wait for the link "
-                         "to come up BY ITSELF before running the 3-write LL "
+                         "to come up BY ITSELF before running the 2-write LL "
                          "bootstrap (default 2.0). A live link is never "
                          "re-bootstrapped — see step 3a.")
     ap.add_argument("--traffic-check", action="store_true",

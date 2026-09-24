@@ -2671,7 +2671,7 @@ bugs:
     opened: 2026-09-23           # first SpyGlass CDC run on the compute die, cdc_verify_struct, mission mode
     summary: >
       From the first CDC run to complete on a TideLink die (compute chiplet,
-      /home/dam1n19/SoCLabs/cdc-compute-20260923/RESULT.md, 2,341 crossings), three
+      the compute session's off-repo RESULT.md, 2,341 crossings), three
       root causes were classified real and triaged against the RTL:
       (R1) i2c_scl_i / i2c_sda_i come off asynchronous pads. u_autoneg's START
       detector (sda_start_detect = sda_prev_r && !i2c_sda_i && i2c_scl_i) fed them,
@@ -2730,18 +2730,36 @@ bugs:
       the data channels stay at zero credit while FCSM_6 still reads 4.
       Symptom (KR260, compute bootstrapping late): w0-w7 return an OKAY fabricated by
       the 2^16 wrapper backstop with nothing landed, w8 onwards ERROR, Region F
-      0xAD400401. Which die is late varies run to run, and so does the detail (one
-      morning run had w0 landing and the eth die's B TX stuck).
+      0xAD400401. Which die is late varies run to run, and so does the detail: a
+      late SLAVE lets w0 land but its B never returns (the eth die's B TX stuck);
+      a late MASTER lands nothing. A late die loses every channel it transmits
+      on, in both directions (reverse-direction sim: w0 lands, B stuck). It is a
+      frequent race, not systematic: it fires whenever the two dies' releases are
+      further apart than the CR/CRACK time (stock 1 s settle on both; 2 of 3
+      stock bring-ups with data checks wedged on 2026-09-23, both eth late).
     hw_observation: >
       Compute session, 2026-09-23, forced compute-late order (compute bootstraps
       after its own cal_done && FCSM==4): FULL triplet wedges exactly as above
       (g16c/run_lateFULL.log); the same order WITHOUT the 0x27F00 write gives 32/32
       stepped + 256 back-to-back words, 0 mismatches, Region F healthy on both dies
-      (g16c/run_lateNODIP.log). The dip alone is the trigger.
+      (g16c/run_lateNODIP.log). The dip alone is the trigger. Run C: both dies
+      without 0x27F00, eth early, fresh PL load each time, n=5: 5/5 link up, 32
+      stepped + 256 back-to-back words exact; pre-bootstrap FCSM_6 read 1 on the
+      early die and 4 on the late die (g16c/runC_summary.log). Compute shipping
+      bring-up aba9615 (dip removed) against the eth no-dip recipe: trained in
+      7.1 s, 32 + 256 words clean; a deliberate dip afterwards moved
+      OBS_FC_CREDIT 0x...021F -> 0x...001F at once (FCSM_6 fe_rx_ptr reset), Region
+      F stayed 0xAD800000 until traffic, then w0-w6 backstop OKAY with nothing
+      landed and the first ERROR at w7 (w8 in sim and in run A; the count may
+      depend on dip-to-first-write timing, not investigated)
+      (g16c/run_ship1_guard.log).
     firmware_workaround: >
       Order-independent, for images already built: drop the 0x27F00 write on both
       dies (bootstrap = 0x27F08, 0x27F07). Never write 0x208 with bit 0 = 0 on a
-      live link.
+      live link. Hardware-proven in both orders (run B late die, run C early die).
+      Re-bootstrapping BOTH dies recovers a wedged pair in sim (credits back to
+      15/63, 16/16 land), but only with no traffic between the two bootstraps;
+      recovery after the backstop has fired is untested.
     root_cause: >
       tidelink_top.sv harden_swi_apply = HARDEN_SWI_ENABLE & addr_match & pwdata[3]
       (commit 1b628da, 2026-05-28; docs/R6_HARDEN_SWI_OPTIONS.md section 3 records the
@@ -2766,8 +2784,10 @@ bugs:
         the fixed runs also show early bring-up does not need the dip. Unasserted
         pre-fix behaviour (b19 bench): w0-w7 OKAY at 65539 hclk with nothing
         landed, w8+ ERROR -- the KR260 signature.
-    open_risk: >
-      The fix also removes the dip from EARLY bring-up. swi_enable resets to 1
+    open_risk_closed: >
+      CLOSED 2026-09-23 by run C (hw_observation above): the early die reads
+      FCSM_6=1 before its bootstrap and brings up 5/5 without the dip. Original
+      text follows. The fix also removes the dip from EARLY bring-up. swi_enable resets to 1
       (Wlink.v swi_enable <= 1'h1 on apb_reset), so the FCSMs run from POR, and on
       HARDEN_SWI_ENABLE=1 builds the bootstrap's 0x27F00 was the only host-reachable
       FCSM reset (swreset is blocked). R6 (docs/R6_HARDEN_SWI_OPTIONS.md) records
@@ -2783,10 +2803,16 @@ bugs:
       for that variant: 0x2108[19:17] is FCSM_6 only (the five data FCSMs have no
       state readout) and reaches apb_clk through a 2-flop sync.
     follow_up: >
-      (1) Bug-C for FCSM 0-4: stop zeroing fe_tx/fe_rx_credit_max on an enable dip,
-      as FCSM_6 already does, so a dip that bypasses the shim (HARDEN_SWI_ENABLE=0
-      builds, the internal FCH sequencer) cannot strand the data channels either.
-      Generated Chisel in local_overrides AND the ASIC deps copies. (2) No APB
+      (1) Make FCSM 0-4 survive an enable dip the way FCSM_6 does, so a dip that
+      bypasses the shim (HARDEN_SWI_ENABLE=0 builds, the internal FCH sequencer)
+      cannot strand the data channels either. Keeping the credits (Bug-C) is NOT
+      enough: a probe after a one-sided dip shows the five data FCSMs stuck in
+      state 1 with 0/0 credits for >200k hclk while the peer's stay at 4, whereas
+      FCSM_6 is back at 4 within 2k hclk because it also keeps its CR/CRACK-seen
+      stickies across the dip (cleared only on POR; FCSM_6.v ~1290-1303 vs
+      WlinkGenericFCSM.v ~813-826). Port the Bug-C pair and sticky retention, and
+      probably the L9 pktnum resync (unverified). Generated Chisel in
+      local_overrides AND the ASIC deps copies. (2) No APB
       readout of the data-channel credit maxima exists: OBS_FC_CREDIT 0x219C is
       FCSM_6 only (its [15:8] fe_rx_ptr is also reset by the dip, so it hints at a
       dip, not at dead credit). A five-channel credit field would let firmware

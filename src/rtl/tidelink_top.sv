@@ -1979,7 +1979,29 @@ module tidelink_top #(
     // cycle race per drain episode, versus the prior 100%-exposed-for-the-whole-
     // drain-duration bug.
     logic wr_hold_r;
-    wire  wr_hold_set = ext_is_nonseq & ahb_sub_hwrite & ~pipe_valid_r;
+    // M4DUP fix (2026-09-24). ext_is_nonseq has no HREADY term (comb-loop fix
+    // 2026-07-05), so a NONSEQ that the master presents while its PREVIOUS data
+    // phase to this port is still stalled (a PENDING address, bus HREADY=0) is
+    // pre-latched into the pipe. That is intended (zero-bubble back-to-back),
+    // but arming wr_hold_r for such a pre-latch masks ahb_sub_hreadyout at the
+    // moment XHB500 takes the pre-latched phase from the pipe: XHB500 issues it
+    // (W = the previous beat's held HWDATA) while the master stays stalled, and
+    // the pipe then latches the same still-pending phase again -> a duplicate
+    // AXI write, the first with stale data. Measured: an M4 STR loop gives 2N-1
+    // AXI writes for N stores. m4d_live_r tracks "the master is in a data phase
+    // to this port" (sub_mst_dphase_r clears at a completion even when a
+    // pre-latched phase is accepted on the same edge, so it cannot be used).
+    // A pre-latch while live does not arm the hold; for a non-bufferable write
+    // the hold is redundant (XHB500 keeps hreadyout low until the write's own B).
+    // Register only: no new combinational path to ahb_sub_hreadyout.
+    logic m4d_live_r;
+    always_ff @(posedge hclk or negedge hresetn) begin
+        if (!hresetn)                                        m4d_live_r <= 1'b0;
+        else if (ahb_sub_hreadyout)                          m4d_live_r <= pipe_valid_r | (ext_is_nonseq & ~pipe_valid_r);
+        else if (ext_is_nonseq & ~pipe_valid_r & ~m4d_live_r) m4d_live_r <= 1'b1;
+    end
+    wire  wr_hold_set = ext_is_nonseq & ahb_sub_hwrite & ~pipe_valid_r
+                      & ~(m4d_live_r & ~ahb_sub_hprot[2]);
     // Same predicate as the synth_b_pending clear at its own always_ff below
     // (synth_b_pending & s_axi_bready & (sub_wr_os_ctr <= 3'd1)): fires ONCE, on
     // the drain's last synthetic B beat, not for the level's whole duration.

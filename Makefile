@@ -357,7 +357,8 @@ endef
 	sim_gate_ptp_servo_converge sim_gate_ptp_servo_unit \
 	sim_gate_apb_regs_unit \
 	sim_gate_v2_ahb_compliant \
-	sim_gate_v2_ll_bootstrap_late
+	sim_gate_v2_ll_bootstrap_late \
+	sim_gate_v2_m4dup
 
 # WHAT THIS CHECKS, AND WHY IT IS NOT JUST TWO `command -v` LINES.
 # Until 2026-09-11 it was exactly the two tool checks below and nothing else. A
@@ -928,6 +929,19 @@ sim_gate_v2_ll_bootstrap_late:
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 SIM_BUILD=sim_build_ll_bootstrap_late \
 	    COCOTB_RESULTS_FILE=sim_build_ll_bootstrap_late/res_ll_bootstrap_late.xml \
 	    MODULE=test_v2_ll_bootstrap_late)
+
+# TL-053 (M4DUP): a non-bufferable peer write whose NONSEQ is presented late in
+# the previous write's stalled data phase (after W landed, before B -- the
+# Cortex-M4 STR-loop shape) was pre-latched, armed wr_hold_r and was issued
+# twice, the first time with the previous store's data. Counts AW and W beats at
+# the master die's s_axi; back-to-back control. Pre-fix 1/2 (15 AW for 8
+# stores); fixed 2/2.
+sim_gate_v2_m4dup:
+	$(call sim_gate_run,v2_m4dup,\
+	  rm -rf cocotb/tidelink_top_pair_v2/sim_build_m4dup && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 SIM_BUILD=sim_build_m4dup \
+	    COCOTB_RESULTS_FILE=sim_build_m4dup/res_m4dup.xml \
+	    MODULE=test_v2_m4dup)
 
 sim_gate_fifo_concurrent_race:
 	$(call sim_gate_run,fifo_concurrent_race,\
@@ -2098,7 +2112,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	ptp_servo_converge ptp_servo_unit \
 	apb_regs_unit \
 	v2_ahb_compliant \
-	v2_ll_bootstrap_late
+	v2_ll_bootstrap_late \
+	v2_m4dup
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -2248,6 +2263,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_apb_regs_unit
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_ahb_compliant
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_ll_bootstrap_late
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_m4dup
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

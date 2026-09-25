@@ -2877,6 +2877,72 @@ bugs:
       approved: false
     related: [TL-045, TL-047]
 
+  - id: TL-053
+    title: "M4DUP: a peer write whose NONSEQ is presented late in the previous write's stalled data phase is pre-latched, arms wr_hold_r and is issued twice, the first time with the previous store's data"
+    severity: high
+    area: rtl/tidelink_top
+    status: sim_proven
+    registered: 2026-09-25
+    opened: 2026-09-24            # compute FPGA-validation session (8b), handoff-crcpair-20260924/M4DUP.md
+    summary: >
+      ext_is_nonseq has no HREADY term (the 2026-07-05 comb-loop fix), so a NONSEQ
+      the master presents while its previous data phase to this port is still
+      stalled is pre-latched into the pipe. wr_hold_set armed the Rank-1 write hold
+      (TL-002) for that pre-latch as if it were an accepted phase. When the previous
+      write's B returned, xhb_sub_hready let XHB500 take the pre-latched phase while
+      wr_hold_r kept ahb_sub_hreadyout low: XHB500 issued it with the previous
+      store's HWDATA and the master stayed stalled, then the pipe latched the same
+      pending phase again and issued it correctly. A Cortex-M4 STR loop does this
+      on every store (the ALU and branch put the next peer NONSEQ a few cycles into
+      the stall): 2N-1 AXI writes for N stores, final memory exact -- which is why
+      landing-only checks never saw it. Each affected store costs two link round
+      trips, and a non-idempotent target (mailbox slot, doorbell, a polled flag)
+      sees the stale value first.
+    root_cause: >
+      tidelink_top.sv wr_hold_set = ext_is_nonseq & ahb_sub_hwrite & ~pipe_valid_r
+      has no notion of "the master is already in a data phase to this port".
+      sub_mst_dphase_r cannot supply it: it clears at a completion even when a
+      pre-latched phase is accepted on the same edge.
+    fix:
+      approach: "One register, m4d_live_r (the master is in a data phase to this port), and wr_hold_set &= ~(m4d_live_r & ~ahb_sub_hprot[2]). For a non-bufferable write the hold is redundant (XHB500 holds hreadyout low until B), and without it XHB500 takes the pre-latched phase on the same edge the master is answered and the bus accepts the address, so the two data phases coincide. Bufferable (EWR) pre-latches keep the hold, which is load-bearing there (EWR raises hreadyout at address accept, before W); both chiplets tie ahb_sub_hprot[3:2]=00, so that residual is unreachable on silicon. No new combinational path to ahb_sub_hreadyout."
+      files: [src/rtl/tidelink_top.sv, cocotb/tidelink_top_pair_v2/test_v2_m4dup.py, Makefile]
+      commit: null
+      branch: rev2/fix-m4dup          # local, from origin/rev2/integration b8879b3
+      netlist_affecting: true
+      compute_lineage: "372450a on local branch compute/m4dup-t1 (parent 9d8a8f4), byte-identical to the compute session's gated file (md5 ff56b96e). Compute evidence: loop8 15 -> 8 AW, T1 reverted -> 15; TideLink sim_gate 9d8a8f4 vs +T1 identical per suite with pinned homes; Genus 0 loops with a 2-loop positive control (handoff-crcpair-20260924/rsyn5_gates/PATCHSET.md)."
+    verification:
+      sim_test: "v2_m4dup (sim_gate suite label; cocotb/tidelink_top_pair_v2/test_v2_m4dup.py): 8 non-bufferable single writes from an AHB-Lite master that raises each next NONSEQ 20 cycles into the previous stalled data phase (after W, before B), plus a back-to-back control; counts AW and W beats at the master die's s_axi and checks the far memory"
+      in_sim_gate: true
+      hw_tested: false
+      hw_validated: false
+      evidence: null
+      vehicle: null
+      red_green: >
+        Pre-fix b8879b3: 1/2. The late loop gives 15 AW for 8 stores, every
+        duplicate carrying the previous store's value, final memory exact (the
+        compute signature); the control gives 8/8. Fixed: 2/2, 8 AW with the W
+        beats exactly the stored values, and the late loop runs in the same 2048
+        cycles as back-to-back (3840 before).
+    residual: >
+      Not fixed here: T2, a peer NONSEQ pending behind ANOTHER slave's wait state on
+      the chiplet bus (e.g. a TLAPB write followed by a peer store), which is
+      pre-latched and issued with stale or zero data before the bus accepts it. That
+      needs the chiplet decoder to qualify hsel_peer with HREADY (compute's T2
+      change), or a DSB before every peer store. m4d_live_r also reads 1 during such
+      a T2 pre-latch; the only latches in that window are re-latches of the same
+      address, whose hold is already lost today (the first copy's W clear wins), so
+      the fix does not make T2 worse.
+    signoff:
+      claude_verdict: >
+        Found and fixed by the compute session, reviewed here, reproduced red/green
+        in TideLink's own pair bench. Netlist-affecting; David lands. Not on
+        hardware.
+      evidence:
+        - "m4dup/red.log and m4dup/green.log, 2026-09-25 session scratchpad"
+        - "compute session handoff-crcpair-20260924/M4DUP.md and rsyn5_gates/PATCHSET.md"
+      approved: false
+    related: [TL-002, TL-037, TL-043, TL-052]
+
   - id: TL-048
     title: "PTP servo could not converge from a start more than a second out, stepped back onto its own seconds, dropped the reverse-path carry (FALSE LOCK 0.5 s wrong), and ran 25% fast when ahead"
     severity: high

@@ -43,19 +43,56 @@ module tidelink_sram #(
     // (rf_16k WEN is active-low, per-bit granularity)
     wire [31:0] wen = ~{{8{WREN[3]}}, {8{WREN[2]}}, {8{WREN[1]}}, {8{WREN[0]}}};
 
-    // ── rf_16k macro instantiation ───────────────────────────────────────
+    // ── macro instantiation, SELECTED BY AW ──────────────────────────────
+    //
+    // A1 (2026-09-28). This used to hardcode `rf_16k` whatever AW said, and that
+    // cost real area: nanosoc_compute_chiplet.sv:226 has set TL_RAM_ADDR_W = 13
+    // (8 KB) since 2026-09-23, but the wrapper kept instantiating the 16 KB part.
+    // MEASURED on the rsyn5 netlist: the FIFO macros' top address bit A[11] is
+    // FE_OFN69_LTIE_LTIELO_3_NET, which resolves through CKND6 <- INVD1 <- TIEL to
+    // 0 -- so only A[10:0] was ever addressable. Half of each 16 KB macro was
+    // unreachable, at 88,941 um2 each against rf_08k's 48,045.
+    //
+    // Do NOT read the tie's value from its name: `_LTIELO_` records which tie the
+    // net descends from, not what it carries. Resolve to the TIEL/TIEH cell and
+    // XOR by the parity of inverting stages.
+    //
+    // AW is the BYTE address width, so the word address is AW-1:2:
+    //     AW = 14  ->  A[11:0] 12 bits  ->  4,096 words = 16 KB  ->  rf_16k
+    //     AW = 13  ->  A[10:0] 11 bits  ->  2,048 words =  8 KB  ->  rf_08k
 
-    rf_16k u_rf (
-        .CLK   (CLK),
-        .CEN   (cen),
-        .A     (ADDR[AW-1:2]),   // 12-bit word address
-        .D     (WDATA),
-        .GWEN  (gwen),
-        .WEN   (wen),
-        .Q     (RDATA),
-        .EMA   (3'b000),         // Default extra margin
-        .EMAW  (2'b00),          // Default extra margin (write)
-        .RET1N (1'b1)            // Normal operation (not retention)
-    );
+    generate
+        if (AW == 13) begin : gen_rf_08k
+            rf_08k u_rf (
+                .CLK   (CLK),
+                .CEN   (cen),
+                .A     (ADDR[AW-1:2]),   // 11-bit word address
+                .D     (WDATA),
+                .GWEN  (gwen),
+                .WEN   (wen),
+                .Q     (RDATA),
+                .EMA   (3'b000),
+                .EMAW  (2'b00),
+                .RET1N (1'b1)
+            );
+        end else if (AW == 14) begin : gen_rf_16k
+            rf_16k u_rf (
+                .CLK   (CLK),
+                .CEN   (cen),
+                .A     (ADDR[AW-1:2]),   // 12-bit word address
+                .D     (WDATA),
+                .GWEN  (gwen),
+                .WEN   (wen),
+                .Q     (RDATA),
+                .EMA   (3'b000),
+                .EMAW  (2'b00),
+                .RET1N (1'b1)
+            );
+        end else begin : gen_bad_aw
+            // Fail loudly at elaboration. A silently-wrong macro is how the 16 KB
+            // part survived a parameter change for five days.
+            $fatal(1, "tidelink_sram: AW=%0d has no macro mapping (expect 13 or 14)", AW);
+        end
+    endgenerate
 
 endmodule

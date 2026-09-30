@@ -296,7 +296,8 @@ endef
 	sim_gate_calibrator_wrap \
 	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5 \
 	sim_gate_v2_auto_anchor \
-	sim_gate_fc_adapter_arbiter
+	sim_gate_fc_adapter_arbiter \
+	sim_gate_v2_a7_phy_guard sim_gate_v2_a7_stop
 
 sim_gate_env_check:
 	@command -v vcs >/dev/null 2>&1 || \
@@ -619,6 +620,27 @@ sim_gate_fc_adapter_rx_saturation:
 # servo packet); the returner lost credit/doorbell words under
 # sideband_starving. 2 controls + 5 defect arms. On this lineage (3ba1337
 # RTL): pre-fix 2/7, one-hot 7/7; existing test_tidelink_fc_adapter 34/34.
+# A7 (2026-09-30): the auto-anchor SYNC beacon must never overwrite a live link
+# word, and must stop on AXI traffic. v2_a7_phy_guard forces the beacon on both
+# dies and sweeps 64 writes across the 32-word SYNC grid (af3a5d67: 4/64 lost;
+# fixed 64/64). v2_a7_stop holds the TL-channel stop input low (the silicon
+# condition): each beacon must stop within 16 cycles of that die's first AXI
+# app->link valid (af3a5d67: never; fixed: 3 cycles), and 64 single writes under
+# the real running beacon must all complete (af3a5d67: 4/64 lost; fixed 64/64).
+sim_gate_v2_a7_phy_guard:
+	$(call sim_gate_run,v2_a7_phy_guard,\
+	  rm -rf cocotb/tidelink_top_pair_v2/sim_build_a7_phy && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 SIM_BUILD=sim_build_a7_phy \
+	    COCOTB_RESULTS_FILE=sim_build_a7_phy/res_a7_phy.xml \
+	    MODULE=test_v2_a7_beacon TESTCASE=forced_beacon_writes)
+
+sim_gate_v2_a7_stop:
+	$(call sim_gate_run,v2_a7_stop,\
+	  rm -rf cocotb/tidelink_top_pair_v2/sim_build_a7_stop && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 AUTO_ANCHOR=1 SIM_BUILD=sim_build_a7_stop \
+	    COCOTB_RESULTS_FILE=sim_build_a7_stop/res_a7_stop.xml \
+	    MODULE=test_v2_a7_beacon TESTCASE=beacon_stops_on_axi$(comma)silicon_beacon_write_sweep)
+
 sim_gate_fc_adapter_arbiter:
 	$(call sim_gate_run,fc_adapter_arbiter,\
 	  rm -rf cocotb/tidelink_fc_adapter/sim_build* && \
@@ -1494,7 +1516,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	v2_mbox_writeprotect \
 	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \
 	v2_auto_anchor \
-	fc_adapter_arbiter
+	fc_adapter_arbiter \
+	v2_a7_phy_guard v2_a7_stop
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -1568,6 +1591,8 @@ sim_gate: sim_gate_env_check sim_gate_clean_builds
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_auto_anchor
 	@# TL-047: fc_adapter one-hot TX arbiter (F3 claim drop, F4 dup servo, F5 credit loss).
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fc_adapter_arbiter
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_a7_phy_guard
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_a7_stop
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

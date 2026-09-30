@@ -732,10 +732,24 @@ module WavD2DGpio #(
   // io_swi_sync_force_always_in term so the SW-strap/winscan/peer-serve
   // sources keep their existing unconditional (pre-data-window-only) behaviour.
   // ---------------------------------------------------------------------
+  // A7 (2026-09-30): io_link_tx_tx_idle is WlinkTxLinkLayer's io_link_idle,
+  // which is COMBINATIONAL ((state==0) & ~sop) while io_link_tx_tx_link_data
+  // is its REGISTERED link_data_reg. On the cycle after a packet's last word is
+  // formed, idle already reads 1 while that word is still on data_i, so a SYNC
+  // inserted there replaced it (KNOWN RESIDUAL #1 above; measured in tb_ce3: a
+  // B response lost, the peer's write wedged for good). tx_idle_q is the same
+  // signal one link cycle later: when it is 1 the word now on data_i was formed
+  // while the link layer was idle, i.e. it is fill. The auto-anchor term now
+  // needs both. The other two terms are unchanged.
+  reg          tx_idle_q;
+  always @(posedge io_link_tx_tx_link_clk or posedge por_reset_scan_wrs_io_reset_out) begin
+    if (por_reset_scan_wrs_io_reset_out) tx_idle_q <= 1'b0;
+    else                                 tx_idle_q <= io_link_tx_tx_idle;
+  end
   wire         tx_sync_en_w = ~por_reset_scan_wrs_io_reset_out
                             &  io_swi_sync_insert_en_in
                             & (io_swi_sync_force_always_in
-                               | (io_swi_auto_anchor_force_in & io_link_tx_tx_idle)
+                               | (io_swi_auto_anchor_force_in & io_link_tx_tx_idle & tx_idle_q)
                                | (io_link_tx_tx_idle & (postcount == 8'h0)));
   tidelink_phy_sync_insert u_tx_sync_insert (
     .clk              (io_link_tx_tx_link_clk),

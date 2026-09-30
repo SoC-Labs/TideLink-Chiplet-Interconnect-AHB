@@ -358,7 +358,8 @@ endef
 	sim_gate_apb_regs_unit \
 	sim_gate_v2_ahb_compliant \
 	sim_gate_v2_ll_bootstrap_late \
-	sim_gate_v2_m4dup
+	sim_gate_v2_m4dup \
+	sim_gate_v2_fuzz_rtw sim_gate_v2_fuzz_ahb
 
 # WHAT THIS CHECKS, AND WHY IT IS NOT JUST TWO `command -v` LINES.
 # Until 2026-09-11 it was exactly the two tool checks below and nothing else. A
@@ -942,6 +943,28 @@ sim_gate_v2_m4dup:
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 SIM_BUILD=sim_build_m4dup \
 	    COCOTB_RESULTS_FILE=sim_build_m4dup/res_m4dup.xml \
 	    MODULE=test_v2_m4dup)
+
+# TL-053, read side: a peer READ whose data phase stalls, then a peer WRITE
+# presented k cycles into it (k = 0..40). Pre-fix the read returned 0 for every
+# k and the write was issued twice; fixed 7/7.
+sim_gate_v2_fuzz_rtw:
+	$(call sim_gate_run,v2_fuzz_rtw,\
+	  rm -rf cocotb/tidelink_top_pair_v2/sim_build_fuzz_rtw && \
+	  COCOTB_TEST_FILTER=read_then_write_timing $(MAKE) -C cocotb/tidelink_top_pair_v2 SIM_BUILD=sim_build_fuzz_rtw \
+	    COCOTB_RESULTS_FILE=sim_build_fuzz_rtw/res_fuzz_rtw.xml \
+	    MODULE=test_v2_fuzz_ahb)
+
+# Constrained-random peer traffic, one fixed seed with B19 dips: random reads and
+# writes to a 64-word window, random next-address timing (back-to-back, early,
+# late-in-stall, after idle), scored on read values, AW/AR/W counts and the far
+# memory. The long multi-seed soak runs outside the gate.
+sim_gate_v2_fuzz_ahb:
+	$(call sim_gate_run,v2_fuzz_ahb,\
+	  rm -rf cocotb/tidelink_top_pair_v2/sim_build_fuzz_gate && \
+	  COCOTB_TEST_FILTER=fuzz_peer_traffic FUZZ_SEED=7 FUZZ_N=200 FUZZ_DIP=1 \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 SIM_BUILD=sim_build_fuzz_gate \
+	    COCOTB_RESULTS_FILE=sim_build_fuzz_gate/res_fuzz_ahb.xml \
+	    MODULE=test_v2_fuzz_ahb)
 
 sim_gate_fifo_concurrent_race:
 	$(call sim_gate_run,fifo_concurrent_race,\
@@ -2113,7 +2136,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	apb_regs_unit \
 	v2_ahb_compliant \
 	v2_ll_bootstrap_late \
-	v2_m4dup
+	v2_m4dup \
+	v2_fuzz_rtw v2_fuzz_ahb
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -2264,6 +2288,8 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_ahb_compliant
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_ll_bootstrap_late
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_m4dup
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_fuzz_rtw
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_fuzz_ahb
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

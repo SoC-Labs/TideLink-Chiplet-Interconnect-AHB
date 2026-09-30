@@ -2898,6 +2898,20 @@ bugs:
       landing-only checks never saw it. Each affected store costs two link round
       trips, and a non-idempotent target (mailbox slot, doorbell, a polled flag)
       sees the stale value first.
+      READ CORRUPTION (found 2026-09-30 by the random soak, confirmed directed): the
+      same pre-latch reached from a READ's data phase is worse. A peer READ whose
+      data phase stalls, followed by a peer WRITE presented at ANY point in that
+      stall (k = 0..40 cycles, including the first data-phase cycle), returned 0
+      instead of the stored value 7/7 and issued the write twice: XHB500 returned
+      the read data on the edge it took the pre-latched write, the hold kept the
+      master from seeing it, and the master sampled HRDATA later. LDR-peer then
+      STR-peer is the ordinary read-modify-write shape; the compute M4DUP matrix
+      tested only STR;ALU;LDR, which is correct either way. It needs the write's
+      address to arrive DURING the read's stall: on compute 9d8a8f4 a write
+      presented 0-20 idle cycles after the read completed was clean
+      (handoff-tidelink-rtw-20260930, test_v2_rtw_after.py). Exposed images:
+      anything without this fix (eth 785daee; compute rsyn5 and main-checkout
+      FPGA images); rule there = DSB before every peer store.
     root_cause: >
       tidelink_top.sv wr_hold_set = ext_is_nonseq & ahb_sub_hwrite & ~pipe_valid_r
       has no notion of "the master is already in a data phase to this port".
@@ -2911,7 +2925,7 @@ bugs:
       netlist_affecting: true
       compute_lineage: "372450a on local branch compute/m4dup-t1 (parent 9d8a8f4), byte-identical to the compute session's gated file (md5 ff56b96e). Compute evidence: loop8 15 -> 8 AW, T1 reverted -> 15; TideLink sim_gate 9d8a8f4 vs +T1 identical per suite with pinned homes; Genus 0 loops with a 2-loop positive control (handoff-crcpair-20260924/rsyn5_gates/PATCHSET.md)."
     verification:
-      sim_test: "v2_m4dup (sim_gate suite label; cocotb/tidelink_top_pair_v2/test_v2_m4dup.py): 8 non-bufferable single writes from an AHB-Lite master that raises each next NONSEQ 20 cycles into the previous stalled data phase (after W, before B), plus a back-to-back control; counts AW and W beats at the master die's s_axi and checks the far memory"
+      sim_test: "v2_m4dup, v2_fuzz_rtw and v2_fuzz_ahb (sim_gate suite labels; cocotb/tidelink_top_pair_v2/test_v2_m4dup.py and test_v2_fuzz_ahb.py). v2_m4dup: 8 non-bufferable single writes from an AHB-Lite master that raises each next NONSEQ 20 cycles into the previous stalled data phase (after W, before B), plus a back-to-back control; counts AW and W beats at the master die's s_axi and checks the far memory"
       in_sim_gate: true
       hw_tested: false
       hw_validated: false
@@ -2922,7 +2936,11 @@ bugs:
         duplicate carrying the previous store's value, final memory exact (the
         compute signature); the control gives 8/8. Fixed: 2/2, 8 AW with the W
         beats exactly the stored values, and the late loop runs in the same 2048
-        cycles as back-to-back (3840 before).
+        cycles as back-to-back (3840 before). Read side (v2_fuzz_rtw, read then
+        write at k = 0,1,2,3,5,10,40): pre-fix 7/7 wrong reads (0) and 7/7
+        duplicated writes; fixed 7/7 correct. Random soak (v2_fuzz_ahb family),
+        80 mixed transfers seed 1: pre-fix 68 AW for 46 writes and 6 wrong reads
+        with final memory exact; fixed exact.
     residual: >
       Not fixed here: T2, a peer NONSEQ pending behind ANOTHER slave's wait state on
       the chiplet bus (e.g. a TLAPB write followed by a peer store), which is

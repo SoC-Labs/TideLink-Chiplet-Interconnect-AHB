@@ -359,7 +359,8 @@ endef
 	sim_gate_v2_ahb_compliant \
 	sim_gate_v2_ll_bootstrap_late \
 	sim_gate_v2_m4dup \
-	sim_gate_v2_fuzz_rtw sim_gate_v2_fuzz_ahb
+	sim_gate_v2_fuzz_rtw sim_gate_v2_fuzz_ahb \
+	sim_gate_v2_a7_phy_guard sim_gate_v2_a7_stop
 
 # WHAT THIS CHECKS, AND WHY IT IS NOT JUST TWO `command -v` LINES.
 # Until 2026-09-11 it was exactly the two tool checks below and nothing else. A
@@ -862,6 +863,27 @@ sim_gate_fc_adapter_arbiter:
 	$(call sim_gate_run,fc_adapter_arbiter,\
 	  rm -rf cocotb/tidelink_fc_adapter/sim_build* && \
 	  $(MAKE) -C cocotb/tidelink_fc_adapter MODULE=test_fc_adapter_arbiter)
+
+# A7 (2026-09-30): the auto-anchor SYNC beacon must never overwrite a live link
+# word, and must stop on AXI traffic. v2_a7_phy_guard forces the beacon on both
+# dies and sweeps 64 writes across the 32-word SYNC grid (af3a5d67: 4/64 lost;
+# fixed 64/64). v2_a7_stop holds the TL-channel stop input low (the silicon
+# condition): each beacon must stop within 16 cycles of that die's first AXI
+# app->link valid (af3a5d67: never; fixed: 3 cycles), and 64 single writes under
+# the real running beacon must all complete (af3a5d67: 4/64 lost; fixed 64/64).
+sim_gate_v2_a7_phy_guard:
+	$(call sim_gate_run,v2_a7_phy_guard,\
+	  rm -rf cocotb/tidelink_top_pair_v2/sim_build_a7_phy && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 SIM_BUILD=sim_build_a7_phy \
+	    COCOTB_RESULTS_FILE=sim_build_a7_phy/res_a7_phy.xml \
+	    MODULE=test_v2_a7_beacon TESTCASE=forced_beacon_writes)
+
+sim_gate_v2_a7_stop:
+	$(call sim_gate_run,v2_a7_stop,\
+	  rm -rf cocotb/tidelink_top_pair_v2/sim_build_a7_stop && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 AUTO_ANCHOR=1 SIM_BUILD=sim_build_a7_stop \
+	    COCOTB_RESULTS_FILE=sim_build_a7_stop/res_a7_stop.xml \
+	    MODULE=test_v2_a7_beacon TESTCASE=beacon_stops_on_axi$(comma)silicon_beacon_write_sweep)
 
 # PTP SERVO CLOSED-LOOP CONVERGENCE (2026-09-23, TL-048 / rev-2 review LP-13).
 # tidelink_ptp_servo drives a REAL phc_clock_core (from the ptp-hardware-clock-ahb
@@ -2137,7 +2159,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	v2_ahb_compliant \
 	v2_ll_bootstrap_late \
 	v2_m4dup \
-	v2_fuzz_rtw v2_fuzz_ahb
+	v2_fuzz_rtw v2_fuzz_ahb \
+	v2_a7_phy_guard v2_a7_stop
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -2290,6 +2313,8 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_m4dup
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_fuzz_rtw
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_fuzz_ahb
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_a7_phy_guard
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_a7_stop
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

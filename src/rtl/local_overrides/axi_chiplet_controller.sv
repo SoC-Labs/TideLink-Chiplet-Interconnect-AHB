@@ -5019,7 +5019,25 @@ module axi_chiplet_controller #(
     reg        auto_anchor_pulsed_ever_q;   // sticky diag: >=1 beacon cycle emitted this episode
     reg [15:0] auto_anchor_dwell_max_q;      // sticky diag: max tx-idle dwell streak reached
     wire       auto_anchor_link_up = sync_obs_fcsm_state_1[2];   // FCSM in 4..7 (link up)
-    wire       auto_anchor_tx_idle = ~sync_obs_a2l_app_v_1;      // no app->link word in flight
+    // A7 (2026-09-30): the stop input used to be the TideLink-channel FC node
+    // only (obs_a2l_replay_app_valid, tl2wl), so AXI traffic never stopped the
+    // beacon and on silicon it ran to ANCHOR_LEN (seconds) whenever this die
+    // missed the one TL-channel word of the link-up doorbell exchange (tb_ce3:
+    // the rc4 eth reaches LINK_IDLE first). Also stop on any AXI app->link
+    // valid: AW/W/AR on the target port (our requests) and B/R on the
+    // initiator port (our responses to the peer). Same 2-flop treatment as
+    // sync_obs_a2l_app_v; in tidelink_top apb_clk and app_clk are both hclk.
+    wire       axi_a2l_any_v = axi_tgt_0_aw_valid | axi_tgt_0_w_valid | axi_tgt_0_ar_valid
+                             | axi_ini_0_b_valid  | axi_ini_0_r_valid;
+    reg        sync_axi_a2l_v_0, sync_axi_a2l_v_1;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            sync_axi_a2l_v_0 <= 1'b0; sync_axi_a2l_v_1 <= 1'b0;
+        end else begin
+            sync_axi_a2l_v_0 <= axi_a2l_any_v; sync_axi_a2l_v_1 <= sync_axi_a2l_v_0;
+        end
+    end
+    wire       auto_anchor_tx_idle = ~(sync_obs_a2l_app_v_1 | sync_axi_a2l_v_1);  // no app->link word in flight, TL or AXI
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
             auto_anchor_pulse_q <= 1'b0; auto_anchor_done_q <= 1'b0;

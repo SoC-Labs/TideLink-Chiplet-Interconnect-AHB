@@ -1526,7 +1526,10 @@ module tidelink_phy_align_calibrator #(
                 if (trigger_now)        nxt_state = S_ARM;
             end
             S_CANCEL: begin
-                if (!swreset)           nxt_state = S_ARM;   // restart fresh
+                // H31 (2026-10-01): the synchronised level, like every other
+                // swreset use here. The raw async input decided a state bit
+                // on link_clk_rx directly (HAPS CDC classifier, 8 endpoints).
+                if (!swreset_sync)      nxt_state = S_ARM;   // restart fresh
             end
             S_HOLD: begin
                 // Latched all lanes; keep training_mode high (TX pattern +

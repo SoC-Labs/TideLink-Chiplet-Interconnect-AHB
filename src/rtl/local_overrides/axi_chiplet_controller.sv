@@ -6200,6 +6200,21 @@ module axi_chiplet_controller #(
     // Keeps a small overlap margin but fits comfortably inside the autoneg
     // poll budget.
 `ifdef TIDELINK_PHY_V2
+    // H30 (2026-10-01): the calibrator's swreset is a combinational merge of
+    // apb_clk flops (swi_recal_r, the autoneg hold-counter decode
+    // local_swreset_pulse_w = (swreset_hold_r != 0), cal_eye_converged_r,
+    // sync_cal_in_hold_1) sampled by the calibrator's link_clk_rx 2FF. A
+    // multi-bit counter step or a mask change coinciding with a load could
+    // glitch it; a captured HIGH glitch sends a converged die to S_CANCEL and
+    // a full re-sweep. Register the merge once in apb_clk so the synchroniser
+    // sees a single flop. +1 apb_clk of latency on a 127+ cycle hold.
+    reg cal_swreset_q;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) cal_swreset_q <= 1'b0;
+        else           cal_swreset_q <= swi_recal_r |
+                                        (local_swreset_pulse_w &
+                                         ~(cal_eye_converged_r | sync_cal_in_hold_1));
+    end
     // =====================================================================
     // S3 PHY swap (2026-06-11): deps/tidelink-phy calibrator (FIX-series,
     // always-on FSM, silicon-validated with the FIX-N..R serdes). Instance
@@ -6260,9 +6275,7 @@ module axi_chiplet_controller #(
         // proven the local die is parked with all active lanes locked, so a
         // re-sweep is never wanted. A genuinely-unconverged die is NOT parked
         // (cal_in_hold=0) so the legitimate "never-locked" re-arm still fires.
-        .swreset                (swi_recal_r |
-                                 (local_swreset_pulse_w &
-                                  ~(cal_eye_converged_r | sync_cal_in_hold_1))),
+        .swreset                (cal_swreset_q),   // H30: registered merge, see above
         .lane_locked            (lane_locked_w),
         .lane_mask              (wlink_rx_lane_mask),
         .apb_bit_slip_override  (24'h0),

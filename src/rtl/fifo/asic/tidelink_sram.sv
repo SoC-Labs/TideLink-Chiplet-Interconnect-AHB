@@ -5,7 +5,11 @@
 //     * Active-low CEN  (chip enable)  ← inverted from active-high CS
 //     * Active-low WEN  (per-bit)      ← expanded & inverted from WREN byte enables
 //     * Active-low GWEN (global write) ← low when any write is active
-//     * EMA/EMAW/RET1N  tied to default (normal operation, no retention)
+//     * EMA = 3'b010, EMAW = 2'b00: the macro defaults (rf_08k.v/rf_16k.v warn
+//       "Default value 2" / "Default value 0"). EMA was tied 3'b000 (minimum
+//       read margin) under a "default" comment until 2026-10-03; the other
+//       compute macros all use 3'b010.
+//     * RET1N = 1 (normal operation, no retention)
 //
 // For ASIC: swap this file into the filelist via flists/tidelink_asic.flist.
 // The interface is identical to the FPGA and generic variants — only the
@@ -71,7 +75,7 @@ module tidelink_sram #(
                 .GWEN  (gwen),
                 .WEN   (wen),
                 .Q     (RDATA),
-                .EMA   (3'b000),
+                .EMA   (3'b010),   // macro default
                 .EMAW  (2'b00),
                 .RET1N (1'b1)
             );
@@ -84,7 +88,7 @@ module tidelink_sram #(
                 .GWEN  (gwen),
                 .WEN   (wen),
                 .Q     (RDATA),
-                .EMA   (3'b000),
+                .EMA   (3'b010),   // macro default
                 .EMAW  (2'b00),
                 .RET1N (1'b1)
             );

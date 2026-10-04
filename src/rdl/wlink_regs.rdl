@@ -442,7 +442,10 @@ addrmap wlink_regs {
         field {} err_inject_byte[8] = 0;
         err_inject_byte->sw = rw;
         err_inject_byte->hw = r;
-        err_inject_byte->desc = "Byte index within packet to corrupt.";
+        err_inject_byte->desc = "Byte index within packet to corrupt. 0 = data_id, 1-2 = word count,
+                3 = header ECC, 4 = FC packet number (FC.scala ll_rx.data[7:0]; a flip
+                is caught by the sequence check and replayed even with CRC off),
+                5+ = payload (an AXI W word's data starts at byte 5).";
 
         field {} err_inject_bit[3] = 0;
         err_inject_bit->sw = rw;
@@ -456,7 +459,14 @@ addrmap wlink_regs {
         field {} err_inject_enable[1] = 0;
         err_inject_enable->sw = rw;
         err_inject_enable->hw = r;
-        err_inject_enable->desc = "1 = enable error injection on matching packets.";
+        err_inject_enable->desc = "ONE-SHOT ARM on the 0->1 edge: corrupts the next packet whose
+                data_id matches, then disarms (a level of 1 does not re-arm).
+                The edge is detected by a 2-flop synchroniser in the TX LINK clock,
+                so software must hold this bit 0, then 1, for at least 2 TX-link-clock
+                periods each. That depends on the link-clock ratio: on HAPS
+                (user_ref 3.125 MHz) one period is 128 HCLK, and a ~40-HCLK low
+                pulse is missed, so only the first arm after reset fires. Holding
+                each level for >= 1 ms is safe on every current platform.";
     };
     link_error_injection_reg link_error_injection @ 0x023C;
 

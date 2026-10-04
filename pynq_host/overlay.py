@@ -251,11 +251,12 @@ class TidelinkOverlay(Overlay):
 
         # Wlink lane configuration
         lane_mask_reg = self.apb.read(WLINK_LANE_MASK_OFF)
-        tx_lane_mask = lane_mask_reg & 0xFFFF
-        rx_lane_mask = (lane_mask_reg >> 16) & 0xFFFF
+        # Wlink.v packs {rx, tx} as 8+8 bits and {rx, tx} active counts as 4+4.
+        tx_lane_mask = lane_mask_reg & 0xFF
+        rx_lane_mask = (lane_mask_reg >> 8) & 0xFF
         active_lanes_reg = self.apb.read(WLINK_ACTIVE_LANES_OFF)
-        tx_active_lanes = (active_lanes_reg & 0xFFFF) + 1
-        rx_active_lanes = ((active_lanes_reg >> 16) & 0xFFFF) + 1
+        tx_active_lanes = (active_lanes_reg & 0xF) + 1
+        rx_active_lanes = ((active_lanes_reg >> 4) & 0xF) + 1
 
         # Tidelink-side credit counters
         current_credits = self.apb.read(0x0c)
@@ -317,8 +318,8 @@ class TidelinkOverlay(Overlay):
         come up as 0xFF after reset (all lanes enabled).
         """
         v = self.apb.read(WLINK_LANE_MASK_OFF)
-        tx = v & 0xFFFF
-        rx = (v >> 16) & 0xFFFF
+        tx = v & 0xFF          # Wlink.v packs {rx, tx} as 8+8 bits
+        rx = (v >> 8) & 0xFF
         return tx, rx
 
     def get_active_lanes(self):
@@ -328,8 +329,8 @@ class TidelinkOverlay(Overlay):
         as ``popcount(lane_mask) - 1``. Add 1 to get the lane count.
         """
         v = self.apb.read(WLINK_ACTIVE_LANES_OFF)
-        tx = (v & 0xFFFF) + 1
-        rx = ((v >> 16) & 0xFFFF) + 1
+        tx = (v & 0xF) + 1     # {rx, tx} counts packed 4+4
+        rx = ((v >> 4) & 0xF) + 1
         return tx, rx
 
     def set_lane_mask(self, tx_mask, rx_mask=None):
@@ -360,7 +361,7 @@ class TidelinkOverlay(Overlay):
             raise ValueError(
                 "lane_mask=0 is illegal (link cannot operate); "
                 "tx=0x{:x} rx=0x{:x}".format(tx_mask, rx_mask))
-        self.apb.write(WLINK_LANE_MASK_OFF, tx | (rx << 16))
+        self.apb.write(WLINK_LANE_MASK_OFF, tx | (rx << 8))   # 8+8; rx<<16 (pre 2026-10-04) zeroed every RX lane
 
     def assert_link_safe_for_tx(self):
         """Raise RuntimeError unless the link is safe for an AHB_TX write.

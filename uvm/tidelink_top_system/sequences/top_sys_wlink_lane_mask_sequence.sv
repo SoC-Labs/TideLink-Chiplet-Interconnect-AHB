@@ -8,8 +8,10 @@
 // striping corruption.
 //
 // Field layout (see src/rdl/wlink_regs.rdl link_lane_mask_reg):
-//   bits [15:0]  tx_lane_mask  bit[k]=1 enables physical TX lane k
-//   bits [31:16] rx_lane_mask  bit[k]=1 enables physical RX lane k
+//   bits [7:0]   tx_lane_mask  bit[k]=1 enables physical TX lane k
+//   bits [15:8]  rx_lane_mask  bit[k]=1 enables physical RX lane k
+//   (Wlink.v packs {rx, tx} as 8+8 bits; the 16+16 layout written here before
+//   2026-10-04 put the RX mask in ignored bits and disabled every RX lane.)
 ///////////////////////////////////////////////////////////////////////////////
 
 `ifndef GUARD_TOP_SYS_WLINK_LANE_MASK_SEQUENCE_SV
@@ -20,8 +22,8 @@ class top_sys_wlink_lane_mask_sequence extends uvm_sequence #(apb_master_transac
   `uvm_object_utils(top_sys_wlink_lane_mask_sequence)
 
   string         side_name = "?";
-  bit [15:0]     tx_mask   = 16'h00FF;  // default: 8-lane build, all lanes enabled
-  bit [15:0]     rx_mask   = 16'h00FF;
+  bit [7:0]      tx_mask   = 8'hFF;  // default: 8-lane build, all lanes enabled
+  bit [7:0]      rx_mask   = 8'hFF;
 
   function new(string name = "top_sys_wlink_lane_mask_sequence");
     super.new(name);
@@ -31,12 +33,12 @@ class top_sys_wlink_lane_mask_sequence extends uvm_sequence #(apb_master_transac
     apb_master_transaction wr_txn;
 
     `uvm_info("LANE_MASK", $sformatf(
-      "[%s] Programming Wlink lane_mask: tx=0x%04h rx=0x%04h (active_tx=%0d active_rx=%0d)",
+      "[%s] Programming Wlink lane_mask: tx=0x%02h rx=0x%02h (active_tx=%0d active_rx=%0d)",
       side_name, tx_mask, rx_mask, $countones(tx_mask), $countones(rx_mask)), UVM_LOW)
 
     `uvm_create(wr_txn)
     wr_txn.addr  = 15'h0214;  // link_lane_mask register (Wlink region 0x0000-0x1FFF)
-    wr_txn.wdata = {rx_mask, tx_mask};
+    wr_txn.wdata = {16'h0000, rx_mask, tx_mask};
     wr_txn.write = 1;
     `uvm_send(wr_txn)
   endtask

@@ -335,12 +335,12 @@ addrmap wlink_regs {
                 Read-only; derived in hardware as popcount(link_lane_mask) - 1.
                 To change link width, write the corresponding link_lane_mask field.";
 
-        field {} active_tx_lanes[16] = 7;
+        field {} active_tx_lanes[4] = 7;   // [3:0]: Wlink.v packs {active_rx_lanes, active_tx_lanes} in 8 bits
         active_tx_lanes->sw = r;
         active_tx_lanes->hw = w;
         active_tx_lanes->desc = "Active TX lanes minus 1 (derived from tx_lane_mask).";
 
-        field {} active_rx_lanes[16] = 7;
+        field {} active_rx_lanes[4] = 7;   // [7:4]
         active_rx_lanes->sw = r;
         active_rx_lanes->hw = w;
         active_rx_lanes->desc = "Active RX lanes minus 1 (derived from rx_lane_mask).";
@@ -356,18 +356,18 @@ addrmap wlink_regs {
                 Hardware reset value tracks the synthesised lane count
                 (numTxLanes / numRxLanes from the Wlink Chisel config) —
                 see Wlink.scala WavRW(...,((1<<numTxLanes)-1).U,...). The
-                constant 0x00FF in this RDL is illustrative for the 8-lane
+                constant 0xFF in this RDL is illustrative for the 8-lane
                 TideLink build only. For other builds (1/2/4 lanes) the
                 actual reset is (1<<numLanes)-1 and software should read
                 this register at boot to discover the real default rather
                 than relying on the RDL-derived header constant.";
 
-        field {} tx_lane_mask[16] = 16'h00FF;
+        field {} tx_lane_mask[8] = 8'hFF;   // [7:0]: Wlink.v packs {rx_lane_mask, tx_lane_mask} in 16 bits
         tx_lane_mask->sw = rw;
         tx_lane_mask->hw = r;
         tx_lane_mask->desc = "TX per-lane enable. bit[k]=1 enables physical TX lane k.";
 
-        field {} rx_lane_mask[16] = 16'h00FF;
+        field {} rx_lane_mask[8] = 8'hFF;   // [15:8]
         rx_lane_mask->sw = rw;
         rx_lane_mask->hw = r;
         rx_lane_mask->desc = "RX per-lane enable. bit[k]=1 enables physical RX lane k.";

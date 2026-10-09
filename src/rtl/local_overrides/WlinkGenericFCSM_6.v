@@ -1620,7 +1620,12 @@ module WlinkGenericFCSM_6 #(
   always @(posedge io_tx_clk or posedge io_tx_reset) begin
     if (io_tx_reset) begin
       socl_l7_real_crc_seen <= 1'h0;
-    end else if (crcCorruptSeen) begin
+    end else if (1'b0) begin   // TL-036 ECO (2026-10-09): set input tied low, so the
+      // flag never latches and a CRC error no longer disarms the state-7 watchdog.
+      // Netlist ECO on rsyn9b: the OR2 feeding socl_l7_real_crc_seen_reg.D has its
+      // set input (A2) reconnected to TIEL, one per link (g630226, g629907).
+      // Was: else if (crcCorruptSeen). This is the LEC golden for that ECO; the
+      // proper fix for re-synthesis is on compute/tl036-fix.
       socl_l7_real_crc_seen <= 1'h1;
     end
   end

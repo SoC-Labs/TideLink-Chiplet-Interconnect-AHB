@@ -776,6 +776,7 @@ sim_gate_nack_wedge_recovery:
 	$(call sim_gate_run,nack_wedge_recovery,\
 	  cd cocotb/tidelink_top_pair && \
 	  $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_l7_wedge_repro && \
+	  $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_tl036_real_crc && \
 	  $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_13_ack_drop_recovery)
 
 # test_14 only — currently FAILS on the pre-existing unrecovered-wedge gap.

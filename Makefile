@@ -1,6 +1,6 @@
 .PHONY: clean_all clean_uvm clean_cocotb clean_xprop clean_lint clean_syn \
         sim_robust sim_synth_mode xdc_lint xdc_lint_selftest \
-        synth_lint_selftest robust_all sim-repro sim-repro-skid3 \
+        synth_lint_selftest robust_all sim-repro sim-repro-skid3 sim-wlink-pair \
         sim-regression farm_gate farm_gate_fast
 
 # =============================================================================
@@ -100,14 +100,32 @@ sim-repro:
 	@echo "========================================"
 	@echo " sim-repro — HW regression gates (default SKID=0)"
 	@echo "========================================"
-	$(MAKE) -C cocotb/wlink_pair MODULE=test_hw_regression_gates
-	$(MAKE) -C cocotb/wlink_pair MODULE=test_assert_bringup
+	$(MAKE) -C cocotb/debug/wlink_pair MODULE=test_hw_regression_gates
+	$(MAKE) -C cocotb/debug/wlink_pair MODULE=test_assert_bringup
 
 sim-repro-skid3:
 	@echo "========================================"
 	@echo " sim-repro with SKID_BITS=3 (FPGA-like skew)"
 	@echo "========================================"
-	$(MAKE) -C cocotb/wlink_pair MODULE=test_hw_regression_gates SKID_BITS=3
+	$(MAKE) -C cocotb/debug/wlink_pair MODULE=test_hw_regression_gates SKID_BITS=3
+
+# =============================================================================
+# sim-wlink-pair — the three Wlink-layer pair sims required before any HW deploy
+# (with cocotb/tidelink_top_pair test_tidelink_pair_doorbell). The bench lives
+# in cocotb/debug/wlink_pair (moved there from cocotb/wlink_pair by bd9646e5).
+# Runs V1 (flists/tidelink_fpga.flist) AND V2 (TIDELINK_PHY_V2=1, the shipping
+# PHY) in separate build dirs. Needs the usual env: source set_env.sh and pass
+# CHIPLET_HOME=<pinned> TIDECHART_HOME=<pinned> on the make line.
+# =============================================================================
+WLINK_PAIR_PREDEPLOY = test_link_idle_to_link_data test_tx_gated_by_training \
+                       test_credit_handshake_end_to_end
+sim-wlink-pair:
+	@set -e; for v in 0 1; do for m in $(WLINK_PAIR_PREDEPLOY); do \
+	  echo "=== wlink_pair $$m TIDELINK_PHY_V2=$$v ==="; \
+	  rm -rf cocotb/debug/wlink_pair/sim_build_v$$v; \
+	  $(MAKE) -C cocotb/debug/wlink_pair MODULE=$$m TIDELINK_PHY_V2=$$v \
+	      SIM_BUILD=sim_build_v$$v; \
+	done; done
 
 
 # =============================================================================

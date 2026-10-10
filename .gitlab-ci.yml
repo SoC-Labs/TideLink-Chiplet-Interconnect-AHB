@@ -801,18 +801,18 @@ cocotb-wlink-pair:
   <<: *vcs_cocotb_setup
   script:
     - echo "Running cocotb wlink_pair bring-up tests (6 tests)"
-    - cd "$WORK_DIR/cocotb/wlink_pair" && make
+    - cd "$WORK_DIR/cocotb/debug/wlink_pair" && make
   after_script:
-    - mkdir -p cocotb/wlink_pair
-    - cp "$WORK_DIR/cocotb/wlink_pair/results.xml"   cocotb/wlink_pair/ 2>/dev/null || true
-    - cp "$WORK_DIR/cocotb/wlink_pair/run.log"       cocotb/wlink_pair/ 2>/dev/null || true
+    - mkdir -p cocotb/debug/wlink_pair
+    - cp "$WORK_DIR/cocotb/debug/wlink_pair/results.xml"   cocotb/debug/wlink_pair/ 2>/dev/null || true
+    - cp "$WORK_DIR/cocotb/debug/wlink_pair/run.log"       cocotb/debug/wlink_pair/ 2>/dev/null || true
   artifacts:
     when: always
     paths:
-      - cocotb/wlink_pair/
+      - cocotb/debug/wlink_pair/
     reports:
       junit:
-        - cocotb/wlink_pair/results.xml
+        - cocotb/debug/wlink_pair/results.xml
     expire_in: 30 days
 
 # ============================================================================

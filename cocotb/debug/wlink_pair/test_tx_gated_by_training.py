@@ -38,8 +38,12 @@ R4_SLOT0_ROLE_CFG = 0b0000
 WL_LINK_ENABLE_RESET = 0x0208
 WL_LANE_MASK         = 0x0214
 
-# Expected training patterns per lane (WavD2DGpio.v:347-349).
-TRAINING_PATTERNS = [0xA3, 0xB5, 0xC9, 0xD3, 0x65, 0x4B, 0x59, 0x2D]
+# Expected 16-bit training word per lane. Since e13dc3f8 (2026-05-28, "switch TX
+# to constant 0x12EB/0xED14 per submodule spec"; deps/tidelink-gpio-phy
+# docs/TRAINING_MODULE_SPEC.md) WavD2DGpio.v emits constant alternating P / ~P
+# with P = 0x12EB: lanes 0,2,4,6 = 0x12EB, lanes 1,3,5,7 = 0xED14. The earlier
+# per-lane period-8 {A3,B5,C9,D3,65,4B,59,2D} bytes no longer exist in the RTL.
+TRAINING_WORDS = [0x12EB if lane % 2 == 0 else 0xED14 for lane in range(8)]
 
 
 def _chiplet(dut, side):
@@ -127,7 +131,7 @@ async def test_01_fcsm_parked_while_training_held(dut):
 async def test_02_tx_emits_training_pattern(dut):
     """While training is held, reconstruct each lane's serialised byte
     from io_pad + count over 16 master_clk cycles, then confirm it
-    equals {pattern, pattern} (the doubled training byte).
+    equals the per-lane training word (0x12EB even lanes / 0xED14 odd lanes).
 
     This proves the WavD2DGpioTx training mux selects the pattern, not
     io_link_data (which may still carry LL TX content from the FCSM)."""
@@ -154,8 +158,7 @@ async def test_02_tx_emits_training_pattern(dut):
     mismatches = []
     lltx_observations = []  # (lane, link_data sample)
     for lane in range(8):
-        pat = TRAINING_PATTERNS[lane]
-        expected = (pat << 8) | pat
+        expected = TRAINING_WORDS[lane]
         gpiotx = _gpiotx(dut, "m", lane)
         link_data_h = gpiotx.io_link_data
         pad_h       = gpiotx.io_pad
@@ -181,11 +184,11 @@ async def test_02_tx_emits_training_pattern(dut):
         if reconstructed != expected:
             mismatches.append(
                 f"lane{lane}: pad reconstructed 0x{reconstructed:04x} != "
-                f"expected {{P,P}} 0x{expected:04x} (P=0x{pat:02x})")
+                f"expected training word 0x{expected:04x}")
         else:
             dut._log.info(
                 f"  lane{lane}: pad-reconstructed 0x{reconstructed:04x} "
-                f"== {{P,P}} 0x{expected:04x}  io_link_data=0x{ld:04x}")
+                f"== training word 0x{expected:04x}  io_link_data=0x{ld:04x}")
 
     if mismatches:
         for m in mismatches:
@@ -195,7 +198,7 @@ async def test_02_tx_emits_training_pattern(dut):
     # while training is held (proof that the mux is actively masking).
     nonzero = sum(1 for _, ld in lltx_observations if ld != 0)
     dut._log.info(
-        f"  PASS: 8/8 lanes emit {{pattern,pattern}} on io_pad; "
+        f"  PASS: 8/8 lanes emit their training word on io_pad; "
         f"{nonzero}/8 lanes had io_link_data != 0 at sample time "
         "(LL TX carried real content masked by training mux).")
 

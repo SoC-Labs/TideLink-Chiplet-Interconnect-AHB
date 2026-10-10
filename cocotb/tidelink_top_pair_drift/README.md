@@ -87,7 +87,7 @@ tb.watch_fc_pulses(n, label)  # counts FC valid pulses per side over n cycles
 
 ## Related
 
-- `cocotb/wlink_pair/` — Wlink-layer-only paired tests; predates this one
+- `cocotb/debug/wlink_pair/` — Wlink-layer-only paired tests; predates this one
 - `cocotb/tidelink_system/` — FC-adapter-only loopback (no Wlink); useful
   for FIFO/returner unit-level work but bypasses the actual Wlink stack
 - `pynq_host/scripts/deploy_pair.sh` — the HW analog of `do_role_lock`

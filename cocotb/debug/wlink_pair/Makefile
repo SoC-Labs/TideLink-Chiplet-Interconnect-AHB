@@ -106,9 +106,25 @@ SKID_PER_LANE_DEFINES += +define+TB_TOP_STUCK_LANES_MASK_S=$(STUCK_LANES_MASK_S)
 endif
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
+# V1/V2 flist selection (same convention as cocotb/tidelink_top_pair).
+# TIDELINK_PHY_V2=1 compiles flists/tidelink_fpga_v2.flist (the shipping PHY:
+# WavD2DGpio_v2 serdes + lane-mask-aware calibrator, +define+TIDELINK_PHY_V2).
+# Use a dedicated SIM_BUILD (e.g. SIM_BUILD=sim_build_v2) so V1/V2 do not clobber.
+TIDELINK_PHY_V2 ?= 0
+ifeq ($(TIDELINK_PHY_V2),1)
+COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist
+else
 COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/tidelink_fpga.flist
+endif
 COMPILE_ARGS += +define+TB_TOP_SKID_BITS=$(SKID_BITS)
 COMPILE_ARGS += $(SKID_PER_LANE_DEFINES)
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
+
+# Build-staleness guard: DUT RTL arrives via -f <flist> (invisible to make), so
+# without this an RTL-only edit re-runs the STALE simv. See docs/SIM_GATE_COVERAGE.md.
+include $(TIDELINK_HOME)/cocotb/flist_deps.mk
+_TL_FLIST   := $(TIDELINK_HOME)/flists/tidelink_fpga$(if $(filter 1,$(TIDELINK_PHY_V2)),_v2,).flist
+_flist_deps := $(_TL_FLIST) $(call flist_srcs,$(_TL_FLIST))
+CUSTOM_COMPILE_DEPS += $(_flist_deps)
 
 include $(shell cocotb-config --makefiles)/Makefile.sim

@@ -20,7 +20,7 @@ export TIDELINK_HOME
 SITE_VARS_REQUIRED += CMSDK_DIR
 include $(TIDELINK_HOME)/mk/site.mk
 
-PAIR = $(TIDELINK_HOME)/cocotb/wlink_pair
+PAIR = $(TIDELINK_HOME)/cocotb/debug/wlink_pair
 VERILOG_SOURCES = $(PAIR)/tb_top.sv $(PAIR)/pad_skid.sv
 
 TOPLEVEL = tb_top

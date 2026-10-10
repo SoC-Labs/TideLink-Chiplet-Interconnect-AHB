@@ -686,7 +686,7 @@ sim_gate_calibrator_wrap:
 	$(call sim_gate_run,calibrator_wrap,\
 	  $(MAKE) -C cocotb/tidelink_phy_align_calibrator DEPS=1 TOPLEVEL=tb_top_deps \
 	    CAL_RTL=$(TIDELINK_HOME)/src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv \
-	    MODULE=test_calibrator_wrap,test_calibrator_s_cancel_sync SIM_BUILD=sim_build_wrap \
+	    MODULE=test_calibrator_wrap$(comma)test_calibrator_s_cancel_sync SIM_BUILD=sim_build_wrap \
 	    COCOTB_RESULTS_FILE=sim_build_wrap/res_wrap.xml)
 
 # TL-027 a2l REPLAY-FIFO CDC FALSE-FULL SELF-LATCH (reproduce+heal, 2026-08-08).

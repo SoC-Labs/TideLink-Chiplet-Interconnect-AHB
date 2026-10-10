@@ -2060,7 +2060,6 @@ sim_gate_flist_divergence:
 sim_gate_asic_fileset_identity:
 	$(call sim_gate_run,asic_fileset_identity,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 EPOCH_PROFILE=zero \
-	    COCOTB_RESULTS_FILE=sim_build_zero_asic/res_ident.xml \
 	    MODULE=test_asic_fileset_identity && \
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=0 EPOCH_PROFILE=zero \
 	    COCOTB_RESULTS_FILE=sim_build_zero/res_ident.xml \
@@ -2071,7 +2070,6 @@ sim_gate_asic_fileset_identity:
 sim_gate_asic_v2_pair_data:
 	$(call sim_gate_run,asic_v2_pair_data,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 EPOCH_PROFILE=zero \
-	    COCOTB_RESULTS_FILE=sim_build_zero_asic/res_pair_data.xml \
 	    MODULE=test_v2_pair_data)
 
 # Clean bring-up at the ~40 ns silicon clock ratio, and the marginal-link
@@ -2092,8 +2090,7 @@ sim_gate_asic_l7_starvation:
 	    EPOCH_PROFILE=zero COCOTB_RESULTS_FILE=sim_build_zero_wdog256/res_l7.xml \
 	    MODULE=test_asic_l7_starvation_backstop && \
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 L7_WDOG_THRESHOLD=256 \
-	    EPOCH_PROFILE=zero COCOTB_RESULTS_FILE=sim_build_zero_asic_wdog256/res_l7.xml \
-	    MODULE=test_asic_l7_starvation_backstop)
+	    EPOCH_PROFILE=zero MODULE=test_asic_l7_starvation_backstop)
 # --- WLINK TX POWER-STATE unit bench (added 2026-08-26, coverage-driven) -----
 # WlinkTxPstateCtrl was at FSM 0.00% -- 1 of 3 states, 0 of 4 transitions -- in
 # all 42 coverage databases that contain it: the TX power-state controller has

@@ -324,6 +324,12 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 #   a FALSE non-vacuity failure. Add AUTO_ANCHOR to the key so the two get separate dirs.
 SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)$(if $(filter 1,$(HONEST_STRAPS)),_honest,)$(if $(filter 1,$(AUTO_ANCHOR)),_autoanchor,)$(if $(filter 1,$(ASIC_FLIST)),_asic,)$(if $(RF16K_V),$(if $(filter 1,$(ASIC_FLIST)),$(if $(filter 1,$(RF16K_UD)),_rfud,_rfreal),),)$(if $(L7_WDOG_THRESHOLD),_wdog$(L7_WDOG_THRESHOLD),)
 
+# The results file lives in the build dir this bench ACTUALLY uses. SIM_BUILD
+# gains _rfreal/_rfud when MEM_PATH has the real rf_16k model, so a caller that
+# hardcodes sim_build_zero_asic/... names a directory that is never created and
+# cocotb dies writing it after every test has passed (2026-10-10, 3 ASIC suites).
+COCOTB_RESULTS_FILE ?= $(SIM_BUILD)/results.xml
+
 # Wave dump OFF by default — full bring-up VCDs exceed 4 GB. Enable: DUMP=1.
 DUMP ?= 0
 ifeq ($(DUMP),1)

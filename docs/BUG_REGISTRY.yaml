@@ -14,6 +14,7 @@ schema_version: 2                # 2 (2026-09-11): hardware claims now carry
                                  # machine-enforced by scripts/ci/registry_coverage.py
 generated: 2026-08-06
 last_truth_pass: 2026-09-11      # see campaign.truth_pass_2026_09_11
+updated: 2026-10-10              # TL-054..TL-058 added, TL-036 and TL-038 amended (compute ports + errinject alias correction); NOT a truth pass
 maintainer: autonomous overnight campaign (Claude Opus 4.8)
 approver: David Mapstone <david@mapstone.me>
 
@@ -1815,7 +1816,7 @@ bugs:
     title: TL-035 watchdog fix does not cover WlinkGenericFCSM_6 (sideband FC node)
     severity: medium
     area: rtl/wlink
-    status: root_caused
+    status: sim_proven            # 2026-10-10: fixed on rev-2 by ab4480aa (sim red/green); NOT hardware-tested. Compute silicon ships the ECO4 variant (see fix.compute_silicon_2026_10_09).
     summary: >
       The TL-035 fix (non-sticky state-7 NACK watchdog) was applied to
       WlinkGenericFCSM.v and _1/_2/_3/_4 — which is complete coverage of the AXI
@@ -1846,20 +1847,65 @@ bugs:
         `socl_l7_wdog_progress = auto_tx_out_advance`, and clear wdog_cnt on
         progress instead of on the sticky. Part-B (state-7 exit) needs the same
         attended-ILA decision as TL-035 before it is applied to _6.
-      files: [src/rtl/local_overrides/WlinkGenericFCSM_6.v]
-      commit: null
-      branch: null
+      files: [src/rtl/local_overrides/WlinkGenericFCSM_6.v, cocotb/tidelink_top_pair/test_tl036_real_crc.py, Makefile]
+      commit: ab4480aa              # 2026-10-10, rev-2 port, branch rev2/port-compute-fixes
+      branch: rev2/port-compute-fixes
       netlist_affecting: true
+      applied_2026_10_10: >
+        The 'approach' above is what was built, with Part-B (state-7 exit) included:
+        the AXI nodes' TL-033/TL-035 fix ported verbatim. force_clear has no sticky
+        gate; the counter clears on FORWARD PROGRESS (auto_tx_out_advance); the
+        state-7 exit on force_clear (_GEN_115) is taken. +define+TL033_LEGACY_WDOG
+        restores the old node (negative control). real_crc_seen still latches
+        (telemetry) but no longer affects the watchdog. This is compute 98082f2 on
+        origin compute/tl036-fix (parent 837c747), ported as ab4480aa.
+        Not fixed here (rev-2 review High, applies to all 6 FCSMs, which the 5 AXI
+        nodes are HW-tested with as is): on the forced state-7 exit `sop` is not
+        cleared. Fix all six together with its own test if wanted.
+      compute_silicon_2026_10_09:
+        eco_golden: e03a842          # origin compute/tl036-eco-golden, parent 837c747
+        description: >
+          The compute RC (rsyn9b) does NOT carry the proper fix: it ships ECO4 =
+          ECO3 + 2 pin reconnects (the sticky crc_seen flop's OR2 set input A2 tied
+          to TIEL on g630226, link 0, and g629907, link 1), so crc_seen is
+          permanently 0. LEC golden e03a842 (the set term becomes 1'b0). LEC:
+          RTL(e03a842) == ECO4 (52/52 module pairs EQ; fv_map'' -> ECO4 70,598 EQ),
+          control 837c747 NEQ at exactly the 2 crc_seen flops. DRC/LVS/Tempus/
+          Voltus/GLS gates PASS with controls; recommendation: adopt ECO4 over ECO3.
+        caveat: >
+          ECO4 is NOT the same behaviour as the proper fix (98082f2 / ab4480aa): after
+          the ECO the counter still clears on LEAVING state 7, not on forward progress.
+          A false trip needs >= 16,384 TX-clock cycles continuously in state 7 against
+          a healthy dwell of tens of cycles. Behaviour after ECO4 = the crc_seen=0
+          control (every hardware run until its first CRC error). Eth chiplet: not
+          assessed here.
     verification:
       sim_test: >
-        cocotb/tidelink_top_pair/test_l7_wedge_repro.py already forces the pair-TB
+        RESOLVED 2026-10-10: cocotb/tidelink_top_pair/test_tl036_real_crc.py (a real
+        crcCorruptSeen pulse, then a SEND_NACK wedge), in sim_gate_nack_wedge_recovery.
+        ORIGINAL TEXT (the gap it closes): cocotb/tidelink_top_pair/test_l7_wedge_repro.py already forces the pair-TB
         master FCSM (which IS _6) into a stuck state 7, but does NOT set
         socl_l7_real_crc_seen — so it exercises the bringup-forgive path, not the
         sticky-CRC path. A TL-036 reproduce test is a small delta on that file
         (additionally Force socl_l7_real_crc_seen=1); with the ifdef in place the
-        same test proves fix-vs-legacy by define. COVERAGE GAP.
-      in_sim_gate: false
+        same test proves fix-vs-legacy by define. COVERAGE GAP (closed, see above).
+      in_sim_gate: true
       hw_tested: false
+      hw_validated: false
+      evidence: null
+      vehicle: null
+      red_green_2026_10_10: >
+        rev-2 port head, test_tl036_real_crc (same env as SIM_GATE_TP_ENV, fresh
+        build dir per run): default PASS (watchdog fires at 105000 hclk); with
+        +define+TL033_LEGACY_WDOG FAIL (watchdog never fired, wdog_cnt max 0); the
+        pre-fix FCSM_6 file at e5b9467f FAIL (same assertion). Gates on the port
+        head: sim_gate_nack_wedge_recovery PASS (413 s), asicelab, asicelab_v2,
+        dftelab, force_recal PASS. Evidence: rev2-port-ema-tl036-evidence/SUMMARY.md
+        (td-bisect scratch, not in repo). Compute side: 837c747 FAIL (crc_seen 1,
+        never fires in 200k hclk) vs 98082f2 PASS; 12/12 gates on 98082f2; compute
+        handoff-tidelink-tl036-20261008/ASSESSMENT.md, eco4-rsyn9b-20261009/RESULT.md.
+        Not run on either line: the full ~2 h sim_gate on the fixed head, the HAPS
+        CRC-injection test, CDC (the change stays inside io_tx_clk).
     discovered: >
       2026-08-13, while structurally verifying that the TL-035 FPGA build actually
       changes the operative write path (it does — all 5 AXI nodes are covered).
@@ -1880,8 +1926,16 @@ bugs:
         CAVEAT: the five covered overrides are MODIFIED-UNCOMMITTED in this
         worktree (the TL-035 Part-A edit is not committed), so "covered" describes
         the working tree, not the branch tip d317c98.
+      amended_2026_10_10: >
+        status root_caused -> sim_proven. Severity kept medium: the exposure is the
+        sideband channel only (AXI peer access uses FCSM 0-4 and is unaffected). The
+        compute assessment confirmed it on the shipping RC (the crc_seen flop exists
+        in both Wlink instances) and measured it in sim: with crc_seen=1 the watchdog
+        never fires (wdog_cnt stays 0). Likelihood needs a CRC error, then a state-7
+        wedge (both rare on a clean link); impact is a dead sideband (doorbell,
+        mailbox, IPC, TideChart, PTP) until POR.
       approved: false
-    related: [TL-035, TL-033]
+    related: [TL-035, TL-033, TL-057]
 
   # ---------------------------------------------------------------------------
   - id: TL-037
@@ -1990,12 +2044,40 @@ bugs:
     verification:
       sim_test: "cocotb/.../test_axi_datanode_gaps.py::test_ecc_corrects_b_byte1_wordcount (PASSES in sim — that is the point)"
       in_sim_gate: true
-      hw_tested: "wedges (documented 2026-08-03, not re-run since)"
+      hw_tested: "INVALID 2026-10-10 -- see hw_evidence_invalidated_2026_10_10. The 2026-08-03 'wedges' observation was NOT an injection. No valid hardware observation of byte-1 injection exists."
+      hw_evidence_invalidated_2026_10_10: >
+        The only hardware evidence for this entry (HANDOVER_AXI_DATANODE_2026_08_03.md:
+        176-177 and §5.2) came from `kr260_eth_xfer.py errinject`. At the tree of
+        2026-08-03 (git rev-list --before=2026-08-04 -> 1aaed007) that tool armed
+        REG_ERR_INJECT = _TLAPB + 0x003C (xfer_corners_lib.py:89, written at :365 and
+        cleared at :371), not 0x023C (LINK_ERROR_INJECTION, wlink_regs). The 0x2E03_003C
+        word is an UNMAPPED ALIAS: it reads the constant 0x00010701, and writing it
+        degrades the link (every later store takes ~65k cycles) -- it injects nothing.
+        The tool had the 0x003C constant since its introduction (2a7cf311, 2026-07-31)
+        until the fix 4b0b4ed2 (2026-10-10; ec9e0bd7 for docs/comments; the same
+        correction is 0bad1a6e on its source branch). Per that fix, 'the old errinject
+        hard-wedges the PS / is a no-op notes are artefacts of the alias' and 'any
+        result previously produced with these scripts' errinject path is invalid'.
+        So the wedge seen on 2026-08-03 was an alias write degrading the link, not a
+        byte-1 header-ECC/framing failure. The sim/silicon divergence this entry
+        claims is therefore UNPROVEN, not refuted: nothing has exercised byte-1
+        injection on silicon at all. Same caveat applies to every 'errinject B
+        byte0' narrative in this file (TL-003, TL-005, TL-007, TL-006 text) -- those
+        were already withdrawn for want of an artefact, and 'survived' is also what an
+        alias write that injects nothing would show.
+      rerun_required: >
+        MUST be re-run at 0x2E03_023C (kr260_eth_xfer.py errinject --node B --inj-byte
+        1, current tree) before this entry is closed OR dismissed. Reference for what a
+        valid run looks like: 14/14 single payload-bit shots (7 each direction)
+        detected, CRC counter +1 per shot, data exact, link healthy
+        (pipeline_rcstats_20261009 RESULT.md §a2, KR260 pair, payload bits only --
+        header byte 1 was NOT among them). Not closed: the byte-1 header case is
+        untested. Region F caveat below still applies to the readout.
     caveats:
       - "Region F (0x21E0) is named above as the diagnostic, but TL-039/TL-040 and the 2026-08-13 runs show the sampler can read 'ALL CLEAN' while dead under load. Establish sampler liveness before reading anything into a Region F word here."
     signoff:
-      claude_verdict: "Open sim-vs-silicon divergence hiding inside TL-006's coverage claim. Re-run with the Region F readout before trusting any byte-1 ECC claim."
-      evidence: ["HANDOVER_AXI_DATANODE_2026_08_03.md:176-177"]
+      claude_verdict: "Open, but the sim-vs-silicon divergence is UNPROVEN as of 2026-10-10: its only HW evidence was an alias write at 0x003C, not an injection. Re-run at 0x23C with the Region F readout before trusting or dismissing any byte-1 ECC claim."
+      evidence: ["HANDOVER_AXI_DATANODE_2026_08_03.md:176-177 (INVALIDATED 2026-10-10: tooling wrote the 0x003C alias)", "commit 1aaed007 xfer_corners_lib.py:89 REG_ERR_INJECT = _TLAPB + 0x003C; fixes 4b0b4ed2, ec9e0bd7"]
       approved: false
     related: [TL-006, TL-035]
 
@@ -3356,3 +3438,313 @@ bugs:
         - "imp/hw_gate/SIGNOFF_LEDGER_2026_08_13.md:105 flagged the understatement on 2026-08-13; the draft entry (5c316198, off-repo clone, unmerged) wrote the correction on 2026-08-23; neither reached this file until now"
       approved: false
     related: [TL-027, TL-032, TL-009]
+
+  # ---------------------------------------------------------------------------
+  # 2026-10-10: FIVE COMPUTE-CHIPLET FIXES PORTED ONTO REV-2 (branch
+  # rev2/port-compute-fixes, c2ba64f9). TL-054..TL-058. Each was found and fixed
+  # on the compute-chiplet line first; the rev-2 port was re-proven in
+  # TideLink's own bench (red on the base files, green with the fix). Evidence
+  # directories are session scratch outside the repo (td-bisect/rev2-port-*-
+  # evidence/SUMMARY.md), so they are named, not stat()-able -- which is why
+  # none of these is hw_proven for rev-2.
+  # ---------------------------------------------------------------------------
+  - id: TL-054
+    title: "A7: auto-anchor SYNC beacon overwrote a live word (combinational idle vs registered data) and never stopped on AXI traffic"
+    severity: high
+    area: phy/sync
+    status: sim_proven
+    registered: 2026-10-10
+    opened: 2026-09-30            # compute tb_ce3 wedge, handoff-tidelink-a7-20261001/PATCHSET.md
+    summary: >
+      With the auto-anchor SYNC beacon armed, the tidelink_phy_sync_insert slot
+      (one in 32 words, combinational) replaced a word that was still on the
+      inserter's data_i. WlinkTxLinkLayer makes io_link_idle = (state==0) & ~sop
+      combinationally while io_link_data is a registered copy, so on the cycle
+      after a packet's last word is formed idle already reads 1 while that word
+      is still live. A single-word packet (a B) is lost and nothing follows to
+      NACK it: tx_idle=1 with a live LD v=1 word in the same cycle (the tb_ce3
+      wedge, and the "KNOWN RESIDUAL #1" the Hazard-3 comment left open). The
+      beacon also did not stop on AXI app->link traffic, only on the TideLink
+      channel, so it kept inserting into a live stream.
+    root_cause: >
+      (1) WavD2DGpio_v2.v: the auto-anchor SYNC term qualified on the
+      combinational tx_idle only. (2) axi_chiplet_controller.sv: the beacon stop
+      input saw only the TideLink-channel valid (sync_obs_a2l_app_v), not AXI
+      target AW/W/AR or initiator B/R valid.
+    fix:
+      approach: "Two changes, both needed: the auto-anchor SYNC term also requires io_link_tx_tx_idle registered one link cycle (same clock as the sampled signal); the beacon stop input also sees AXI app->link valid, two-flop registered like the existing TideLink-channel input (tidelink_top apb_clk and app_clk are both hclk, so no new crossing). Change 2 cannot protect the first packet by itself (it cannot act before that word's own valid); change 1 removes the overwrite for every packet."
+      files: [src/rtl/local_overrides/WavD2DGpio_v2.v, src/rtl/local_overrides/axi_chiplet_controller.sv, cocotb/tidelink_top_pair_v2/test_v2_a7_beacon.py, Makefile]
+      commit: 7f03807d              # rev-2 port, branch rev2/port-compute-fixes (cherry-pick -x of 745f601)
+      branch: rev2/port-compute-fixes
+      netlist_affecting: true
+      compute_lineage: "745f601 on compute/a7-beacon (parent af3a5d67), origin compute/a7-beacon. Shipped in the compute RC rsyn9 pin d00ae69 (A7 + H30/H31)."
+    verification:
+      sim_test: "v2_a7_phy_guard and v2_a7_stop (sim_gate suite labels; cocotb/tidelink_top_pair_v2/test_v2_a7_beacon.py)"
+      in_sim_gate: true
+      hw_tested: false              # rev-2: no board run. The HW proof below is on the COMPUTE line.
+      hw_validated: false           # deliberately false for rev-2; see compute_hw_evidence
+      evidence: null
+      vehicle: null
+      red_green: >
+        rev-2 port, base = the two RTL files at e5b9467f. test_v2_a7_beacon with
+        AUTO_ANCHOR=1: fixed 3/3 PASS; base 0/3 FAIL (4 writes lost at w10, 21,
+        36, 47; beacon not stopped within 16 cycles; 5 writes lost).
+        forced_beacon_writes on the default build: fixed PASS, base FAIL. Gates
+        v2_a7_phy_guard PASS (95 s) and v2_a7_stop PASS (124 s). Regression
+        controls identical to base: v2_auto_anchor gated tests 2/2,
+        autonomous_sync_detect 4/4, pair_doorbell 11/11 on the V1 and V2 flists;
+        test_v2_auto_anchor all-5 shows the same 2 known fails (delivers_under_skew,
+        negctl_no_anchor_fails) at identical sim times on base and fixed;
+        sync_insert_en 6/7 on both (test_sync_beacon_on_tx_when_enabled
+        pre-existing FAIL).
+        Evidence: rev2-port-a7-evidence/SUMMARY.md (td-bisect scratch, not in repo).
+      compute_hw_evidence: >
+        HARDWARE-PROVEN ON THE COMPUTE FPGA (KR260), NOT ON REV-2. Compute
+        pipeline_a7_20261004 and the RC-image runs 2026-10-05..08 (handoff-psload-
+        20260923/RESULT_KR260_20261005-08.md): A7 HW-proven; RC image (A7 + H30/H31)
+        37/37 and a 24 h soak; T4 race reproduced and the guard fix 6/6. Compute
+        sim: tb_ce3 H-T4 without FW-12 13/13 (bench clocks) and 12/12 (silicon
+        ratio) with the fix, the unchanged library fails the same run with the wedge;
+        7a A7_GATES PASS on d00ae69 (TideLink sim_gate 57 PASS + 3 XFAIL). Those
+        artefacts live in the compute session trees and are not retained in this
+        repo, so they do not satisfy hw_evidence_policy for this entry; hence
+        evidence/vehicle stay null and status stays sim_proven.
+    residual: >
+      Compute pair suites (G5) were still open at the PATCHSET date and run in the
+      rsyn9 integration. The rev-2 line has not been rebuilt for a board.
+    signoff:
+      claude_verdict: >
+        Real, fixed, red/green in TideLink's own pair bench on rev-2. The same RTL
+        is HW-proven on the compute line; the rev-2 line is sim-proven only.
+        Netlist-affecting; David lands.
+      evidence:
+        - "rev2-port-a7-evidence/SUMMARY.md (td-bisect scratch): red/green table, gates"
+        - "compute handoff-tidelink-a7-20261001/PATCHSET.md"
+        - "compute handoff-psload-20260923/RESULT_KR260_20261005-08.md (KR260 HW, compute line)"
+      approved: false
+    related: [TL-055, TL-056, TL-057, TL-058, TL-009]
+
+  # ---------------------------------------------------------------------------
+  - id: TL-055
+    title: "H30: calibrator swreset is a combinational merge of four apb_clk flops sampled by the link_clk_rx 2FF (glitch -> spurious S_CANCEL re-sweep)"
+    severity: medium
+    area: cdc/calibrator
+    status: sim_proven
+    registered: 2026-10-10
+    opened: 2026-10-01            # compute SpyGlass triage, handoff-tidelink-h30-h31-20261001/PATCHSET.md
+    summary: >
+      The V2 calibrator's .swreset was swi_recal_r | (local_swreset_pulse_w &
+      ~(cal_eye_converged_r | sync_cal_in_hold_1)): four apb_clk flops, including
+      the 7-bit swreset_hold_r down-counter decode, combined in logic and then
+      sampled by the calibrator's link_clk_rx synchroniser. A glitch-high while
+      the counter loads and the converged/in-hold mask changes can send a
+      converged die to S_CANCEL and a full re-sweep (about 1.28 s of D2D
+      calibration on compute: an outage on a live link). Glitch-low is benign.
+      SpyGlass listed the path as Ac_sync01, which only says the crossing is
+      synchronised, not that its source cannot glitch.
+    root_cause: "Combinational logic ahead of a 2FF synchroniser: the source of a CDC crossing must be a single flop."
+    fix:
+      approach: "Register the merge once in apb_clk (cal_swreset_q, async reset poresetn) so the synchroniser samples a single flop. +1 apb_clk latency on a 127+ cycle hold. Inside ifdef TIDELINK_PHY_V2 only; the trunk (non-V2) calibrator instance is unchanged, as on compute."
+      files: [src/rtl/local_overrides/axi_chiplet_controller.sv]
+      commit: 35341c12              # rev-2 port, branch rev2/port-compute-fixes (shared commit with TL-056)
+      branch: rev2/port-compute-fixes
+      netlist_affecting: true
+      compute_lineage: "d00ae69 on compute/h30-h31 (parent 745f601); the compute RC rsyn9 pin."
+    verification:
+      sim_test: null                # no functional test exists: this is a CDC-only proof by design (a glitch is not observable in zero-delay RTL sim)
+      in_sim_gate: false
+      hw_tested: false
+      hw_validated: false
+      evidence: null
+      vehicle: null
+      red_green: >
+        CDC proof, not a sim red/green. SpyGlass cdc_verify_struct, base (rev-2
+        e5b9467f overrides) vs fixed: Ac_glitch03 56 -> 54 (the two
+        u_calibrator.swreset_s1 'can glitch' rows are gone), Ac_sync01 count
+        unchanged, Ac_conv01 102 -> 104 (the same intended pair as on compute), 0
+        new Ac_unsync rows; CDC_COMPARE PASS. CAVEAT: the rest of the design in
+        that run is the compute payload snapshot; only the three override files
+        come from rev-2. Regression: the 13-suite rev-2 gate set (calibrator_wrap,
+        fch_apb_watchdog, force_recal_w1p, i1_fixe_training_release,
+        i1_selfarm_rolelock, t30, t31, t32, v2_auto_anchor,
+        v2_autonomous_sync_detect, v2_pair_data, v2_winscan_fsm, zeropoke_por)
+        PASS on the port head. t33_arm_stagger_episode_bind was killed by the
+        runner after 60 min (not in compute's 12-suite set) and is NOT a result.
+        Evidence: rev2-port-h30-h31-evidence/SUMMARY.md (td-bisect scratch, not in repo).
+      compute_hw_evidence: >
+        Compute: rides in the RC image (A7 + H30/H31) that passed 37/37 and the
+        24 h soak on KR260 (2026-10-05..08), but no test isolates H30, so that is
+        absence of regression, not proof of this fix. Compute sim: 12/12 gates PASS
+        on d00ae69 and the same SpyGlass comparison (Ac_glitch03 58 -> 56).
+    signoff:
+      claude_verdict: >
+        Structural CDC fix, proven by the classifier rather than by a behavioural
+        test. Do not read sim_proven as 'a sim test fails without it': none does.
+        Netlist-affecting; David lands.
+      evidence:
+        - "rev2-port-h30-h31-evidence/SUMMARY.md (td-bisect scratch): SpyGlass compare, gate table"
+        - "compute handoff-tidelink-h30-h31-20261001/PATCHSET.md"
+      approved: false
+    related: [TL-054, TL-056, TL-027]
+
+  # ---------------------------------------------------------------------------
+  - id: TL-056
+    title: "H31: calibrator S_CANCEL exit read the raw apb-domain swreset instead of swreset_sync (synchroniser bypassed at one site)"
+    severity: medium
+    area: cdc/calibrator
+    status: sim_proven
+    registered: 2026-10-10
+    opened: 2026-10-01            # compute, handoff-tidelink-h30-h31-20261001/PATCHSET.md
+    summary: >
+      tidelink_phy_align_calibrator_v2.sv state S_CANCEL: `if (!swreset) nxt_state
+      = S_ARM;` reads the raw apb_clk swreset into the link_clk_rx next-state
+      logic. Every other use in the file is swreset_sync (the 2-flop chain whose
+      own comment says it exists so 'a metastable sample cannot split the FSM').
+      S_CANCEL (4'd5) -> S_ARM (4'd1) decides state bit 2 from the raw input; once
+      synthesis replicates that bit (8 classifier endpoints over 2 links) or
+      re-encodes the FSM, the copies can resolve differently.
+    root_cause: "One use of an apb-domain signal in link_clk_rx logic that bypasses the file's own synchroniser."
+    fix:
+      approach: "if (!swreset_sync). Costs 2 link_clk_rx cycles of release latency."
+      files: [src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv, cocotb/tidelink_phy_align_calibrator/test_calibrator_s_cancel_sync.py, Makefile]
+      commit: 35341c12              # RTL (shared with TL-055); test 9efd9366; gate-list comma escape c2ba64f9
+      branch: rev2/port-compute-fixes
+      netlist_affecting: true
+      compute_lineage: "d00ae69 on compute/h30-h31 (same commit as H30)."
+    verification:
+      sim_test: "calibrator_wrap (sim_gate suite label; MODULE test_calibrator_wrap,test_calibrator_s_cancel_sync -- cocotb/tidelink_phy_align_calibrator/test_calibrator_s_cancel_sync.py, added here; compute carried no test for H31)"
+      in_sim_gate: true
+      hw_tested: false
+      hw_validated: false
+      evidence: null
+      vehicle: null
+      red_green: >
+        test_calibrator_s_cancel_sync, exit latency from S_CANCEL after swreset
+        release: base calibrator 2 clk, FAIL; fixed 4 clk, PASS 2/2 (calibrator_wrap
+        suite). SpyGlass: same comparison as TL-055 (the classifier's swreset_s1
+        rows). Port head gates as TL-055 (13 suites PASS; t33 killed, not a
+        result). Evidence: rev2-port-h30-h31-evidence/SUMMARY.md (td-bisect scratch,
+        not in repo; logs red_h31_calwrap.*, green_calwrap.*).
+      compute_hw_evidence: >
+        Compute: rides in the RC image that passed 37/37 and the 24 h soak (KR260,
+        2026-10-05..08); not isolated by any test. Absence of regression only.
+    signoff:
+      claude_verdict: >
+        Real by inspection (a one-token synchroniser bypass), now with a
+        reproduce-first latency test. The test proves the fix is in the path, not
+        that a metastable split occurs: that cannot be shown in zero-delay sim.
+        Netlist-affecting; David lands.
+      evidence:
+        - "rev2-port-h30-h31-evidence/SUMMARY.md (td-bisect scratch)"
+        - "compute handoff-tidelink-h30-h31-20261001/PATCHSET.md"
+      approved: false
+    related: [TL-054, TL-055]
+
+  # ---------------------------------------------------------------------------
+  - id: TL-057
+    title: "FIFO SRAM macros: EMA tied 3'b000 (the macro warns it does not match its default 010), and macro choice hardcoded to rf_16k regardless of address width"
+    severity: medium
+    area: rtl/fifo
+    status: sim_proven
+    registered: 2026-10-10
+    opened: 2026-09-28            # SRAM-by-AW (compute af3a5d67); EMA found 2026-10-03
+    summary: >
+      Two defects in src/rtl/fifo/asic/tidelink_sram.sv. (1) The TSMC rf_08k /
+      rf_16k macros were instantiated with .EMA(3'b000); the macro's default is
+      3'b010 and its model warns 'EMA doesn't match Default value 2' (one warning
+      per macro). EMAW stays 2'b00 (its default); RET1N is unchanged. (2) The file
+      hardcoded rf_16k instead of selecting the macro from the address width AW.
+      The ASIC tops all use the default RAM_ADDR_W=14 (no override in syn/ or
+      flists), so the AW-selected choice resolves to rf_16k in the shipping build
+      and the selection is behaviour-neutral there.
+    root_cause: "Tie-offs written as 'default' without checking the macro's actual default (EMA); hardcoded macro name (AW)."
+    fix:
+      approach: ".EMA(3'b000) -> .EMA(3'b010) at both instantiations; macro selected from AW."
+      files: [src/rtl/fifo/asic/tidelink_sram.sv]
+      commit: 3a51d6c0              # EMA tie, rev-2 port. SRAM-by-AW: 08d91d41.
+      branch: rev2/port-compute-fixes
+      netlist_affecting: true
+      compute_lineage: "SRAM-by-AW af3a5d67 (compute tidelink lineage, rsyn7/rsyn8). EMA 837c747 on compute/ema-default (parent d00ae69), pushed 2026-10-03 as the LEC golden for the rsyn9b ECO3."
+      silicon_status: >
+        COMPUTE silicon (rsyn9b RC) ships EMA=010 via a physical ECO3 (VIA3 change,
+        LEC golden 837c747: RTL(837c747) -> ECO3 PASS; the old-SRAM control FAILs
+        on exactly the 2 EMA pins). ETHERNET chiplet rc4 FROZEN, ships EMA=000 on
+        the TideLink FIFO AND on the MAC BD rf_01k: eth erratum M1 (draft), in
+        nanosoc-ethernet-chiplet docs/tapeout/67-rc4-issue-register.md. The rev-2
+        line carries the corrected tie for any re-spin; it does not change rc4.
+    verification:
+      sim_test: null                # model-level check (tb_ema) lives in the evidence dir, not a gate suite
+      in_sim_gate: false            # only asic_v1_elab / asic_v2_elab / dft_wrapper_elab / force_recal_w1p compile this file (elaboration + one pair build)
+      hw_tested: false
+      hw_validated: false
+      evidence: null
+      vehicle: null
+      red_green: >
+        Model check against the real rf_08k.v / rf_16k.v behavioural models
+        (tb_ema.sv): fixed EMA/EMAW seen = 010/00 on both macros, 0 warnings, 0
+        mismatches over 256 byte-masked write/read pairs per macro; base (08d91d41)
+        000, 2 warnings, 0 mismatches; negative control (corrupted expectation) 256
+        mismatches, so the check can fail. Note the base shows 0 data mismatches:
+        this is a configuration/margin defect the models flag, not a functional
+        failure in zero-delay sim. Gates on the port head: nack_wedge_recovery,
+        asicelab (asic_v1_elab), asicelab_v2, dftelab, force_recal PASS. Evidence:
+        rev2-port-ema-tl036-evidence/SUMMARY.md (ema_model/result_{fix,base,neg}.txt,
+        td-bisect scratch, not in repo).
+      compute_hw_evidence: >
+        None for the EMA fix itself (silicon ECO3: GLS EMA census 15/15 in the ECO4
+        gate set, a netlist-level result, no board). Compute also has the same
+        gates PASS on 837c747: asic_v1_elab, asic_v2_elab, dft_wrapper_elab,
+        force_recal_w1p; the full ~2 h sim_gate was not run there.
+    caveats:
+      - "Whether EMA=000 versus 010 changes read margin on silicon is NOT measured here: the model only proves the tie now matches the macro default and removes the warning. The compute decision to ECO was made on the macro default, not on a failing measurement."
+    signoff:
+      claude_verdict: >
+        Correct to the macro default on both lines; compute silicon corrected by
+        ECO3, eth rc4 shipping EMA=000 (erratum M1, draft). Sim-level only.
+        Netlist-affecting; tapeout-trunk change is David's decision.
+      evidence:
+        - "rev2-port-ema-tl036-evidence/SUMMARY.md (td-bisect scratch): ema_model results, gates"
+        - "compute handoff-tidelink-ema-20261003/PATCHSET.md"
+        - "nanosoc-ethernet-chiplet docs/tapeout/67-rc4-issue-register.md (eth erratum M1)"
+      approved: false
+    related: [TL-036]
+
+  # ---------------------------------------------------------------------------
+  - id: TL-058
+    title: "Stale pre-deploy bench: cocotb/debug/wlink_pair does not compile on rev-2, and the root Makefile sim-repro targets point at a directory that does not exist"
+    severity: low
+    area: verif/infra
+    status: open
+    registered: 2026-10-10
+    opened: 2026-10-10            # found while porting A7 (rev2-port-a7-evidence)
+    summary: >
+      The wlink_pair tests (test_link_idle_to_link_data, test_tx_gated_by_training,
+      test_credit_handshake_end_to_end, and test_hw_regression_gates /
+      test_assert_bringup) live in cocotb/debug/wlink_pair, not cocotb/wlink_pair.
+      The root Makefile sim-repro targets (lines ~103-110) still run `$(MAKE) -C
+      cocotb/wlink_pair`, a path that does not exist. The bench itself does not
+      compile on rev-2: its tb_top.sv instantiates axi_chiplet_controller with
+      ports ctrl_reg_write/addr/wdata, which rev-2 renamed to apb_ctrl_reg_*
+      (UPIMI-E x6, identical on the fixed head and on the base). It also uses the V1
+      flist (no WavD2DGpio_v2.v), so it could not exercise A7 even if it compiled.
+      Consequence: the wlink-level pre-deploy bench is silently absent, not red.
+    root_cause: "Bench not carried through the port rename and the directory move; no gate runs it, so nothing went red."
+    fix:
+      approach: "Not fixed (out of scope of the A7 port; the failure was recorded, not weakened). Rename the ports in cocotb/debug/wlink_pair/tb_top.sv, repoint the Makefile at cocotb/debug/wlink_pair, move it to the V2 flist, and decide whether it joins sim_gate; or retire it."
+      files: [Makefile, cocotb/debug/wlink_pair/tb_top.sv]
+      commit: null
+      branch: null
+      netlist_affecting: false
+    verification:
+      sim_test: null
+      in_sim_gate: false
+      hw_tested: false
+      red_green: >
+        COMPILE ERROR on both the fixed head and the base for all three named tests
+        (HEAD_gates/wlink_*.log, BASE_gates/wlink_*.log in rev2-port-a7-evidence,
+        td-bisect scratch, not in repo).
+    signoff:
+      claude_verdict: "Real and unfixed. A bench that cannot compile is not a green; do not cite wlink_pair results for any rev-2 change."
+      evidence: ["rev2-port-a7-evidence/SUMMARY.md (td-bisect scratch): wlink_pair row and note"]
+      approved: false
+    related: [TL-054]

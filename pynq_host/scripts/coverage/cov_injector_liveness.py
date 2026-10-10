@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# cov_injector_liveness.py — CRC-FREE PROOF THAT ERR_INJECT (0x003C) IS LIVE.
+# cov_injector_liveness.py — CRC-FREE PROOF THAT ERR_INJECT (0x023C) IS LIVE.
 #
 # P3-T1 (build spec 2026-08-08, corrections C1 + CC-1). The un-vacuum-er for the
 # whole error-injection family: without it, cov_errinject_sweep can "PASS" and
@@ -113,7 +113,7 @@ def write_verify(base, n, stage):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="CRC-free proof that ERR_INJECT (0x003C) is a real corruptor.")
+        description="CRC-free proof that ERR_INJECT (0x023C) is a real corruptor.")
     ap.add_argument("--byte", type=int, default=1,
                     help="ERR_INJECT byte index (MUST be >0 — a DATA byte; byte0 "
                          "is ECC-corrected + CRC-off => invisible). Default 1.")
@@ -182,7 +182,7 @@ def main():
         if got is not None and exp is not None:
             print("    got=0x%08X  expected=0x%08X  flip-delta=0x%08X"
                   % (got, exp, got ^ exp))
-        print("  => the ERR_INJECT (0x003C) corruptor is LIVE in this bitstream.")
+        print("  => the ERR_INJECT (0x023C) corruptor is LIVE in this bitstream.")
         if ok2 is not True:
             print("  NOTE: post-control was not byte-exact — the path may carry residual "
                   "degradation after the injected beat (report-only).")

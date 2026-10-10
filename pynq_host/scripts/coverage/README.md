@@ -58,7 +58,7 @@ export KR260_PASSWORD=...        # REQUIRED — never hardcoded (gates exit if u
    readback that traverses the link — wedge-prone), unlike the write nodes whose
    byte-exactness is a wedge-safe die_b local read. Treat AR/R "byte_exact" as the
    less-safe leg.
-4. **Injector must be wired in the bitstream.** If `ERR_INJECT 0x003C` is a no-op,
+4. **Injector must be wired in the bitstream.** If `ERR_INJECT 0x023C` is a no-op,
    injected beats do not corrupt and the sweep reads as a vacuous "survive"
    (`kr260_eth_xfer.py --mode errinject` reports this as INCONCLUSIVE via a CRC-rise
    check; the sweep here asserts liveness+exactness, so confirm the injector is live

@@ -74,7 +74,7 @@ KR260_HOST=ubuntu@10.22.24.159 KR260_XFER_NODE=B KR260_XFER_SEED=0xBEEF \
 ## THE TEST (already written; this is your acceptance gate)
 `kr260_eth_xfer.py --mode errinject` (+ `xfer_corners_lib.py`) does, on die_a:
 1. `_require_link()` (fcsm=4) + baseline the target node's CRC (`0x2E03_1200+0x20` for B).
-2. Inject via the **Wlink error injector `0x2E03_003C`** — `[7:0]DataID` (B=0x82, R=0x84,
+2. Inject via the **Wlink error injector `0x2E03_023C`** — `[7:0]DataID` (B=0x82, R=0x84,
    W=0x81, AW/AR similar), `[15:8]Byte`, `[18:16]Bit`, `[24]Enable`. One corrupted peer-write.
 3. Confirm the node CRC **rose** (inject took effect; else exit 2 = injector not in bitstream).
 4. Injector OFF; resume a short deterministic write stream, sampling **Region F `0x2E03_21E0`**
@@ -94,7 +94,7 @@ recover-vs-wedge autonomously, snapshotting Region F and JTAG-POR-recovering eac
 The `sim[silicon_data]` gap is why a clean soak "passed" while an injected error wedges. Build
 a cocotb error-injection sim (extend `cocotb/tidelink_error_injection/`) that, at the **40 ns
 silicon ratio** with two dies, on **each** AXI FC node: brings the FC up to LINK_DATA, drives a
-sustained write stream, injects a single CRC/ACK error (mirroring the `0x2E03_003C` model), and
+sustained write stream, injects a single CRC/ACK error (mirroring the `0x2E03_023C` model), and
 **asserts the node re-syncs and delivery resumes byte-exact within N cycles** — i.e. the
 watchdog/`socl_reack` path fires. Default PASS; an `INJECT_NO_RECOVER=1` variant that disables
 the recovery must FAIL exactly like silicon. This sim is the fast triage loop (a HW errinject
@@ -106,7 +106,7 @@ The recovery logic is present but does not save this case. Determine, in
 - Does the corrupted **write-response (B)** hang the AXI master **before** any recovery state
   (state ≥4 `socl_reack`/`socl_l7_wdog`) can fire? The hard hang (no Region-F trip) suggests the
   stall is upstream of the watchdog, or the watchdog trip doesn't unblock the response return.
-- Does the `0x2E03_003C` injection model the natural failure (dropped ACK / CRC error) the
+- Does the `0x2E03_023C` injection model the natural failure (dropped ACK / CRC error) the
   recovery was designed for, or a different corruption the recovery ignores? (Try each byte/bit
   and the sideband CR id 0x44 vs a data id to compare.)
 - The `SOCL_L7_MIN_CRACK_EMITS=8` interaction and the state-7 watchdog threshold at silicon ratio.
@@ -115,7 +115,7 @@ The recovery logic is present but does not save this case. Determine, in
 - Test: `pynq_host/scripts/kr260_eth_xfer.py` (`do_errinject`/`do_errinject_verify`),
   `pynq_host/scripts/xfer_corners_lib.py` (`error_inject`, `snap_health`, `classify_wedge`),
   dispatch `pynq_host/scripts/kr260_eth_run.sh` mode `xfer_errinject`.
-- Injector `0x2E03_003C`, Region F `0x2E03_21E0`, per-node FC `0x2E03_{1000..1400}`+0x20 CRC —
+- Injector `0x2E03_023C`, Region F `0x2E03_21E0`, per-node FC `0x2E03_{1000..1400}`+0x20 CRC —
   `docs/reference/REGISTER_MAP.md` (~:393, :455).
 - Shipped FCSMs: `src/rtl/local_overrides/WlinkGenericFCSM{,_1..4,_6}.v`; flist
   `flists/tidelink_fpga_v2.flist` (FCSM region ~292-304).

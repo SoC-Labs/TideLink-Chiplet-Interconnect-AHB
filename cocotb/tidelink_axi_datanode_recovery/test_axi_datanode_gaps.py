@@ -149,7 +149,7 @@ def _force_fix_off(tb, off):
 
 
 async def _arm_injector(tb, side, data_id, byte, bit=0):
-    """One-shot Wlink built-in injector (the 0x2E03_003C silicon model)."""
+    """One-shot Wlink built-in injector (the 0x2E03_023C silicon model)."""
     wl = _wlink(tb, side)
     wl.swi_err_inj_data_id.value = Force(data_id)
     wl.out_prepend_swi_err_inj_byte.value = Force(byte)

@@ -259,6 +259,17 @@ module tb_top #(
     logic [31:0] m_ctrl_reg_wdata,  s_ctrl_reg_wdata;
     wire  [31:0] m_ctrl_reg_rdata,  s_ctrl_reg_rdata;
 
+    // Compat shim (rev-2 repair). The DUT's pass-through port is now the 5-bit
+    // apb_ctrl_reg_addr with bits[4:3] = bank: 01 = Region 4 (ROLE/I2C/NEGO),
+    // 10 = Region 8 (SWI_*/NEGO_TRAIN_*), 00 = Region 9/10/D/F (needs the
+    // apb_ctrl_reg_r10/rd/rf flags, tied 0 here), 11 = Region C. The tests keep
+    // driving the original 4-bit {region8, slot[2:0]} encoding on *_ctrl_reg_addr
+    // (0x0..0x7 = Region 4, 0x8..0xF = Region 8); this maps it onto the DUT
+    // encoding. A bare rename would send every Region 4 access (incl. the
+    // ROLE_CFG lock at addr 0) to the Region 9 bank and silently do nothing.
+    wire [4:0] m_apb_ctrl_reg_addr = {m_ctrl_reg_addr[3] ? 2'b10 : 2'b01, m_ctrl_reg_addr[2:0]};
+    wire [4:0] s_apb_ctrl_reg_addr = {s_ctrl_reg_addr[3] ? 2'b10 : 2'b01, s_ctrl_reg_addr[2:0]};
+
     // ----- Observable status --------------------------------------------------
     wire m_role_is_master, s_role_is_master;
     wire m_role_locked,    s_role_locked;
@@ -293,8 +304,20 @@ module tb_top #(
         .nego_priority_i(16'h8000), .puf_seed(16'hA5A5), .puf_ready(1'b1),
         .nego_error_irq(),
 
-        .ctrl_reg_write(m_ctrl_reg_write), .ctrl_reg_addr(m_ctrl_reg_addr),
-        .ctrl_reg_wdata(m_ctrl_reg_wdata), .ctrl_reg_rdata(m_ctrl_reg_rdata),
+        .apb_ctrl_reg_write(m_ctrl_reg_write), .apb_ctrl_reg_addr(m_apb_ctrl_reg_addr),
+        .apb_ctrl_reg_r10(1'b0), .apb_ctrl_reg_rd(1'b0), .apb_ctrl_reg_rf(1'b0),
+        .apb_ctrl_reg_wdata(m_ctrl_reg_wdata), .ctrl_reg_rdata(m_ctrl_reg_rdata),
+        // Inputs added to the controller after this bench was written; left
+        // floating they read as 'z' (VCS does not warn on unconnected ports).
+        // Floating lane_lock_thresh_i was the one that mattered: it made the
+        // DUT-internal lane_checker never lock (SWI_LANE_STATUS lane_locked=0).
+        .lane_lock_thresh_i(checker_lock_thresh), .lane_clear_noise_i(1'b0),
+        .idelay_ref_clk(1'b0), .idelay_rst(1'b0),   // unused when USE_IDELAY=0
+        .swi_eye_lane_sel_i(3'd0), .swi_eye_dwell_us_i(32'd0), .swi_eye_ctrl_i('0),
+        .eye_score_idx_i(7'd0),
+`ifdef TIDELINK_PHY_V2
+        .xhb_sub_obs_word_i(32'd0),                  // V2-only port (Region F 0x21F8 witness)
+`endif
 
         .apb_psel(m_apb_psel), .apb_paddr(m_apb_paddr), .apb_penable(m_apb_penable),
         .apb_pprot(m_apb_pprot), .apb_pstrb(m_apb_pstrb), .apb_pwrite(m_apb_pwrite),
@@ -397,8 +420,20 @@ module tb_top #(
         .nego_priority_i(16'h7FFF), .puf_seed(16'h5A5A), .puf_ready(1'b1),
         .nego_error_irq(),
 
-        .ctrl_reg_write(s_ctrl_reg_write), .ctrl_reg_addr(s_ctrl_reg_addr),
-        .ctrl_reg_wdata(s_ctrl_reg_wdata), .ctrl_reg_rdata(s_ctrl_reg_rdata),
+        .apb_ctrl_reg_write(s_ctrl_reg_write), .apb_ctrl_reg_addr(s_apb_ctrl_reg_addr),
+        .apb_ctrl_reg_r10(1'b0), .apb_ctrl_reg_rd(1'b0), .apb_ctrl_reg_rf(1'b0),
+        .apb_ctrl_reg_wdata(s_ctrl_reg_wdata), .ctrl_reg_rdata(s_ctrl_reg_rdata),
+        // Inputs added to the controller after this bench was written; left
+        // floating they read as 'z' (VCS does not warn on unconnected ports).
+        // Floating lane_lock_thresh_i was the one that mattered: it made the
+        // DUT-internal lane_checker never lock (SWI_LANE_STATUS lane_locked=0).
+        .lane_lock_thresh_i(checker_lock_thresh), .lane_clear_noise_i(1'b0),
+        .idelay_ref_clk(1'b0), .idelay_rst(1'b0),   // unused when USE_IDELAY=0
+        .swi_eye_lane_sel_i(3'd0), .swi_eye_dwell_us_i(32'd0), .swi_eye_ctrl_i('0),
+        .eye_score_idx_i(7'd0),
+`ifdef TIDELINK_PHY_V2
+        .xhb_sub_obs_word_i(32'd0),                  // V2-only port (Region F 0x21F8 witness)
+`endif
 
         .apb_psel(s_apb_psel), .apb_paddr(s_apb_paddr), .apb_penable(s_apb_penable),
         .apb_pprot(s_apb_pprot), .apb_pstrb(s_apb_pstrb), .apb_pwrite(s_apb_pwrite),

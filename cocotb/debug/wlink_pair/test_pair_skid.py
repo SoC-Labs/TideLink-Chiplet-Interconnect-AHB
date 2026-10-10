@@ -20,7 +20,7 @@ TX and RX pads to recreate the FPGA experience in simulation.
 
 How to run
 ----------
-From `cocotb/wlink_pair/`:
+From `cocotb/debug/wlink_pair/`:
     make MODULE=test_pair_skid SKID_BITS=0    # passthrough — should PASS
     make MODULE=test_pair_skid SKID_BITS=3    # FPGA repro — should FAIL
     make MODULE=test_pair_skid SKID_BITS=1    # arbitrary shift — should FAIL

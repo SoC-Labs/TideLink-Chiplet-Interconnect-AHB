@@ -4,7 +4,7 @@ Standalone cocotb unit tests for the §9 (clock + T3a + calibrator)
 RTL changes added on `feat/td-combined`. Each directory is a tight
 single-DUT (or, where load-bearing, deliberately-small multi-DUT)
 testbench with `vcs` as the simulator. Companion to the existing
-`cocotb/phy_align/` and `cocotb/wlink_pair/` integration suites.
+`cocotb/phy_align/` and `cocotb/debug/wlink_pair/` integration suites.
 
 ## RTL → test mapping
 

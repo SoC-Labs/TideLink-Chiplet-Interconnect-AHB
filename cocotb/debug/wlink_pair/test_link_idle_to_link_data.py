@@ -143,7 +143,7 @@ async def test_01_baseline_no_training_pulse_reaches_link_data(dut):
 
 # -----------------------------------------------------------------------
 # TEST 2 — KEY TEST: with training pulse + drop + LL swreset cycle,
-# does FCSM still reach LINK_DATA? Matches HW bringup sequence.
+# does the link still come up (LINK_IDLE/DATA, state >= 4; see note below)? Matches HW bringup sequence.
 # -----------------------------------------------------------------------
 @cocotb.test()
 async def test_02_training_pulse_then_drop_still_reaches_link_data(dut):
@@ -184,26 +184,40 @@ async def test_02_training_pulse_then_drop_still_reaches_link_data(dut):
         f"  [post-train+swreset] max_state m={max_m} s={max_s}  "
         f"final m={fin_m} s={fin_s}")
 
-    if max_m >= 5 and max_s >= 5:
+    # LINK_IDLE (state 4) IS the bilateral link-up state in this bench. The FCSM
+    # (WlinkGenericFCSM_6) only enters LINK_DATA (5) when an app word is pending
+    # (`a2l_fc_replay_link_valid & ~fe_rx_is_full`, FC.scala 523) and falls back
+    # to 4 afterwards; this bench ties the app/AXI side off, so 5 is unreachable
+    # by construction. The original ">= 5" (written 2026-05-29 on the belief that
+    # 5 = "link up") could therefore never pass; the maintained siblings
+    # (test_hw_regression_gates, test_credit_handshake_end_to_end) gate on >= 4.
+    # The HW stuck signature this test hunts is master parked at 4 while the
+    # slave sits in 7 (SEND_NACK) -- so additionally require neither side ends
+    # in a non-idle state. FCSM states: 1/2 SEND_CREDITS, 3 pre-idle, 4 LINK_IDLE,
+    # 5 LINK_DATA, 7 SEND_NACK.
+    ok = (max_m >= 4 and max_s >= 4 and fin_m in (4, 5) and fin_s in (4, 5))
+    if ok:
         dut._log.info(
-            "  SIM PASSES under training pulse — sim/HW divergence "
-            "(HW stuck at m=4, s=7). Need Track C ILA on silicon.")
+            "  SIM PASSES under training pulse: both sides at LINK_IDLE/DATA "
+            f"(m={fin_m} s={fin_s}).")
     else:
         dut._log.warning(
-            f"  SIM REPRO: FCSM did not reach LINK_DATA "
+            f"  SIM REPRO: link did not come up cleanly "
             f"(max m={max_m} s={max_s}, final m={fin_m} s={fin_s}). "
             "Compare to HW (m=4 LINK_IDLE, s=7 SEND_NACK).")
 
-    # Assertive: both sides must reach LINK_DATA. If this assert fails
-    # we have a sim repro that drives tdif-04.
-    assert max_m >= 5, (
-        f"master FCSM did not reach LINK_DATA under training pulse: "
-        f"max={max_m} final={fin_m} "
-        f"(HW shows m=4 LINK_IDLE — if sim shows the same, we have a repro)")
-    assert max_s >= 5, (
-        f"slave  FCSM did not reach LINK_DATA under training pulse: "
-        f"max={max_s} final={fin_s} "
-        f"(HW shows s=7 SEND_NACK — if sim shows the same, we have a repro)")
+    assert max_m >= 4, (
+        f"master FCSM never reached LINK_IDLE under training pulse: "
+        f"max={max_m} final={fin_m}")
+    assert max_s >= 4, (
+        f"slave  FCSM never reached LINK_IDLE under training pulse: "
+        f"max={max_s} final={fin_s}")
+    assert fin_m in (4, 5), (
+        f"master FCSM not in LINK_IDLE/DATA at end: final={fin_m} "
+        f"(max={max_m})")
+    assert fin_s in (4, 5), (
+        f"slave  FCSM not in LINK_IDLE/DATA at end: final={fin_s} "
+        f"(HW stuck signature is s=7 SEND_NACK; max={max_s})")
 
 
 # -----------------------------------------------------------------------

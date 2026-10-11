@@ -253,6 +253,11 @@ module tidelink_fifo_mem #(
     // --------------------------------------------------------------------------
     // FIFO Control Logic
     // --------------------------------------------------------------------------
+    // The packet-length ports below are RAM_ADDR_W bits wide; the source
+    // expression is a fixed 14 bits. The explicit RAM_ADDR_W'() cast makes the
+    // resize visible (truncate LSBs / zero-extend, exactly what implicit port
+    // connection does) so tools that refuse implicit port-width mismatch
+    // (Synopsys RTL Architect LNK-012 at RAM_ADDR_W=13) link cleanly.
     tidelink_fifo_ctrl #(
         .RAM_ADDR_W (RAM_ADDR_W),
         .ENABLE_AHB_WRITE (ENABLE_AHB_WRITE)
@@ -264,8 +269,8 @@ module tidelink_fifo_mem #(
         .hready              (hready),
         .hwrite              (hwrite),
         .haddr               (haddr),
-        .hwdata              ({2'b0, hwdata[31:20]}),
-        .rdata               ({2'b0, rdata[31:20]}),
+        .hwdata              (RAM_ADDR_W'({2'b0, hwdata[31:20]})),
+        .rdata               (RAM_ADDR_W'({2'b0, rdata[31:20]})),
         .addr                (ahb_sram_addr),
         .translated_addr     (translated_addr),
         .translated_haddr    (translated_haddr),
@@ -287,7 +292,7 @@ module tidelink_fifo_mem #(
         .fc_wr_valid         (fc_wr_valid),
         .fc_wr_write         (fc_wr_write),
         .fc_wr_addr          (fc_wr_addr),
-        .fc_wr_wdata         ({2'b0, fc_wr_wdata[31:20]}),
+        .fc_wr_wdata         (RAM_ADDR_W'({2'b0, fc_wr_wdata[31:20]})),
         .fc_translated_addr  (fc_translated_addr)
     );
 

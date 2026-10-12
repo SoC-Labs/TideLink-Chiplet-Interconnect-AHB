@@ -5019,7 +5019,25 @@ module axi_chiplet_controller #(
     reg        auto_anchor_pulsed_ever_q;   // sticky diag: >=1 beacon cycle emitted this episode
     reg [15:0] auto_anchor_dwell_max_q;      // sticky diag: max tx-idle dwell streak reached
     wire       auto_anchor_link_up = sync_obs_fcsm_state_1[2];   // FCSM in 4..7 (link up)
-    wire       auto_anchor_tx_idle = ~sync_obs_a2l_app_v_1;      // no app->link word in flight
+    // A7 (2026-09-30): the stop input used to be the TideLink-channel FC node
+    // only (obs_a2l_replay_app_valid, tl2wl), so AXI traffic never stopped the
+    // beacon and on silicon it ran to ANCHOR_LEN (seconds) whenever this die
+    // missed the one TL-channel word of the link-up doorbell exchange (tb_ce3:
+    // the rc4 eth reaches LINK_IDLE first). Also stop on any AXI app->link
+    // valid: AW/W/AR on the target port (our requests) and B/R on the
+    // initiator port (our responses to the peer). Same 2-flop treatment as
+    // sync_obs_a2l_app_v; in tidelink_top apb_clk and app_clk are both hclk.
+    wire       axi_a2l_any_v = axi_tgt_0_aw_valid | axi_tgt_0_w_valid | axi_tgt_0_ar_valid
+                             | axi_ini_0_b_valid  | axi_ini_0_r_valid;
+    reg        sync_axi_a2l_v_0, sync_axi_a2l_v_1;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) begin
+            sync_axi_a2l_v_0 <= 1'b0; sync_axi_a2l_v_1 <= 1'b0;
+        end else begin
+            sync_axi_a2l_v_0 <= axi_a2l_any_v; sync_axi_a2l_v_1 <= sync_axi_a2l_v_0;
+        end
+    end
+    wire       auto_anchor_tx_idle = ~(sync_obs_a2l_app_v_1 | sync_axi_a2l_v_1);  // no app->link word in flight, TL or AXI
     always_ff @(posedge apb_clk or negedge poresetn) begin
         if (!poresetn) begin
             auto_anchor_pulse_q <= 1'b0; auto_anchor_done_q <= 1'b0;
@@ -6182,6 +6200,21 @@ module axi_chiplet_controller #(
     // Keeps a small overlap margin but fits comfortably inside the autoneg
     // poll budget.
 `ifdef TIDELINK_PHY_V2
+    // H30 (2026-10-01): the calibrator's swreset is a combinational merge of
+    // apb_clk flops (swi_recal_r, the autoneg hold-counter decode
+    // local_swreset_pulse_w = (swreset_hold_r != 0), cal_eye_converged_r,
+    // sync_cal_in_hold_1) sampled by the calibrator's link_clk_rx 2FF. A
+    // multi-bit counter step or a mask change coinciding with a load could
+    // glitch it; a captured HIGH glitch sends a converged die to S_CANCEL and
+    // a full re-sweep. Register the merge once in apb_clk so the synchroniser
+    // sees a single flop. +1 apb_clk of latency on a 127+ cycle hold.
+    reg cal_swreset_q;
+    always_ff @(posedge apb_clk or negedge poresetn) begin
+        if (!poresetn) cal_swreset_q <= 1'b0;
+        else           cal_swreset_q <= swi_recal_r |
+                                        (local_swreset_pulse_w &
+                                         ~(cal_eye_converged_r | sync_cal_in_hold_1));
+    end
     // =====================================================================
     // S3 PHY swap (2026-06-11): deps/tidelink-phy calibrator (FIX-series,
     // always-on FSM, silicon-validated with the FIX-N..R serdes). Instance
@@ -6242,9 +6275,7 @@ module axi_chiplet_controller #(
         // proven the local die is parked with all active lanes locked, so a
         // re-sweep is never wanted. A genuinely-unconverged die is NOT parked
         // (cal_in_hold=0) so the legitimate "never-locked" re-arm still fires.
-        .swreset                (swi_recal_r |
-                                 (local_swreset_pulse_w &
-                                  ~(cal_eye_converged_r | sync_cal_in_hold_1))),
+        .swreset                (cal_swreset_q),   // H30: registered merge, see above
         .lane_locked            (lane_locked_w),
         .lane_mask              (wlink_rx_lane_mask),
         .apb_bit_slip_override  (24'h0),

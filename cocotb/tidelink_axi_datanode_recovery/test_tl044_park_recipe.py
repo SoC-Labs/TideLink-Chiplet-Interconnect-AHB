@@ -20,7 +20,7 @@ This file answers the two questions the containment tests do not:
            a peer subsystem held in reset with the link still up.
        S2  the R packet is lost IN THE LINK, with the far die perfectly healthy
            (persistent pktnum corruption on the far die's R node — the Wlink
-           built-in injector, the on-silicon 0x2E03_003C model).  This is the
+           built-in injector, the on-silicon 0x2E03_023C model).  This is the
            SILICON signature: 0x21F8 bit[9]=1 with the peer alive.
      Both are shown to produce the same INTERNAL park signature, which is what
      makes them the same defect and not two coincidences.

@@ -643,9 +643,20 @@ module WlinkGenericFCSM_6 #(
   // logic lives in the always blocks below.
   reg         socl_l7_real_crc_seen;   // sticky: any real CRC error since reset
   reg  [15:0] socl_l7_wdog_cnt;        // saturating counter, ticks in state 7
+  // TL-036 (2026-10-09): the TL-033/TL-035 Part-A watchdog, ported from the AXI
+  // nodes (WlinkGenericFCSM{,_1.._4}.v). The sticky real-CRC flag no longer
+  // disarms the watchdog; the counter clears on forward progress instead, so a
+  // node that is sending cannot trip it and a stuck one always does.
+  // +define+TL033_LEGACY_WDOG restores the old behaviour (negative control only).
+  wire        socl_l7_wdog_progress = auto_tx_out_advance;
+`ifdef TL033_LEGACY_WDOG
   wire        socl_l7_wdog_force_clear =
                 (socl_l7_wdog_cnt == SOCL_L7_WDOG_THRESHOLD)
                 & ~socl_l7_real_crc_seen;
+`else
+  wire        socl_l7_wdog_force_clear =
+                (socl_l7_wdog_cnt == SOCL_L7_WDOG_THRESHOLD);
+`endif
   // ===========================================================================
   // SoC Labs credit-recovery: receiver-side periodic ACK re-emission
   //   (2026-06-05).
@@ -806,7 +817,11 @@ module WlinkGenericFCSM_6 #(
   wire  _GEN_112 = auto_tx_out_advance & _GEN_78; // @[FC.scala 537:28 FC.scala 441:39]
   wire [7:0] _GEN_113 = auto_tx_out_advance ? _GEN_79 : ne_rx_ptr; // @[FC.scala 537:28 FC.scala 434:39]
   wire  _GEN_114 = auto_tx_out_advance ? 1'h0 : sop; // @[FC.scala 573:28 FC.scala 574:39 FC.scala 427:39]
+`ifdef TL033_LEGACY_WDOG
   wire [2:0] _GEN_115 = auto_tx_out_advance ? 3'h4 : state; // @[FC.scala 573:28 FC.scala 575:39 FC.scala 424:39]
+`else
+  wire [2:0] _GEN_115 = (auto_tx_out_advance | socl_l7_wdog_force_clear) ? 3'h4 : state; // TL-036 = TL-033-§6 on the sideband node: state-7 EXIT on watchdog force_clear (emit-starvation backstop), as the AXI nodes ship // @[FC.scala 573:28 FC.scala 575:39 FC.scala 424:39]
+`endif
   wire  _GEN_123 = send_nack_req | _T_59; // @[FC.scala 586:30 FC.scala 589:39]
   wire [7:0] _GEN_124 = send_nack_req ? out_prepend_swi_nack_id : _GEN_56; // @[FC.scala 586:30 FC.scala 590:39]
   wire [15:0] _GEN_125 = send_nack_req ? {{3'd0}, _word_count_in_T_4} : _GEN_57; // @[FC.scala 586:30 FC.scala 591:39]
@@ -1635,8 +1650,13 @@ module WlinkGenericFCSM_6 #(
       socl_l7_wdog_cnt <= 16'h0;
     end else if (state != 3'h7) begin
       socl_l7_wdog_cnt <= 16'h0;
+`ifdef TL033_LEGACY_WDOG
     end else if (socl_l7_real_crc_seen) begin
       socl_l7_wdog_cnt <= 16'h0;
+`else
+    end else if (socl_l7_wdog_progress) begin
+      socl_l7_wdog_cnt <= 16'h0;
+`endif
     end else if (socl_l7_wdog_cnt != SOCL_L7_WDOG_THRESHOLD) begin
       socl_l7_wdog_cnt <= socl_l7_wdog_cnt + 16'h1;
     end

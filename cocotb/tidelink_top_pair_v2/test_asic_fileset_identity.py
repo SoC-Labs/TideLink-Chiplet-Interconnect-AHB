@@ -117,7 +117,14 @@ async def test_sram_fileset_identity(dut):
     """The FIFO SRAM wrapper must be the ASIC rf_16k variant iff ASIC_FLIST=1."""
     asic = _expect_asic()
     sram = dut.u_master.u_tidelink_fifo.u_fifo_mem.u_sram
-    has_rf = _has(sram, "u_rf")        # asic/tidelink_sram.sv  -> rf_16k u_rf
+    # asic/tidelink_sram.sv selects the macro from AW (TL-057): rf_16k sits under
+    # gen_rf_16k, rf_08k under gen_rf_08k, each as `u_rf`. VCS exposes the
+    # generate scope flattened (child key "gen_rf_16k.u_rf"); other simulators
+    # nest it. Accept either, never a bare prefix match.
+    sram._discover_all()
+    kids = set(sram._sub_handles.keys())
+    has_rf = any(f"{g}.u_rf" in kids or (_has(sram, g) and _has(getattr(sram, g), "u_rf"))
+                 for g in ("gen_rf_16k", "gen_rf_08k"))
     has_bram = _has(sram, "u_sram")    # fpga/tidelink_sram.sv  -> cmsdk_fpga_sram u_sram
     # MUST-BE-PRESENT CONTROL: exactly one of the two must exist; if neither
     # does, the hierarchy path is wrong and the assertion below is vacuous.

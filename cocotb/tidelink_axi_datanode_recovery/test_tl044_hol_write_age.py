@@ -74,7 +74,7 @@ TESTS (each needs its OWN sim -- a second run_bringup_full does not re-POR):
       window must NOT arm it.
 
 NO FORCED HANDSHAKES. Nothing here forces s_axi ready/valid. The only stimulus
-hooks are the Wlink built-in error injector (the on-silicon 0x2E03_003C model)
+hooks are the Wlink built-in error injector (the on-silicon 0x2E03_023C model)
 and ordinary AHB traffic on m_ahb_sub_*.
 
 BUILD: the two AGGREGATE timers short (2^13) so they are reachable in a sim, and

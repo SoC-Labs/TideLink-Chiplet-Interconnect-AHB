@@ -1,6 +1,6 @@
 .PHONY: clean_all clean_uvm clean_cocotb clean_xprop clean_lint clean_syn \
         sim_robust sim_synth_mode xdc_lint xdc_lint_selftest \
-        synth_lint_selftest robust_all sim-repro sim-repro-skid3 \
+        synth_lint_selftest robust_all sim-repro sim-repro-skid3 sim-wlink-pair \
         sim-regression farm_gate farm_gate_fast
 
 # =============================================================================
@@ -100,14 +100,32 @@ sim-repro:
 	@echo "========================================"
 	@echo " sim-repro — HW regression gates (default SKID=0)"
 	@echo "========================================"
-	$(MAKE) -C cocotb/wlink_pair MODULE=test_hw_regression_gates
-	$(MAKE) -C cocotb/wlink_pair MODULE=test_assert_bringup
+	$(MAKE) -C cocotb/debug/wlink_pair MODULE=test_hw_regression_gates
+	$(MAKE) -C cocotb/debug/wlink_pair MODULE=test_assert_bringup
 
 sim-repro-skid3:
 	@echo "========================================"
 	@echo " sim-repro with SKID_BITS=3 (FPGA-like skew)"
 	@echo "========================================"
-	$(MAKE) -C cocotb/wlink_pair MODULE=test_hw_regression_gates SKID_BITS=3
+	$(MAKE) -C cocotb/debug/wlink_pair MODULE=test_hw_regression_gates SKID_BITS=3
+
+# =============================================================================
+# sim-wlink-pair — the three Wlink-layer pair sims required before any HW deploy
+# (with cocotb/tidelink_top_pair test_tidelink_pair_doorbell). The bench lives
+# in cocotb/debug/wlink_pair (moved there from cocotb/wlink_pair by bd9646e5).
+# Runs V1 (flists/tidelink_fpga.flist) AND V2 (TIDELINK_PHY_V2=1, the shipping
+# PHY) in separate build dirs. Needs the usual env: source set_env.sh and pass
+# CHIPLET_HOME=<pinned> TIDECHART_HOME=<pinned> on the make line.
+# =============================================================================
+WLINK_PAIR_PREDEPLOY = test_link_idle_to_link_data test_tx_gated_by_training \
+                       test_credit_handshake_end_to_end
+sim-wlink-pair:
+	@set -e; for v in 0 1; do for m in $(WLINK_PAIR_PREDEPLOY); do \
+	  echo "=== wlink_pair $$m TIDELINK_PHY_V2=$$v ==="; \
+	  rm -rf cocotb/debug/wlink_pair/sim_build_v$$v; \
+	  $(MAKE) -C cocotb/debug/wlink_pair MODULE=$$m TIDELINK_PHY_V2=$$v \
+	      SIM_BUILD=sim_build_v$$v; \
+	done; done
 
 
 # =============================================================================
@@ -359,7 +377,8 @@ endef
 	sim_gate_v2_ahb_compliant \
 	sim_gate_v2_ll_bootstrap_late \
 	sim_gate_v2_m4dup \
-	sim_gate_v2_fuzz_rtw sim_gate_v2_fuzz_ahb
+	sim_gate_v2_fuzz_rtw sim_gate_v2_fuzz_ahb \
+	sim_gate_v2_a7_phy_guard sim_gate_v2_a7_stop
 
 # WHAT THIS CHECKS, AND WHY IT IS NOT JUST TWO `command -v` LINES.
 # Until 2026-09-11 it was exactly the two tool checks below and nothing else. A
@@ -685,7 +704,7 @@ sim_gate_calibrator_wrap:
 	$(call sim_gate_run,calibrator_wrap,\
 	  $(MAKE) -C cocotb/tidelink_phy_align_calibrator DEPS=1 TOPLEVEL=tb_top_deps \
 	    CAL_RTL=$(TIDELINK_HOME)/src/rtl/local_overrides/tidelink_phy_align_calibrator_v2.sv \
-	    MODULE=test_calibrator_wrap SIM_BUILD=sim_build_wrap \
+	    MODULE=test_calibrator_wrap$(comma)test_calibrator_s_cancel_sync SIM_BUILD=sim_build_wrap \
 	    COCOTB_RESULTS_FILE=sim_build_wrap/res_wrap.xml)
 
 # TL-027 a2l REPLAY-FIFO CDC FALSE-FULL SELF-LATCH (reproduce+heal, 2026-08-08).
@@ -862,6 +881,27 @@ sim_gate_fc_adapter_arbiter:
 	$(call sim_gate_run,fc_adapter_arbiter,\
 	  rm -rf cocotb/tidelink_fc_adapter/sim_build* && \
 	  $(MAKE) -C cocotb/tidelink_fc_adapter MODULE=test_fc_adapter_arbiter)
+
+# A7 (2026-09-30): the auto-anchor SYNC beacon must never overwrite a live link
+# word, and must stop on AXI traffic. v2_a7_phy_guard forces the beacon on both
+# dies and sweeps 64 writes across the 32-word SYNC grid (af3a5d67: 4/64 lost;
+# fixed 64/64). v2_a7_stop holds the TL-channel stop input low (the silicon
+# condition): each beacon must stop within 16 cycles of that die's first AXI
+# app->link valid (af3a5d67: never; fixed: 3 cycles), and 64 single writes under
+# the real running beacon must all complete (af3a5d67: 4/64 lost; fixed 64/64).
+sim_gate_v2_a7_phy_guard:
+	$(call sim_gate_run,v2_a7_phy_guard,\
+	  rm -rf cocotb/tidelink_top_pair_v2/sim_build_a7_phy && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 SIM_BUILD=sim_build_a7_phy \
+	    COCOTB_RESULTS_FILE=sim_build_a7_phy/res_a7_phy.xml \
+	    MODULE=test_v2_a7_beacon TESTCASE=forced_beacon_writes)
+
+sim_gate_v2_a7_stop:
+	$(call sim_gate_run,v2_a7_stop,\
+	  rm -rf cocotb/tidelink_top_pair_v2/sim_build_a7_stop && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 AUTO_ANCHOR=1 SIM_BUILD=sim_build_a7_stop \
+	    COCOTB_RESULTS_FILE=sim_build_a7_stop/res_a7_stop.xml \
+	    MODULE=test_v2_a7_beacon TESTCASE=beacon_stops_on_axi$(comma)silicon_beacon_write_sweep)
 
 # PTP SERVO CLOSED-LOOP CONVERGENCE (2026-09-23, TL-048 / rev-2 review LP-13).
 # tidelink_ptp_servo drives a REAL phc_clock_core (from the ptp-hardware-clock-ahb
@@ -1096,6 +1136,7 @@ sim_gate_nack_wedge_recovery:
 	$(call sim_gate_run,nack_wedge_recovery,\
 	  cd cocotb/tidelink_top_pair && \
 	  $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_l7_wedge_repro && \
+	  $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_tl036_real_crc && \
 	  $(SIM_GATE_TP_ENV) $(MAKE) MODULE=test_13_ack_drop_recovery)
 
 # test_14 only — currently FAILS on the pre-existing unrecovered-wedge gap.
@@ -2019,7 +2060,6 @@ sim_gate_flist_divergence:
 sim_gate_asic_fileset_identity:
 	$(call sim_gate_run,asic_fileset_identity,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 EPOCH_PROFILE=zero \
-	    COCOTB_RESULTS_FILE=sim_build_zero_asic/res_ident.xml \
 	    MODULE=test_asic_fileset_identity && \
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=0 EPOCH_PROFILE=zero \
 	    COCOTB_RESULTS_FILE=sim_build_zero/res_ident.xml \
@@ -2030,7 +2070,6 @@ sim_gate_asic_fileset_identity:
 sim_gate_asic_v2_pair_data:
 	$(call sim_gate_run,asic_v2_pair_data,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 EPOCH_PROFILE=zero \
-	    COCOTB_RESULTS_FILE=sim_build_zero_asic/res_pair_data.xml \
 	    MODULE=test_v2_pair_data)
 
 # Clean bring-up at the ~40 ns silicon clock ratio, and the marginal-link
@@ -2051,8 +2090,7 @@ sim_gate_asic_l7_starvation:
 	    EPOCH_PROFILE=zero COCOTB_RESULTS_FILE=sim_build_zero_wdog256/res_l7.xml \
 	    MODULE=test_asic_l7_starvation_backstop && \
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 L7_WDOG_THRESHOLD=256 \
-	    EPOCH_PROFILE=zero COCOTB_RESULTS_FILE=sim_build_zero_asic_wdog256/res_l7.xml \
-	    MODULE=test_asic_l7_starvation_backstop)
+	    EPOCH_PROFILE=zero MODULE=test_asic_l7_starvation_backstop)
 # --- WLINK TX POWER-STATE unit bench (added 2026-08-26, coverage-driven) -----
 # WlinkTxPstateCtrl was at FSM 0.00% -- 1 of 3 states, 0 of 4 transitions -- in
 # all 42 coverage databases that contain it: the TX power-state controller has
@@ -2137,7 +2175,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	v2_ahb_compliant \
 	v2_ll_bootstrap_late \
 	v2_m4dup \
-	v2_fuzz_rtw v2_fuzz_ahb
+	v2_fuzz_rtw v2_fuzz_ahb \
+	v2_a7_phy_guard v2_a7_stop
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -2290,6 +2329,8 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_m4dup
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_fuzz_rtw
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_fuzz_ahb
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_a7_phy_guard
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_a7_stop
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

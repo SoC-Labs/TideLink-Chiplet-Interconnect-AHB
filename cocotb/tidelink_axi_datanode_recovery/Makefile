@@ -6,7 +6,7 @@
 # ~40 ns silicon ratio, FCSM 0-4 re-pointed deps -> local_overrides (recovery
 # present). Drives a real AXI write over the peer window, injects ONE single-bit
 # error on the B beat via the Wlink built-in injector (data_id 0x82, the on-
-# silicon 0x2E03_003C model), and classifies recover/wedge/error.
+# silicon 0x2E03_023C model), and classifies recover/wedge/error.
 #
 #   make repro   # AXI_CRC_MODE=off (RTL default) -> B error WEDGES (the bug)
 #   make fixed   # AXI_CRC_MODE=on  (the fix)     -> B error RECOVERS byte-exact
@@ -468,7 +468,7 @@ tl044_mutant:
 # only real stimulus (no Force on any design signal):
 #   S1  the far AHB terminus stops answering  (bench BRAM model knob)
 #   S2  the R packet is persistently lost in the link, far die HEALTHY
-#       (Wlink built-in injector — the on-silicon 0x2E03_003C model)
+#       (Wlink built-in injector — the on-silicon 0x2E03_023C model)
 # and then the three exits: NEVER (structural: no AR is admitted while parked,
 # so no new r_done can ever decrement read_counter), RECOVERED (a real late R),
 # INTERMITTENT (RELAPSE_MAX+1 genuine park/recover cycles — the arm the deadgate

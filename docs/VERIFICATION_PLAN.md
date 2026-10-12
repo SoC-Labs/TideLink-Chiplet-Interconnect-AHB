@@ -156,7 +156,7 @@ error-injection test written for the AXI data plane targeted the **B** node, and
 the consumer's acceptance gate is per-node. Envs:
 `cocotb/tidelink_axi_datanode_recovery` (`test_axi_datanode_recovery.py` =
 B-node/Fix-G/Fix-H; `test_axi_datanode_gaps.py` = this axis).
-Injector = the Wlink built-in one (`0x2E03_003C` on silicon), matched by `data_id`.
+Injector = the Wlink built-in one (`0x2E03_023C` on silicon), matched by `data_id`.
 
 | node | data_id | byte 0 `data_id` | byte 4 `pktnum` | byte 5 payload |
 |---|---|---|---|---|

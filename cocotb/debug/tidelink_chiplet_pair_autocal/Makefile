@@ -8,7 +8,7 @@
 # corruption seen in cocotb/tidelink_top_pair.
 #
 # Reference envs (do not modify):
-#   cocotb/wlink_pair/        — same pair, AUTOCAL_ENABLE=0, PASSES.
+#   cocotb/debug/wlink_pair/        — same pair, AUTOCAL_ENABLE=0, PASSES.
 #   cocotb/tidelink_top_pair/ — full TideLink wrapper, AUTOCAL_ENABLE=1, FAILS.
 # =============================================================================
 SIM             = vcs

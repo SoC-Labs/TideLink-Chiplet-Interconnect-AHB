@@ -36,8 +36,8 @@ credit path. We assert that, plus the Region 8 RO mirror, and we
 *confirm* the TideLink FIFO credit register reads its 4096 idle default
 (documenting why, not asserting it as handshake evidence).
 
-Invocation (from cocotb/wlink_pair/):
-    rm -rf sim_build ../phy_align/sim_build
+Invocation (from cocotb/debug/wlink_pair/; add TIDELINK_PHY_V2=1 SIM_BUILD=sim_build_v2 for V2):
+    rm -rf sim_build
     make MODULE=test_credit_handshake_end_to_end SKID_BITS=3
 """
 import cocotb
@@ -72,6 +72,18 @@ def _force_autocal_enable(dut, side, on):
     _chiplet(dut, side).autocal_force_enable_q.value = 1 if on else 0
 
 
+def _calibrator_sim_bypass(dut, side):
+    """Designed-in sim hook (same one tidelink_top_pair/test_28 and the PHY
+    component suites use): tb_early_exit_force_q=1 makes the calibrator go
+    sweep_success -> S_DONE instead of S_HOLD (HOLD_CYCLES=32768 link-clk
+    cycles, ~0.5M pad clocks -- silicon peer-overlap margin, infeasible inside
+    this test's 100k-cycle budget) and skips the cr_pkt_seen-gated S_VALIDATE.
+    The calibrator still runs its real sweep; only the wall-time dwell is cut.
+    Without it, since the L4/T3.2 S_HOLD landed the forced-autocal bench parks
+    in S_HOLD with training_mode held and the FCSM never leaves state 1."""
+    _chiplet(dut, side).u_calibrator.tb_early_exit_force_q.value = 1
+
+
 def _fcsm(dut, side):
     return _chiplet(dut, side).u_wlink.tl2wl.wlink_tidelinktl
 
@@ -102,6 +114,8 @@ async def test_credit_handshake_end_to_end(dut):
     the Region 8 RO mirror."""
     _force_autocal_enable(dut, "m", True)
     _force_autocal_enable(dut, "s", True)
+    _calibrator_sim_bypass(dut, "m")
+    _calibrator_sim_bypass(dut, "s")
     await setup(dut)
     await lock_master(dut)
     await lock_slave(dut)

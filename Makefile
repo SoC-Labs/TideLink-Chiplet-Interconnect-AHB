@@ -378,7 +378,8 @@ endef
 	sim_gate_v2_ll_bootstrap_late \
 	sim_gate_v2_m4dup \
 	sim_gate_v2_fuzz_rtw sim_gate_v2_fuzz_ahb \
-	sim_gate_v2_a7_phy_guard sim_gate_v2_a7_stop
+	sim_gate_v2_a7_phy_guard sim_gate_v2_a7_stop \
+	sim_gate_v2_i2c_prescale
 
 # WHAT THIS CHECKS, AND WHY IT IS NOT JUST TWO `command -v` LINES.
 # Until 2026-09-11 it was exactly the two tool checks below and nothing else. A
@@ -902,6 +903,19 @@ sim_gate_v2_a7_stop:
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 AUTO_ANCHOR=1 SIM_BUILD=sim_build_a7_stop \
 	    COCOTB_RESULTS_FILE=sim_build_a7_stop/res_a7_stop.xml \
 	    MODULE=test_v2_a7_beacon TESTCASE=beacon_stops_on_axi$(comma)silicon_beacon_write_sweep)
+
+# I2C PRESCALE POR FROM THE APB CLOCK (compute 0c7b02e8, ported 2026-10-12).
+# Two builds asserting DIFFERENT reset values, so a build that ignored the define
+# fails one of them: no define -> 125 (eth/FPGA unchanged); 10000 ps (compute
+# 100 MHz recipe) -> 250. Pre-port RTL resets to 125 in both and fails arm 2.
+# I2C_SYS_CLK_PS is not in the bench SIM_BUILD key, so each arm names its own.
+sim_gate_v2_i2c_prescale:
+	$(call sim_gate_run,v2_i2c_prescale,\
+	  rm -rf cocotb/tidelink_top_pair_v2/sim_build_i2c_def cocotb/tidelink_top_pair_v2/sim_build_i2c_10ns && \
+	  EXPECT_I2C_PRESCALE=125 $(MAKE) -C cocotb/tidelink_top_pair_v2 SIM_BUILD=sim_build_i2c_def \
+	    COCOTB_RESULTS_FILE=sim_build_i2c_def/res_i2c.xml MODULE=test_v2_i2c_prescale_por && \
+	  EXPECT_I2C_PRESCALE=250 $(MAKE) -C cocotb/tidelink_top_pair_v2 SIM_BUILD=sim_build_i2c_10ns \
+	    I2C_SYS_CLK_PS=10000 COCOTB_RESULTS_FILE=sim_build_i2c_10ns/res_i2c.xml MODULE=test_v2_i2c_prescale_por)
 
 # PTP SERVO CLOSED-LOOP CONVERGENCE (2026-09-23, TL-048 / rev-2 review LP-13).
 # tidelink_ptp_servo drives a REAL phc_clock_core (from the ptp-hardware-clock-ahb
@@ -2176,7 +2190,8 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	v2_ll_bootstrap_late \
 	v2_m4dup \
 	v2_fuzz_rtw v2_fuzz_ahb \
-	v2_a7_phy_guard v2_a7_stop
+	v2_a7_phy_guard v2_a7_stop \
+	v2_i2c_prescale
 # KNOWN-DEFECT SENTINELS — reported in their OWN summary section. XFAIL (the
 # documented defect, unchanged) is tolerated and is NEVER printed as PASS; XCHG
 # (behaviour changed, either direction) and XERR fail the gate. See the sentinel
@@ -2331,6 +2346,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_fuzz_ahb
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_a7_phy_guard
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_a7_stop
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_i2c_prescale
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit

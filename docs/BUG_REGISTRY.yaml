@@ -14,7 +14,7 @@ schema_version: 2                # 2 (2026-09-11): hardware claims now carry
                                  # machine-enforced by scripts/ci/registry_coverage.py
 generated: 2026-08-06
 last_truth_pass: 2026-09-11      # see campaign.truth_pass_2026_09_11
-updated: 2026-10-10              # TL-054..TL-058 added, TL-036 and TL-038 amended (compute ports + errinject alias correction); NOT a truth pass
+updated: 2026-10-12              # 2026-10-12: TL-036 compute-line HW evidence added, TL-058 bench repaired (sim_proven); earlier 10-10: TL-054..TL-058 added, TL-036/TL-038 amended; NOT a truth pass
 maintainer: autonomous overnight campaign (Claude Opus 4.8)
 approver: David Mapstone <david@mapstone.me>
 
@@ -1906,6 +1906,27 @@ bugs:
         handoff-tidelink-tl036-20261008/ASSESSMENT.md, eco4-rsyn9b-20261009/RESULT.md.
         Not run on either line: the full ~2 h sim_gate on the fixed head, the HAPS
         CRC-injection test, CDC (the change stays inside io_tx_clk).
+        UPDATE 2026-10-12: the HAPS hardware test has since been run on the compute
+        line; see compute_hw_evidence below.
+      compute_hw_evidence: >
+        HARDWARE-TESTED ON THE COMPUTE LINE (HAPS-SX, 2026-10-10), NOT ON A
+        MAIN-BUILT IMAGE. Compute cross-loopback, firmware f58d756f. Proper fix
+        (compute 98082f2, equivalent to main's ab4480aa): with TX held, the forced
+        state-7 exit occurred at 82.9 ms (predicted ~84 ms); tests T16 and T17 both
+        reported WDOG_EXIT on 2/2 runs. ECO golden e03a842 (compute RC ECO4)
+        non-regression: HELD7/HELD7 (as expected, no forced exit), exact recovery
+        when TX resumed, CRC +1 in T17, 0 bad words. 4/4 VERDICT PASS. Source:
+        compute repo bench record tl036_20261010 (RESULT.md; copy b1114a7 on the
+        compute repo branch compute/tl036-test). That record lives in the compute
+        repo and is not retained here, so it does not satisfy hw_evidence_policy
+        for this entry; evidence/vehicle stay null, hw_validated stays false and
+        status stays sim_proven (same precedent as TL-054 compute_hw_evidence).
+      compute_errata_wording_2026_10_12: >
+        Compute errata classification for the ECO4 silicon variant: MITIGATED
+        (the watchdog is re-armed because crc_seen is permanently 0, but there is
+        NO forced state-7 exit on forward-progress loss; the counter clears on
+        leaving state 7). The proper fix (98082f2 / ab4480aa) is the variant that
+        forces the exit, and is the one measured at 82.9 ms above.
     discovered: >
       2026-08-13, while structurally verifying that the TL-035 FPGA build actually
       changes the operative write path (it does — all 5 AXI nodes are covered).
@@ -1926,6 +1947,11 @@ bugs:
         CAVEAT: the five covered overrides are MODIFIED-UNCOMMITTED in this
         worktree (the TL-035 Part-A edit is not committed), so "covered" describes
         the working tree, not the branch tip d317c98.
+      amended_2026_10_12: >
+        Compute-line HAPS-SX hardware evidence added (verification.compute_hw_evidence):
+        proper fix forces the state-7 exit on hardware, ECO4 non-regression held.
+        Status unchanged (sim_proven): the hardware is compute-lineage RTL, not a
+        main-built image. Compute ECO4 errata wording recorded as MITIGATED.
       amended_2026_10_10: >
         status root_caused -> sim_proven. Severity kept medium: the exposure is the
         sideband channel only (AXI peer access uses FCSM 0-4 and is unaffected). The
@@ -3714,7 +3740,7 @@ bugs:
     title: "Stale pre-deploy bench: cocotb/debug/wlink_pair does not compile on rev-2, and the root Makefile sim-repro targets point at a directory that does not exist"
     severity: low
     area: verif/infra
-    status: open
+    status: sim_proven            # 2026-10-12: repaired by d04cb867 (on main); bench runs on V1 and V2 with a proven must-fail control. Not a hardware item.
     registered: 2026-10-10
     opened: 2026-10-10            # found while porting A7 (rev2-port-a7-evidence)
     summary: >
@@ -3732,19 +3758,33 @@ bugs:
     fix:
       approach: "Not fixed (out of scope of the A7 port; the failure was recorded, not weakened). Rename the ports in cocotb/debug/wlink_pair/tb_top.sv, repoint the Makefile at cocotb/debug/wlink_pair, move it to the V2 flist, and decide whether it joins sim_gate; or retire it."
       files: [Makefile, cocotb/debug/wlink_pair/tb_top.sv]
-      commit: null
-      branch: null
+      commit: d04cb867              # 2026-10-12, repair on main: bench path, apb_ctrl_reg_* rename, V2 run, make sim-wlink-pair
+      branch: main
       netlist_affecting: false
+      applied_2026_10_12: >
+        The 'approach' above was built. tb_top.sv connects apb_ctrl_reg_* (the
+        tests' 4-bit {region8,slot} address encoding is kept via a shim onto the
+        01/10 banks) and drives inputs that previously floated; the root Makefile,
+        CI file and docs now point at cocotb/debug/wlink_pair; TIDELINK_PHY_V2=1
+        selects the V2 flist; a new `make sim-wlink-pair` runs the three tests on
+        V1 and V2. Whether the bench joins sim_gate is still undecided.
+        test_link_idle_to_link_data test_02 gates on FCSM >= 4 (LINK_IDLE, link
+        up) on both sides and must end in {4,5}; LINK_DATA (5) needs a pending app
+        word the bench never supplies. That relaxation from LINK_DATA is David's
+        decision of 2026-10-11; it still rejects the HW SEND_NACK=7 signature.
     verification:
-      sim_test: null
+      sim_test: "make sim-wlink-pair (test_link_idle_to_link_data, test_tx_gated_by_training, test_credit_handshake_end_to_end; V1 and V2)"
       in_sim_gate: false
       hw_tested: false
       red_green: >
+        FIXED 2026-10-12 (d04cb867): the three tests compile and run on the V1 and
+        V2 flists via make sim-wlink-pair, and the must-fail control was proven
+        (the bench goes red when the property is broken). ORIGINAL FAILURE:
         COMPILE ERROR on both the fixed head and the base for all three named tests
         (HEAD_gates/wlink_*.log, BASE_gates/wlink_*.log in rev2-port-a7-evidence,
         td-bisect scratch, not in repo).
     signoff:
-      claude_verdict: "Real and unfixed. A bench that cannot compile is not a green; do not cite wlink_pair results for any rev-2 change."
+      claude_verdict: "Was real; repaired by d04cb867 and now sim-proven (runs, and a must-fail control goes red). Not in sim_gate, so it is still a manual pre-deploy bench. Before d04cb867, wlink_pair results must not be cited for any rev-2 change."
       evidence: ["rev2-port-a7-evidence/SUMMARY.md (td-bisect scratch): wlink_pair row and note"]
       approved: false
     related: [TL-054]

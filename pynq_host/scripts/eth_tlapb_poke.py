@@ -12,7 +12,7 @@
 #   0x215C SYNC_SEEN_VEC [7:0]per-lane sync_seen armed vector; [31:24]=0x5F marker (RO)
 #   0x2108 SWI_LANE_STAT [15:8]lane_locked [19:17]fcsm [22]cal_done (RO)
 #   0x0214 LANE_MASK  [7:0]TX mask  [15:8]RX mask (deskew all_sync_seen gate); reset 0xFFFF
-#   0x003C ERR_INJECT  [7:0]DataID [15:8]Byte [18:16]Bit [24]Enable
+#   0x023C ERR_INJECT  [7:0]DataID [15:8]Byte [18:16]Bit [24]Enable
 # Only touches CONFIG-plane (combinational/obs) addresses — cannot wedge the bus.
 #
 #   read  <off>                -> prints 0x%08x
@@ -82,8 +82,8 @@ elif cmd == "lanemask":
 elif cmd == "inject":
     did, byte, bit = int(sys.argv[2], 0), int(sys.argv[3], 0), int(sys.argv[4], 0)
     val = (1 << 24) | ((bit & 7) << 16) | ((byte & 0xFF) << 8) | (did & 0xFF)
-    wr(0x003C, val); print("ERR_INJECT(0x003C)=0x%08x (arm data_id=0x%02x byte=%d bit=%d)" % (rd(0x003C), did, byte, bit))
+    wr(0x023C, val); print("ERR_INJECT(0x023C)=0x%08x (arm data_id=0x%02x byte=%d bit=%d)" % (rd(0x023C), did, byte, bit))
 elif cmd == "injectoff":
-    wr(0x003C, 0); print("ERR_INJECT(0x003C)=0x%08x (off)" % rd(0x003C))
+    wr(0x023C, 0); print("ERR_INJECT(0x023C)=0x%08x (off)" % rd(0x023C))
 else:
     sys.exit("usage: read|write|epoch|anchorpulse|anchorobs|syncdiag|lanemask|inject|injectoff")

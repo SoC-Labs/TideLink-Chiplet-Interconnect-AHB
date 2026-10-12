@@ -86,7 +86,9 @@ REG_STATUS        = _TLAPB + 0x2010   # sticky [1]OVER [2]UNDER [3]MASTER_ERR
 REG_CREDIT_COUNT  = _TLAPB + 0x200C   # RO local free-credit count (13-bit)
 REG_OBS_FC_CREDIT = _TLAPB + 0x219C   # RO far-end credit obs (sideband FCSM_6 ONLY)
 REG_OBS_AXI_NODES = _TLAPB + 0x21E0   # Region F — the AXI-data-node obs plane
-REG_ERR_INJECT    = _TLAPB + 0x003C   # Wlink single-bit error injector
+REG_ERR_INJECT    = _TLAPB + 0x023C   # Wlink LINK_ERROR_INJECTION (wlink_regs 0x23C).
+# NOT 0x003C: that is an unmapped alias (reads 0x00010701); writing it degrades
+# the link. See handoff-psload-20260923/pipeline_rcstats_20261009/RESULT.md (a2).
 
 # CAM (address translator) — rule = replace<<16 | match<<8 | en
 CAM_BASE  = _TLAPB + 0x4000
@@ -107,7 +109,7 @@ FC_ACKNACK = 0x10     # [0]empty [1]full [2]halffull [3]almostempty [4]almostful
 FC_DISCRC  = 0x14     # [16] disable_crc
 FC_CRC     = 0x20     # [15:0] CRC error count (RO)
 
-# --- error-injection data-node IDs (0x2E03_003C DataID field) -----------------
+# --- error-injection data-node IDs (0x2E03_023C DataID field) -----------------
 INJECT_IDS = {"B": 0x82, "R": 0x84, "W": 0x81}   # data-node targets
 INJECT_ID_CR = 0x44                              # sideband CR (do NOT use for data tests)
 
@@ -355,7 +357,7 @@ def fc_crc_of(node):
 
 
 def error_inject(data_id, byte=0, bit=0):
-    """Arm the Wlink single-bit error injector (0x2E03_003C):
+    """Arm the Wlink single-bit error injector (0x2E03_023C):
        [7:0]DataID [15:8]Byte [18:16]Bit [24]Enable.
     ATTENDED / SINGLE-SHOT: this deliberately corrupts one bit of the next packet
     on `data_id`'s node — on silicon that node has no recovery, so a wedge is the

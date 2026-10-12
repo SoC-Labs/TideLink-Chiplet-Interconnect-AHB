@@ -522,7 +522,7 @@ def do_errinject(seed, node="B", bit=0, byte=0, stream=32, win=16):
     AXI data-node recovery gap (docs/CROSS_DIE_WEDGE_ROOTCAUSE.md).
 
     die_a: baseline the target node's CRC, inject ONE bit error on that data node
-    via 0x2E03_003C, do one peer write (the corrupted beat), and confirm the
+    via 0x2E03_023C, do one peer write (the corrupted beat), and confirm the
     node's CRC ROSE (inject took effect). Then disable the injector and resume a
     short deterministic write stream, sampling Region F each beat:
       * if the stream completes healthy  -> RECOVERY PRESENT (host-observed);
@@ -547,7 +547,7 @@ def do_errinject(seed, node="B", bit=0, byte=0, stream=32, win=16):
     program_cam_rule(RULE_0_VALUE)                       # 0x2F -> 0x2D
     crc_before = xcl.fc_crc_of(node)
     inj = xcl.error_inject(data_id, byte=byte, bit=bit)
-    print("  injector 0x2E03_003C <- 0x%08X (enable|bit|byte|id)" % inj)
+    print("  injector 0x2E03_023C <- 0x%08X (enable|bit|byte|id)" % inj)
     # the single corrupted beat.
     _wo, off0, v0, _cls = xcl.beat(seed, 0, win)
     wr(WINDOW_BASE + PEER_APER_BASE + 0x1000 + off0, v0)
@@ -557,7 +557,7 @@ def do_errinject(seed, node="B", bit=0, byte=0, stream=32, win=16):
                                                   crc_after - crc_before))
     if crc_after <= crc_before:
         print("RESULT: INCONCLUSIVE — CRC did not rise; the error injector is not "
-              "wired in this bitstream (0x2E03_003C is a no-op). Nothing to judge.")
+              "wired in this bitstream (0x2E03_023C is a no-op). Nothing to judge.")
         return 2
     print("  inject CONFIRMED (CRC rose). Injector OFF; resuming write stream...")
     # resume traffic and watch for the recovery-gap wedge.

@@ -19,7 +19,25 @@
 // Copyright 2026, SoC Labs (www.soclabs.org)
 // -----------------------------------------------------------------------------
 
+// CLOCK-DERIVED RESET VALUE (2026-10-11, compute 100 MHz recipe). The I2C
+// PRESCALE POR value is derived from the apb_clk period so the autoneg bus runs
+// at I2C_BUS_KHZ (100 kHz standard mode) at any apb_clk:
+//   prescale = f_apb / (4 * f_i2c) = (2.5e8 / I2C_BUS_KHZ) / T_apb_ps, rounded
+//   50 MHz (20000 ps) -> 125, 100 MHz (10000 ps) -> 250.
+// The period comes from the SoC-wide define NANOSOC_SYS_CLK_PERIOD_PS (on the
+// compute die apb_clk == sys_hclk; the compute ASIC flow derives the define
+// from CLK_PERIOD). Without the define it defaults to 20000 ps, which
+// reproduces the historical 16'd125 bit-for-bit, so every other consumer of
+// this file (eth die, FPGA, cocotb) is unchanged unless it opts in.
+`ifdef NANOSOC_SYS_CLK_PERIOD_PS
+  `define AXI_CC_APB_PERIOD_PS `NANOSOC_SYS_CLK_PERIOD_PS
+`else
+  `define AXI_CC_APB_PERIOD_PS 20000
+`endif
 module axi_chiplet_controller #(
+    // apb_clk period in ps and the autoneg I2C rate; see the header.
+    parameter int    APB_CLK_PERIOD_PS    = `AXI_CC_APB_PERIOD_PS,
+    parameter int    I2C_BUS_KHZ          = 100,
     // SoC Labs §9 auto-cal enable. When 0 (default), the calibrator FSM is
     // held inert (role_locked tied to 0 from the calibrator's perspective)
     // so its outputs stay at 0 and the SW-override OR-mux is bit-exact
@@ -648,6 +666,9 @@ module axi_chiplet_controller #(
     // master, so the on-silicon I2C sideband slave can be un-parked for probing.
     logic        i2c_slv_dbg_force_reg;
     logic [15:0] i2c_prescale_reg;
+    // f_apb / (4 * f_i2c) = 1e12 / (4000 * kHz * ps) = (2.5e8 / kHz) / ps, rounded (no 32-bit overflow)
+    localparam int          I2C_PRESCALE_RESET_I = (250_000_000 / I2C_BUS_KHZ + APB_CLK_PERIOD_PS / 2) / APB_CLK_PERIOD_PS;
+    localparam logic [15:0] I2C_PRESCALE_RESET   = I2C_PRESCALE_RESET_I[15:0];
 
     // Auto-negotiation registers (POR-only reset domain)
     logic [6:0]  nego_cfg_reg;       // NEGO_CFG[6:0]; bit[6]=mask_hs_auto_en
@@ -770,14 +791,15 @@ module axi_chiplet_controller #(
             // The autoneg FSM in turn polls TXN_POLL → TXN_CHECK → TXN_POLL
             // indefinitely because I2C_STS_BUSY never clears.
             //
-            // 16'd125 yields 50 MHz / (125 * 4) = 100 kHz — the I²C standard
+            // 16'd125 yields 50 MHz / (125 * 4) = 100 kHz (now derived from
+            // the clock period: I2C_PRESCALE_RESET, 250 at 100 MHz) — the I²C standard
             // bus rate — which is the lowest spec-compliant value and gives
             // the slave's start/stop/bit detector ample margin. The TXN_PRESCALE
             // sub-step at ST_NEGO_CLAIM writes this value into the master's
             // PRESCALE register before the first CLAIM transaction, so the
             // entire autoneg mask-handshake runs at 100 kHz from cold boot.
             // See probe trace in test_13_bug_n1_second_cause_probe.py.
-            i2c_prescale_reg       <= 16'd125;
+            i2c_prescale_reg       <= I2C_PRESCALE_RESET;   // 125 at 50 MHz, 250 at 100 MHz (see header)
             nego_cfg_reg           <= NEGO_CFG_RESET;
             // Bug N7 fix (2026-06-01): role_strap-derived asymmetric POR.
             // Identical priority on both dies (16'hFFFF default) made the
@@ -6929,3 +6951,4 @@ module axi_chiplet_controller #(
     );
 
 endmodule
+`undef AXI_CC_APB_PERIOD_PS

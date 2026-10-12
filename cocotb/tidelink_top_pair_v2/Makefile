@@ -234,6 +234,14 @@ endif
 #        TESTCASE=test_auto_anchor_delivers_under_skew          # PASS (beacon re-anchors)
 #   make AUTO_ANCHOR=0 EPOCH_PROFILE=staircase MODULE=test_v2_auto_anchor \
 #        TESTCASE=test_auto_anchor_negctl_no_anchor_fails       # PASS (no beacon -> no delivery)
+# I2C_SYS_CLK_PS=<ps>: compile with NANOSOC_SYS_CLK_PERIOD_PS=<ps> (the SoC-wide
+# sys_hclk period) so axi_chiplet_controller derives its I2C prescale POR from it
+# (test_v2_i2c_prescale_por.py). Unset: the define is absent -> 125 as before.
+I2C_SYS_CLK_PS ?=
+ifneq ($(I2C_SYS_CLK_PS),)
+COMPILE_ARGS += +define+NANOSOC_SYS_CLK_PERIOD_PS=$(I2C_SYS_CLK_PS)
+endif
+
 AUTO_ANCHOR ?= 0
 ifeq ($(AUTO_ANCHOR),1)
 COMPILE_ARGS += +define+TB_TOP_AUTO_ANCHOR_EN

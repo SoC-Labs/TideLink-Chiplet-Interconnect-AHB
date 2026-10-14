@@ -719,3 +719,21 @@ output at all.
 `SELFCHECK_SKIP_UVM=1` runs the Python + shell controls only (~15 s, no
 simulator) and prints a loud line saying the UVM controls did **not** run, so a
 skipped run cannot be mistaken for a clean one.
+
+## 14. `sideband_crc_replay` (TL-059)
+
+*Added 2026-10-14.* Invariant: every CRC-detected sideband (DataID 0xA1, `WlinkGenericFCSM_6`)
+packet leads to the whole message stream being delivered exactly once, byte-exact, in order;
+a shot the injector fired but the CRC counter did not count is an ERROR, never a pass.
+
+| arm | what it runs | what it makes attributable |
+|---|---|---|
+| positive (9 sims) | clean control; APB-armed replay; position sweep first / middle / last-of-A / second-to-last / last with followers in both directions; header-field hit (ECC on); two hits in flight; hit on the replay; first packet after bring-up; AXI W control | the exactly-once property for the CRC-on (shipping) configuration |
+| `sbcrc_hdr_noecc` | header ECC bypassed (`ASIC_MIRROR=3`), DataID hit = silent drop (CRC +0) | silent drops, not only CRC-counted ones, are replayed |
+| `sbcrc_neg_l9_replay/_pos/_hdr` | `+define+SOCL_L9_ALWAYS` (pre-fix L9b/L9c) | the green arms are attributable to the CRC-gating of L9b/L9c; the "last packet" case still passes there, the others do not |
+| `sbcrc_neg_crcoff` | receiver `disable_crc=1` (SM_CONTROL 0x1714 bit16) | with CRC off nothing is detected (CRC +0) and the corrupted word is delivered silently; this is the CRC-off contract, which the fix does not change |
+
+All four negative arms use the inverted-verdict wrapper (a pass is the error; a failure without a
+cocotb verdict is COULD-NOT-EVALUATE). What it does NOT cover: multi-bit/aliased CRC errors, CRC
+errors on short (ACK/NACK/credit) packets, and the stream-start behaviour on silicon
+(`stream_start_anchor`, see TL-059 in `docs/BUG_REGISTRY.yaml`).

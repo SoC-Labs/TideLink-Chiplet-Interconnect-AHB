@@ -58,6 +58,13 @@ else ifeq ($(ASIC_MIRROR),2)
 # FCSM axis masking. Diagnostic only; not wired into any gate.
 LOCAL_FLIST := $(CURDIR)/tidelink_fpga_v2_full_bypass.flist
 _gen := $(shell sed -E 's@src/rtl/local_overrides/(WlinkGenericFCSM(_[1-4])?|WlinkEccSyndrome)\.v@deps/axi-chiplet-controller/logical/wlink/\1.v@' $(BASE_FLIST) > $(LOCAL_FLIST))
+else ifeq ($(ASIC_MIRROR),3)
+# TL-059 header-field case: the BASE flist as shipped (FCSM_6 = local override) with the header
+# ECC syndrome corrector (WlinkEccSyndrome) re-pointed local -> deps, i.e. BYPASSED like the
+# pre-A3 shipping ASIC. A single-bit DataID hit is then NOT corrected: a silent drop (CRC +0).
+# Generated + git-ignored.
+LOCAL_FLIST := $(CURDIR)/tidelink_fpga_v2_fcsm_local_eccbypass.flist
+_gen := $(shell sed -E 's@src/rtl/local_overrides/WlinkEccSyndrome\.v@deps/axi-chiplet-controller/logical/wlink/WlinkEccSyndrome.v@' $(BASE_FLIST) > $(LOCAL_FLIST))
 else
 LOCAL_FLIST := $(CURDIR)/tidelink_fpga_v2_fcsm_local.flist
 _gen := $(shell sed -E 's@deps/axi-chiplet-controller/logical/wlink/(WlinkGenericFCSM(_[1-4])?|WlinkEccSyndrome)\.v@src/rtl/local_overrides/\1.v@' $(BASE_FLIST) > $(LOCAL_FLIST))
@@ -277,7 +284,7 @@ tl044_hol_prefix_mustfail:
 clean_builds:
 	rm -rf sim_build_axirec sim_build_axirec_* sim_build_bidfix sim_build_gaps* \
 	       sim_build_writehold* sim_build_tl042v2* sim_build_tl037* sim_build_tl044* \
-	       sim_build_xdie_excl* sim_build_sbcrc* sbcrc_neg_*.log \
+	       sim_build_xdie_excl* sim_build_sbcrc* sbcrc_neg_*.log tidelink_fpga_v2_fcsm_local_eccbypass.flist \
 	       sim_build_wrhold_drain_guard* $(LOCAL_FLIST) \
 	       tl044_mutant_green.log tl044_hol_prefix.log
 
@@ -563,11 +570,11 @@ $(eval $(call SBCRC_MUSTFAIL,sbcrc_neg_crcoff,test_sideband_crc_replay,SB_CRC_OF
 sbcrc_neg: sbcrc_neg_l9_replay sbcrc_neg_l9_pos sbcrc_neg_crcoff sbcrc_neg_l9_hdr
 sbcrc_all: sbcrc sbcrc_hdr_noecc sbcrc_neg
 
-# Header-field hit with header ECC BYPASSED (ASIC_MIRROR=2: WlinkEccSyndrome=deps, the pre-A3 shipping
+# Header-field hit with header ECC BYPASSED (ASIC_MIRROR=3: WlinkEccSyndrome=deps, the pre-A3 shipping
 # ASIC): a DataID bit-flip is then a SILENT drop (CRC +0), which a CRC-error-triggered fix cannot see.
 .PHONY: sbcrc_hdr_noecc
 sbcrc_hdr_noecc:
-	SB_HDR_ECC=off $(MAKE) ASIC_MIRROR=2 SIM_BUILD=sim_build_sbcrc_noecc MODULE=test_sideband_crc_replay \
+	SB_HDR_ECC=off $(MAKE) ASIC_MIRROR=3 SIM_BUILD=sim_build_sbcrc_noecc MODULE=test_sideband_crc_replay \
 	        TESTCASE=test_sideband_hit_header_field
 # ... and its must-fail arm: pre-fix RTL (L9b forgives the silent DataID drop -> packet lost).
-$(eval $(call SBCRC_MUSTFAIL,sbcrc_neg_l9_hdr,test_sideband_hit_header_field,SB_HDR_ECC=off,ASIC_MIRROR=2 EXTRA_DEFINES=+define+SOCL_L9_ALWAYS))
+$(eval $(call SBCRC_MUSTFAIL,sbcrc_neg_l9_hdr,test_sideband_hit_header_field,SB_HDR_ECC=off,ASIC_MIRROR=3 EXTRA_DEFINES=+define+SOCL_L9_ALWAYS))

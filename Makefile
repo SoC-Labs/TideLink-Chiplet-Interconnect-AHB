@@ -359,7 +359,7 @@ endef
 	sim_gate_force_recal sim_gate_dftelab \
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen sim_gate_txgen_ext_hijack \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
-	sim_gate_axi_datanode_recovery sim_gate_axi_datanode_gaps sim_gate_tl044_hol_write_age \
+	sim_gate_axi_datanode_recovery sim_gate_axi_datanode_gaps sim_gate_sideband_crc_replay sim_gate_tl044_hol_write_age \
 	sim_gate_tl044_hol_prefix \
 	sim_gate_n1_read_backstop sim_gate_tl044_read_deadgate \
 	sim_gate_tl044_park_recipe sim_gate_xdie_exclusive \
@@ -1251,6 +1251,17 @@ sim_gate_axi_datanode_gaps:
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_ecc && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_crc && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery gaps_tl037)
+
+# ── TL-059 (2026-10-14): sideband (0xA1, FCSM_6) CRC-replay acceptance ───────────
+# Every CRC-detected sideband packet must be delivered exactly once (invariant in
+# cocotb/tidelink_axi_datanode_recovery/test_sideband_crc_replay.py). Runs the nine positive
+# cases, the header-ECC-bypassed variant, and the FOUR MUST-FAIL arms (pre-fix RTL via
+# +define+SOCL_L9_ALWAYS x3, receiver disable_crc=1 x1) -- a green result is only meaningful
+# because the same bench goes red on those. 14 sims of ~1-3 min each (compile shared).
+sim_gate_sideband_crc_replay:
+	$(call sim_gate_run,sideband_crc_replay,\
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_sbcrc* && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery sbcrc_all)
 
 # ── TL-042 instance 1 (2026-08-23) — the ahb_sub write backstop STARVES ──────
 # Both existing ahb_sub backstops are AGGREGATE-PROGRESS timers: sub_osr_ctr_r
@@ -2171,7 +2182,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
-	axi_datanode_recovery axi_datanode_gaps tl044_hol_write_age n1_read_backstop \
+	axi_datanode_recovery axi_datanode_gaps sideband_crc_replay tl044_hol_write_age n1_read_backstop \
 	tl044_read_deadgate tl044_park_recipe xdie_exclusive \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
@@ -2293,6 +2304,8 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@# pushback): per-node injection on the four nodes only B ever covered,
 	@# plus the I5 backstop-semantics properties that were never asserted.
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_axi_datanode_gaps
+	@# TL-059: sideband CRC-detected packet must replay exactly once (+ must-fail arms).
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_sideband_crc_replay
 	@# N1 (TAPEOUT BLOCKER, fix @e008c58): coincident stuck-read/stuck-write
 	@# regression — the write backstop must no longer permanently mask the
 	@# read backstop's AHB ERROR.

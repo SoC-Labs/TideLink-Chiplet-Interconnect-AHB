@@ -992,6 +992,52 @@ module tb_top #(
     // ----- Waveform dump ------------------------------------------------------
     // Gated by TB_TOP_DUMP_WAVES so probe-only tests can opt out (the VCD
     // grows ~1 GB / minute under multi-test cocotb runs, OOMing the host).
+    // ─────────────────────────────────────────────────────────────────────────
+    // POSITION-SELECTABLE single-shot injector (HARNESS ONLY, sideband CRC proof).
+    // The real Wlink TX link-layer injector (err_inj_smack -> byte/bit mux in
+    // WlinkTxLinkLayer) corrupts the FIRST packet of the armed DataID after the
+    // APB 0->1 edge.  To corrupt the Nth packet instead, this block counts TX
+    // packets of DataID pi_did using the injector's OWN advance&sop&id-match term
+    // and drives err_inj_smack = (count == pi_tgt).  The corruption mux, byte/bit
+    // selection (APB 0x23C byte/bit fields) and CRC path are the unmodified RTL.
+    // Controls are cocotb-deposited; pi_en_* = 0 leaves the RTL injector untouched.
+    // ─────────────────────────────────────────────────────────────────────────
+    reg        pi_en_m = 1'b0, pi_en_s = 1'b0, pi_clr = 1'b0;
+    integer    pi_tgt  = 0;
+    reg [7:0]  pi_did  = 8'hA1;
+    integer    pi_cnt_m = 0, pi_cnt_s = 0;
+    always @(posedge u_master.u_chiplet_controller.u_wlink.lltx.clock) begin
+        if (pi_clr) pi_cnt_m <= 0;
+        else if (u_master.u_chiplet_controller.u_wlink.lltx.blah_0_advance
+                 && u_master.u_chiplet_controller.u_wlink.lltx.auto_in_sop
+                 && u_master.u_chiplet_controller.u_wlink.lltx.auto_in_data_id == pi_did)
+            pi_cnt_m <= pi_cnt_m + 1;
+    end
+    always @(posedge u_slave.u_chiplet_controller.u_wlink.lltx.clock) begin
+        if (pi_clr) pi_cnt_s <= 0;
+        else if (u_slave.u_chiplet_controller.u_wlink.lltx.blah_0_advance
+                 && u_slave.u_chiplet_controller.u_wlink.lltx.auto_in_sop
+                 && u_slave.u_chiplet_controller.u_wlink.lltx.auto_in_data_id == pi_did)
+            pi_cnt_s <= pi_cnt_s + 1;
+    end
+    reg pi_trace = 1'b0;
+    always @(posedge u_master.u_chiplet_controller.u_wlink.lltx.clock)
+        if (pi_trace && u_master.u_chiplet_controller.u_wlink.lltx.blah_0_advance && u_master.u_chiplet_controller.u_wlink.lltx.auto_in_sop
+            && u_master.u_chiplet_controller.u_wlink.lltx.auto_in_data_id == pi_did)
+            $display("PITRACE %0t M cnt=%0d wc=%0d data=%h smack=%b", $time, pi_cnt_m, u_master.u_chiplet_controller.u_wlink.lltx.auto_in_word_count, u_master.u_chiplet_controller.u_wlink.lltx.auto_in_data[63:0], u_master.u_chiplet_controller.u_wlink.lltx.err_inj_smack);
+    always @(posedge u_slave.u_chiplet_controller.u_wlink.lltx.clock)
+        if (pi_trace && u_slave.u_chiplet_controller.u_wlink.lltx.blah_0_advance && u_slave.u_chiplet_controller.u_wlink.lltx.auto_in_sop
+            && u_slave.u_chiplet_controller.u_wlink.lltx.auto_in_data_id == pi_did)
+            $display("PITRACE %0t S cnt=%0d wc=%0d data=%h smack=%b", $time, pi_cnt_s, u_slave.u_chiplet_controller.u_wlink.lltx.auto_in_word_count, u_slave.u_chiplet_controller.u_wlink.lltx.auto_in_data[63:0], u_slave.u_chiplet_controller.u_wlink.lltx.err_inj_smack);
+    always @(pi_en_m) begin
+        if (pi_en_m) force u_master.u_chiplet_controller.u_wlink.lltx.err_inj_smack = (pi_cnt_m == pi_tgt);
+        else release u_master.u_chiplet_controller.u_wlink.lltx.err_inj_smack;
+    end
+    always @(pi_en_s) begin
+        if (pi_en_s) force u_slave.u_chiplet_controller.u_wlink.lltx.err_inj_smack = (pi_cnt_s == pi_tgt);
+        else release u_slave.u_chiplet_controller.u_wlink.lltx.err_inj_smack;
+    end
+
     // Default ON to preserve prior behaviour; add +define+TB_TOP_NO_DUMP=1 to
     // disable. Run with: COMPILE_ARGS+="+define+TB_TOP_NO_DUMP" make ...
     `ifndef TB_TOP_NO_DUMP

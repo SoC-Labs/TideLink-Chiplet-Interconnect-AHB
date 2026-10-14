@@ -382,3 +382,13 @@ gui: $(SIM_BUILD)/simv
 	unset NOVAS_HOME; VERDI_HOME=$(VERDI_HOME) MODULE=$(MODULE) \
 	TESTCASE=$(TESTCASE) COCOTB_RESOLVE_X=ZEROS \
 	$(SIM_BUILD)/simv -l sim.log -gui $(SIM_ARGS)
+
+# PLAN/sideband-design: stream-start storm gate with the corrector ENGAGED (EPOCH_ANCHOR=1).
+# Default-build EPOCH_PROFILE=silicon is red for ALL RTL variants (no corrector -> no delivery,
+# 2803 reverts, exp==0). With the corrector engaged: L9 present AND L9b/L9c tied off both PASS 0 reverts.
+.PHONY: stream_start_anchor stream_start_anchor_nol9
+stream_start_anchor:
+	$(MAKE) SIM_BUILD=sim_build_ssa EPOCH_PROFILE=silicon EPOCH_ANCHOR=1 MODULE=test_v2_stream_start_28w TESTCASE=test_s2m_stream_start_no_storm
+stream_start_anchor_nol9:
+	$(MAKE) SIM_BUILD=sim_build_ssa_nol9 EPOCH_PROFILE=silicon EPOCH_ANCHOR=1 MODULE=test_v2_stream_start_28w TESTCASE=test_s2m_stream_start_no_storm \
+	        EXTRA_DEFINES="+define+SOCL_ECO_A_TIE_L9B +define+SOCL_ECO_B_TIE_L9C"

@@ -530,6 +530,10 @@ module WlinkGenericFCSM_6 #(
   // rate-limited by the hold-down; re-anchors exp_pkt_num below instead of NACKing.
 `ifdef SOCL_NO_CRC_REPLAY_GATE
   wire socl_crc_replay_hold = 1'b0;
+`elsif SOCL_EXP_L9_CRC_OFF_ONLY
+  // EXPERIMENT (plan/sideband-design option E): L9b/L9c only legal while link CRC is DISABLED
+  // (the July regime they were written for); with CRC on, a gap is a real loss -> plain NACK/replay.
+  wire socl_crc_replay_hold = ~out_prepend_swi_disable_crc;
 `elsif SOCL_ECO_C_STICKY
   // ECO-sized variant (c): reuse the EXISTING crc_errors counter (|crc_errors == io_rx_crc_err,
   // set the cycle after the first CRC error, cleared with the link enable) -> no new flop.

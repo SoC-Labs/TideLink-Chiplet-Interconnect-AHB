@@ -529,3 +529,11 @@ sbcrc: ; @for t in $(SBCRC_TESTS); do $(MAKE) $$t || exit 1; done
 sbcrc_neg:
 	$(MAKE) SIM_BUILD=sim_build_sbcrc_neg MODULE=test_sideband_crc_replay TESTCASE=test_sideband_crc_replay \
 	        EXTRA_DEFINES=+define+SOCL_NO_CRC_REPLAY_GATE
+
+# PLAN/sideband-design option E experiment: L9b/L9c legal only while link CRC is DISABLED
+# (+define+SOCL_EXP_L9_CRC_OFF_ONLY). With CRC on (POR default) this == L9b/L9c removed; the
+# sideband CRC-replay tests must PASS with no socl_crc_replay_pend flop involved.
+.PHONY: sbcrc_e
+sbcrc_e:
+	$(MAKE) SIM_BUILD=sim_build_sbcrc_e MODULE=test_sideband_crc_replay TESTCASE=test_sideband_crc_replay \
+	        EXTRA_DEFINES=+define+SOCL_EXP_L9_CRC_OFF_ONLY

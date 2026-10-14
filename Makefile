@@ -353,7 +353,7 @@ endef
 .PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 sim_gate_ptp_link_sync sim_gate_retire_plumb sim_gate_fifo_twin2_tree \
 	sim_gate_v2_perf sim_gate_v2_reduced_lane sim_gate_v2_fc_contiguous sim_gate_epoch_silicon \
-	sim_gate_epoch_anchor_plumb \
+	sim_gate_epoch_anchor_plumb sim_gate_v2_stream_start_anchor \
 	sim_gate_v2_sustained sim_gate_v2_trunc_credit sim_gate_v2_trunc_aperture \
 	sim_gate_v2_data sim_gate_v2_syncdet sim_gate_v2_winscan sim_gate_fifo sim_gate_fifo_randinit sim_gate_v1elab \
 	sim_gate_force_recal sim_gate_dftelab \
@@ -1081,6 +1081,16 @@ sim_gate_epoch_silicon:
 # TB_TOP_EPOCH_ANCHOR_FORCE defparam shortcut above) and asserts s2m delivery
 # — guards the end-to-end threading landed in f756ed8 so the Z2 data-plane fix
 # can never silently stop reaching the deskew corrector.
+# TL-059 design E (L9b/L9c only while link CRC is off): the July B->A stream-start NACK/revert
+# storm must not return with CRC on, and the CRC-off behaviour must equal the pre-fix RTL.
+# Corrector ENGAGED (EPOCH_ANCHOR=1): the default build has no active corrector, delivers nothing
+# and is red for every RTL variant (sentinel xfail_epoch_shipping_corrector), so it cannot judge L9.
+sim_gate_v2_stream_start_anchor:
+	$(call sim_gate_run,v2_stream_start_anchor,\
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 stream_start_anchor && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 stream_start_anchor_nol9 && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 l9bc_equal)
+
 sim_gate_epoch_anchor_plumb:
 	$(call sim_gate_run,epoch_anchor_plumb,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 EPOCH_PROFILE=silicon EPOCH_ANCHOR=1 \
@@ -2171,7 +2181,7 @@ sim_gate_xhb500_bridge:
 # --- aggregate drivers -------------------------------------------------------
 SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_retry \
 	t30_autonomous_fc_handoff ptp_link_sync v2_pair_data v2_autonomous_sync_detect \
-	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon epoch_anchor_plumb \
+	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon epoch_anchor_plumb v2_stream_start_anchor \
 	v2_pair_sustained v2_truncated_pkt_credit v2_truncated_pkt_aperture_offset v2_xhb_lostresp_pipe \
 	fifo_rx_phantom_pop fifo_rx_randinit v1_elab asic_v1_elab asic_v2_elab dft_wrapper_elab \
 	flist_divergence asic_fileset_identity asic_v2_pair_data asic_fcsm_silicon_ratio \
@@ -2383,6 +2393,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_reduced_lane
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_epoch_silicon
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_epoch_anchor_plumb
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_stream_start_anchor
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_sustained
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_v2_trunc_credit
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_fifo_twin2_tree

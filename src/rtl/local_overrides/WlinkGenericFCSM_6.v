@@ -527,9 +527,12 @@ module WlinkGenericFCSM_6 #(
   // => unchanged legacy behaviour. Uses the EXISTING out_prepend_swi_disable_crc config flop
   // (APB `clock` domain, quasi-static), read in io_rx_clk exactly as crc_corrupt already does:
   // 0 new flops, no new clock-domain crossing source or destination.
-  // `define SOCL_L9_ALWAYS = negative control (restores the pre-fix always-on L9b/L9c).
+  // `define SOCL_L9_ALWAYS = negative control (restores the pre-fix always-on L9b/L9c);
+  // `define SOCL_L9_NEVER  = evaluation variant, L9b/L9c tied off in every CRC mode.
 `ifdef SOCL_L9_ALWAYS
   wire socl_l9_crc_off = 1'b1;
+`elsif SOCL_L9_NEVER
+  wire socl_l9_crc_off = 1'b0;   // L9b/L9c removed outright (evaluation variant for the CRC-off regime)
 `else
   wire socl_l9_crc_off = out_prepend_swi_disable_crc;
 `endif

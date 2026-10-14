@@ -382,3 +382,47 @@ gui: $(SIM_BUILD)/simv
 	unset NOVAS_HOME; VERDI_HOME=$(VERDI_HOME) MODULE=$(MODULE) \
 	TESTCASE=$(TESTCASE) COCOTB_RESOLVE_X=ZEROS \
 	$(SIM_BUILD)/simv -l sim.log -gui $(SIM_ARGS)
+
+# ── TL-059: stream-start / L9b-L9c protection evidence for sideband fix design E ─────────────────
+# Design E (src/rtl/local_overrides/WlinkGenericFCSM_6.v) makes L9b/L9c active only while link CRC
+# is DISABLED. The July stream-start NACK/revert storm they were written for must not return with
+# CRC on (POR default), and with CRC off the behaviour must equal the pre-fix RTL.
+#   stream_start_anchor          EPOCH_PROFILE=silicon, corrector ENGAGED (EPOCH_ANCHOR=1), design E
+#                                (CRC on => L9b/L9c inactive).  Must PASS (0 reverts, exp advances).
+#   stream_start_anchor_nol9     same with +define+SOCL_L9_NEVER (L9b/L9c tied off in every mode).
+#   stream_start_anchor_l9always same with +define+SOCL_L9_ALWAYS (pre-fix RTL; the base).
+#   (The default build, EPOCH_ANCHOR=0, has no active whole-word corrector, delivers nothing and is
+#    red for EVERY RTL variant -- that is the documented sentinel xfail_epoch_shipping_corrector.)
+#   l9bc_base                    directed L9b/L9c probe on the pre-fix RTL (SOCL_L9_ALWAYS), CRC on
+#   l9bc_base_crcoff             the same probe, same disable_crc=1 write, on the pre-fix RTL (the base)
+#   l9bc_crcoff                  same probe on design E with the receiver's disable_crc=1: must PASS
+#   l9bc_equal                   runs both and requires IDENTICAL [l9bc] observables (reverts,
+#                                exp_distinct, l9b/l9c fire counts): CRC off == pre-fix behaviour
+#   l9bc_crcon                   same probe on design E with CRC on. EXPECTED RED (the probe deposits
+#                                a wrong exp_pkt_num = the July jam state, which no longer happens
+#                                with CRC on); documents what E removes. NOT a gate.
+SSA_ARGS := EPOCH_PROFILE=silicon EPOCH_ANCHOR=1 MODULE=test_v2_stream_start_28w TESTCASE=test_s2m_stream_start_no_storm
+.PHONY: stream_start_anchor stream_start_anchor_nol9 stream_start_anchor_l9always l9bc_base l9bc_base_crcoff l9bc_crcoff l9bc_crcon l9bc_equal
+stream_start_anchor:
+	$(MAKE) SIM_BUILD=sim_build_ssa COCOTB_RESULTS_FILE=sim_build_ssa/res.xml $(SSA_ARGS)
+stream_start_anchor_nol9:
+	$(MAKE) SIM_BUILD=sim_build_ssa_nol9 COCOTB_RESULTS_FILE=sim_build_ssa_nol9/res.xml $(SSA_ARGS) EXTRA_DEFINES=+define+SOCL_L9_NEVER
+stream_start_anchor_l9always:
+	$(MAKE) SIM_BUILD=sim_build_ssa_l9always COCOTB_RESULTS_FILE=sim_build_ssa_l9always/res.xml $(SSA_ARGS) EXTRA_DEFINES=+define+SOCL_L9_ALWAYS
+l9bc_base:
+	$(MAKE) SIM_BUILD=sim_build_l9bc_base COCOTB_RESULTS_FILE=sim_build_l9bc_base/res.xml MODULE=test_v2_l9bc_directed EXTRA_DEFINES=+define+SOCL_L9_ALWAYS
+l9bc_base_crcoff:
+	L9BC_CRC_OFF=1 $(MAKE) SIM_BUILD=sim_build_l9bc_base_crcoff COCOTB_RESULTS_FILE=sim_build_l9bc_base_crcoff/res.xml MODULE=test_v2_l9bc_directed EXTRA_DEFINES=+define+SOCL_L9_ALWAYS
+l9bc_equal:
+	@mkdir -p sim_build_l9bc_equal
+	@$(MAKE) l9bc_crcoff > l9bc_crcoff.log 2>&1 || { echo "[l9bc] design E / CRC off FAILED; see l9bc_crcoff.log"; exit 1; }
+	@$(MAKE) l9bc_base_crcoff > l9bc_base_crcoff.log 2>&1 || { echo "[l9bc] base / CRC off FAILED; see l9bc_base_crcoff.log"; exit 1; }
+	@grep -h '\[l9bc\] crc_off' l9bc_crcoff.log | sed 's/^.*\[l9bc\]/[l9bc]/' > sim_build_l9bc_equal/crcoff.obs
+	@grep -h '\[l9bc\] crc_off' l9bc_base_crcoff.log | sed 's/^.*\[l9bc\]/[l9bc]/' > sim_build_l9bc_equal/base_crcoff.obs
+	@test -s sim_build_l9bc_equal/crcoff.obs || { echo "[l9bc] no observables captured: could not evaluate"; exit 2; }
+	@if diff sim_build_l9bc_equal/crcoff.obs sim_build_l9bc_equal/base_crcoff.obs; then echo "[l9bc] CRC-off observables IDENTICAL to the pre-fix RTL:"; cat sim_build_l9bc_equal/crcoff.obs; \
+	 else echo "[l9bc] CRC-off behaviour DIFFERS from the pre-fix RTL"; exit 1; fi
+l9bc_crcoff:
+	L9BC_CRC_OFF=1 $(MAKE) SIM_BUILD=sim_build_l9bc_e COCOTB_RESULTS_FILE=sim_build_l9bc_e/res.xml MODULE=test_v2_l9bc_directed
+l9bc_crcon:
+	$(MAKE) SIM_BUILD=sim_build_l9bc_e_crcon COCOTB_RESULTS_FILE=sim_build_l9bc_e_crcon/res.xml MODULE=test_v2_l9bc_directed

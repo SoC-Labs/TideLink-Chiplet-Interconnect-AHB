@@ -277,7 +277,7 @@ tl044_hol_prefix_mustfail:
 clean_builds:
 	rm -rf sim_build_axirec sim_build_axirec_* sim_build_bidfix sim_build_gaps* \
 	       sim_build_writehold* sim_build_tl042v2* sim_build_tl037* sim_build_tl044* \
-	       sim_build_xdie_excl* \
+	       sim_build_xdie_excl* sim_build_sbcrc* sbcrc_neg_*.log \
 	       sim_build_wrhold_drain_guard* $(LOCAL_FLIST) \
 	       tl044_mutant_green.log tl044_hol_prefix.log
 
@@ -517,3 +517,57 @@ gaps_ecc:      ; @for t in $(GAPS_ECC_TESTS);      do $(MAKE) $$t || exit 1; don
 gaps_ecc_asic: ; @for t in $(GAPS_ECC_TESTS); do \
 	$(MAKE) ASIC_MIRROR=1 SIM_BUILD=sim_build_gaps_ecc_asic MODULE=test_axi_datanode_gaps TESTCASE=$$t || exit 1; done
 gaps: gaps_nodes gaps_backstop gaps_ecc
+
+# =============================================================================
+# TL-059 -- sideband (0xA1, FCSM_6) CRC-replay acceptance (test_sideband_crc_replay.py).
+# INVARIANT: every CRC-detected sideband packet => the whole message stream is delivered
+# exactly once, byte-exact, in order.  A shot the injector fired but the CRC counter did not
+# count is an ERROR, never a PASS.  Each test needs its own bring-up (TESTCASE=, one sim each;
+# the compile in sim_build_sbcrc is shared).
+#
+#   make sbcrc        all positive cases (must PASS)
+#   make sbcrc_neg    the MUST-FAIL arms (each wrapped so that a PASS is the error):
+#       sbcrc_neg_l9_replay  +define+SOCL_L9_ALWAYS = the pre-fix RTL (L9b/L9c live with CRC on)
+#       sbcrc_neg_l9_pos     same RTL, position sweep with followers
+#       sbcrc_neg_crcoff     receiver disable_crc=1 (SM_CONTROL 0x1714 bit16): CRC no longer checked,
+#                            so the shot is not detected (CRC +0) and the corrupted word is delivered
+#                            silently -- the documented CRC-off contract, which E does not change.
+#   make sbcrc_all    both
+# =============================================================================
+SBCRC_TESTS := test_sideband_clean_control test_sideband_crc_replay \
+	test_sideband_crc_position_ab test_sideband_crc_position_ba test_sideband_hit_header_field \
+	test_sideband_two_hits_in_flight test_sideband_hit_on_replay \
+	test_sideband_hit_first_after_bringup test_axi_w_crc_replay_control
+.PHONY: sbcrc sbcrc_neg sbcrc_all sbcrc_neg_l9_replay sbcrc_neg_l9_pos sbcrc_neg_crcoff $(SBCRC_TESTS)
+$(SBCRC_TESTS):
+	$(MAKE) SIM_BUILD=sim_build_sbcrc MODULE=test_sideband_crc_replay TESTCASE=$@
+sbcrc: ; @for t in $(SBCRC_TESTS); do $(MAKE) $$t || exit 1; done
+
+# $(call SBCRC_MUSTFAIL,<name>,<testcase>,<env prefix>,<make args>): inverts the verdict. A pass is
+# the error (mutant escaped); a failure that never reached a cocotb verdict is COULD-NOT-EVALUATE
+# (broken build), not "mutant killed" -- same contract as tl044_hol_prefix_mustfail.
+define SBCRC_MUSTFAIL
+$(1):
+	@echo "[sbcrc] MUST-FAIL ARM $(1): $(2) $(3) $(4)"
+	@rm -rf sim_build_$(1) $(1).log
+	@if $(3) $(MAKE) SIM_BUILD=sim_build_$(1) MODULE=test_sideband_crc_replay TESTCASE=$(2) $(4) > $(1).log 2>&1; then \
+	    echo "[sbcrc] MUTANT ESCAPED -- $(2) PASSED in $(1); see $(1).log"; exit 1; fi
+	@if ! grep -qE '\*\*[[:space:]]+TESTS=' $(1).log; then \
+	    echo "[sbcrc] COULD-NOT-EVALUATE: $(1) failed without a cocotb verdict; see $(1).log"; exit 2; fi
+	@grep -E '\[sbcrc\] FAIL|\*\*[[:space:]]+TESTS=' $(1).log | cut -c1-260 | tail -8 || true
+	@echo "[sbcrc] mutant killed: $(2) FAILS under $(1) (required)"
+endef
+$(eval $(call SBCRC_MUSTFAIL,sbcrc_neg_l9_replay,test_sideband_crc_replay,,EXTRA_DEFINES=+define+SOCL_L9_ALWAYS))
+$(eval $(call SBCRC_MUSTFAIL,sbcrc_neg_l9_pos,test_sideband_crc_position_ab,,EXTRA_DEFINES=+define+SOCL_L9_ALWAYS))
+$(eval $(call SBCRC_MUSTFAIL,sbcrc_neg_crcoff,test_sideband_crc_replay,SB_CRC_OFF=1,))
+sbcrc_neg: sbcrc_neg_l9_replay sbcrc_neg_l9_pos sbcrc_neg_crcoff sbcrc_neg_l9_hdr
+sbcrc_all: sbcrc sbcrc_hdr_noecc sbcrc_neg
+
+# Header-field hit with header ECC BYPASSED (ASIC_MIRROR=2: WlinkEccSyndrome=deps, the pre-A3 shipping
+# ASIC): a DataID bit-flip is then a SILENT drop (CRC +0), which a CRC-error-triggered fix cannot see.
+.PHONY: sbcrc_hdr_noecc
+sbcrc_hdr_noecc:
+	SB_HDR_ECC=off $(MAKE) ASIC_MIRROR=2 SIM_BUILD=sim_build_sbcrc_noecc MODULE=test_sideband_crc_replay \
+	        TESTCASE=test_sideband_hit_header_field
+# ... and its must-fail arm: pre-fix RTL (L9b forgives the silent DataID drop -> packet lost).
+$(eval $(call SBCRC_MUSTFAIL,sbcrc_neg_l9_hdr,test_sideband_hit_header_field,SB_HDR_ECC=off,ASIC_MIRROR=2 EXTRA_DEFINES=+define+SOCL_L9_ALWAYS))

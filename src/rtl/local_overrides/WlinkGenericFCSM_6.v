@@ -505,6 +505,16 @@ module WlinkGenericFCSM_6 #(
   wire exp_pkt_not_seen_l9 = exp_pkt_not_seen & ~socl_l9_resync_now;
   // --- SoC Labs L9b/L9c RX pktnum re-anchor (ported cb33c9f + 2b, 2026-07-07) ---
   reg  [3:0] socl_l9b_hold;   // re-anchor hold-down counter (io_rx_clk); always-block below
+  // SoC Labs CRC-REPLAY GATE (2026-10-14, fix/sideband-crc-replay): after a CRC-dropped packet
+  // the TX WILL replay from the dropped packet (our crc NACK, state 7). L9b would re-anchor
+  // exp_pkt_num PAST it on the next packet (isolated forward gap) and L9c would then drop the
+  // replay as a stale backward echo -> the CRC-hit packet is lost for good (sideband 0xA1;
+  // AXI nodes have no L9b/L9c so they replay fine). socl_crc_replay_pend is set by a CRC
+  // error and cleared when the expected packet is accepted again (the replay arrived);
+  // while set (and on the CRC cycle itself) L9b and L9c are masked, so a mismatch is a plain
+  // NotExp like every other FC node. Stream-start protections (no CRC error) are unaffected.
+  // `define SOCL_NO_CRC_REPLAY_GATE = negative control (restores the pre-fix behaviour).
+  reg  socl_crc_replay_pend;
   // SoC Labs defence-in-depth (2026-07-09): a fe_tx_credit_max of 0 is never a legal
   // grant (CR advertises 16'h1f1f), yet it degenerates EVERY consumer below -- ring_mod
   // collapses to 1, L9b can never fire, L9c swallows every mismatch, and exp_pkt_num
@@ -518,7 +528,22 @@ module WlinkGenericFCSM_6 #(
                                  ? (socl_l9b_fwd_raw - socl_l9b_ring_mod) : socl_l9b_fwd_raw;
   // L9b: forgive an isolated FORWARD gap (1..window) once the stream has started,
   // rate-limited by the hold-down; re-anchors exp_pkt_num below instead of NACKing.
+`ifdef SOCL_NO_CRC_REPLAY_GATE
+  wire socl_crc_replay_hold = 1'b0;
+`elsif SOCL_ECO_C_STICKY
+  // ECO-sized variant (c): reuse the EXISTING crc_errors counter (|crc_errors == io_rx_crc_err,
+  // set the cycle after the first CRC error, cleared with the link enable) -> no new flop.
+  wire socl_crc_replay_hold = |crc_errors;   // pure form: NO same-cycle term (nothing new but 2 gate pins)
+`else
+  wire socl_crc_replay_hold = socl_crc_replay_pend | valid_rx_pkt_crc_err;
+`endif
+`ifdef SOCL_ECO_A_TIE_L9B
+  wire socl_l9b_reanchor_now = 1'b0; // ECO variant (a): L9b tied low
+  wire socl_l9b_reanchor_now_unused = exp_pkt_not_seen
+`else
   wire socl_l9b_reanchor_now = exp_pkt_not_seen
+`endif
+                               & ~socl_crc_replay_hold
                                & ~socl_l9_resync_now
                                & socl_l9_first_data_seen_rx
                                & (socl_l9b_hold == 4'h0)
@@ -527,7 +552,13 @@ module WlinkGenericFCSM_6 #(
   // L9c (2b/330e2a7): a BACKWARD mismatch (fwd_dist in the upper half of the ring)
   // is a stale replay echo / re-ACK-cadence beat -> RE-ACK it (drop mismatch), never NACK.
   wire [8:0] socl_l9c_back_thresh = {1'b0, socl_l9b_ring_mod[8:1]}; // ring/2
+`ifdef SOCL_ECO_B_TIE_L9C
+  wire socl_l9c_backward = 1'b0; // ECO variant (b): L9c tied low
+  wire socl_l9c_backward_unused = exp_pkt_not_seen & ~socl_l9b_reanchor_now
+`else
   wire socl_l9c_backward = exp_pkt_not_seen & ~socl_l9b_reanchor_now
+`endif
+                           & ~socl_crc_replay_hold
                            & (socl_l9b_fwd_dist >= socl_l9c_back_thresh);
   // Masked mismatch fed to the notifier + winc: on a re-anchor or backward-re-ACK
   // cycle drop the mismatch so no isNotExpPacket(3'h1) enqueues -> no NACK->replay storm.
@@ -1344,6 +1375,17 @@ module WlinkGenericFCSM_6 #(
       end else begin
         exp_pkt_num <= _exp_pkt_num_in_T_3;
       end
+    end
+  end
+  always @(posedge io_rx_clk or posedge io_rx_reset) begin
+    if (io_rx_reset) begin
+      socl_crc_replay_pend <= 1'h0;
+    end else if (_fe_tx_credit_max_in_T) begin
+      socl_crc_replay_pend <= 1'h0;
+    end else if (valid_rx_pkt_crc_err) begin
+      socl_crc_replay_pend <= 1'h1;
+    end else if (exp_pkt_seen) begin
+      socl_crc_replay_pend <= 1'h0;
     end
   end
   // SoC Labs L9b hold-down: reload to SOCL_L9B_HOLD_PKTS on a re-anchor, decrement

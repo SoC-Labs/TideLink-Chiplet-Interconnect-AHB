@@ -517,3 +517,15 @@ gaps_ecc:      ; @for t in $(GAPS_ECC_TESTS);      do $(MAKE) $$t || exit 1; don
 gaps_ecc_asic: ; @for t in $(GAPS_ECC_TESTS); do \
 	$(MAKE) ASIC_MIRROR=1 SIM_BUILD=sim_build_gaps_ecc_asic MODULE=test_axi_datanode_gaps TESTCASE=$$t || exit 1; done
 gaps: gaps_nodes gaps_backstop gaps_ecc
+
+# Sideband (0xA1, FCSM_6) CRC-replay acceptance (fix/sideband-crc-replay). Each test needs its
+# own bring-up (TESTCASE= single, own SIM_BUILD).  NEGATIVE CONTROL: `make sbcrc_neg` compiles
+# +define+SOCL_NO_CRC_REPLAY_GATE (gate removed = pre-fix RTL) and test_sideband_crc_replay MUST FAIL.
+SBCRC_TESTS := test_sideband_clean_control test_sideband_crc_replay test_sideband_crc_replay_sweep test_axi_w_crc_replay_control
+.PHONY: sbcrc sbcrc_neg $(SBCRC_TESTS)
+$(SBCRC_TESTS):
+	$(MAKE) SIM_BUILD=sim_build_sbcrc MODULE=test_sideband_crc_replay TESTCASE=$@
+sbcrc: ; @for t in $(SBCRC_TESTS); do $(MAKE) $$t || exit 1; done
+sbcrc_neg:
+	$(MAKE) SIM_BUILD=sim_build_sbcrc_neg MODULE=test_sideband_crc_replay TESTCASE=test_sideband_crc_replay \
+	        EXTRA_DEFINES=+define+SOCL_NO_CRC_REPLAY_GATE

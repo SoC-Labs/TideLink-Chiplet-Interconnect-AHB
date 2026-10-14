@@ -15,6 +15,8 @@ Tests (each needs its own sim -- run with TESTCASE=):
   test_sideband_clean_control   no injection: packet delivered exactly once, CRC +0
   test_sideband_crc_replay      the finding (sideband 0xA1, byte 5)
   test_axi_w_crc_replay_control positive control: W (0x81) byte 5 via a peer write
+  test_sideband_crc_replay_sweep shot on every wire byte 2..14 (4..11 hit the packet: first..last
+                                 wlink packet), one bring-up, each followed by the next stream packet
 """
 import os
 import cocotb
@@ -237,3 +239,36 @@ async def test_axi_w_crc_replay_control(dut):
     _release_all(tb)
     assert c1 > c0, "W shot not detected: vacuous"
     assert got == D_INJECT, "W shot detected but data not exact after replay"
+
+
+@cocotb.test()
+async def test_sideband_crc_replay_sweep(dut):
+    """Breadth: shot on the first / middle / last wire byte of the sideband packet and on
+    the 1st..3rd data-carrying wlink packet.  One bring-up, one shot per byte, each must be
+    detected (CRC +1) and delivered exactly once; a clean packet must follow.  Bytes that
+    miss the packet (CRC +0) are logged and skipped (never counted as pass)."""
+    tb = await _bringup(dut)
+    await _sb_setup(tb)
+    tag0 = 0x5C000001
+    await _sb_send(tb, tag0)
+    assert _exact(await _sb_collect(tb), tag0), "PRECONDITION: clean sideband packet"
+    hit = 0
+    for i, byte in enumerate(range(2, 15)):
+        tag = 0x5C100000 + (byte << 8) + i
+        c0 = await _crc(tb)
+        await _arm_apb(tb, SB_ID, byte, BIT)
+        await _sb_send(tb, tag)
+        pk = await _sb_collect(tb)
+        await _disarm_apb(tb)
+        c1 = await _crc(tb)
+        det = (c1 - c0) & 0xFFFF
+        tb.log.info(f"[sweep] byte={byte} crc+{det} packets={len(pk)} exact={_exact(pk, tag)}")
+        if det == 0:
+            # shot missed the packet: it must have been delivered cleanly anyway
+            assert _exact(pk, tag), f"byte {byte}: undetected shot but packet not exact: {pk}"
+            continue
+        assert det == 1, f"byte {byte}: CRC counter +{det}"
+        hit += 1
+        assert _exact(pk, tag), f"byte {byte}: detected CRC error NOT replayed exactly once: {pk}"
+    assert hit >= 5, f"sweep vacuous: only {hit} bytes were detected"
+

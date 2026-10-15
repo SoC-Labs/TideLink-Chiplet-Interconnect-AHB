@@ -3868,7 +3868,7 @@ bugs:
         stream-start behaviour (that is the open hardware item), multi-bit/aliased
         CRC errors, CRC errors on short ACK/NACK/credit packets.
     signoff:
-      claude_verdict: "Hardware-proven on the KR260 onchip image built from the PR #8 head: 60/60 CRC-detected sideband shots replayed exactly once where the unfixed main image lost 60/60; 32/32 cold bring-ups with a 28-word stream start each showed no storm (no NACK/revert counter exists in RTL, so 'no storm' means exact delivery at baseline latency with no FIFO-full flags). Not yet run on HAPS or on a two-board pair. Silicon in the field (eth rc4, compute W1fin6/ECO4) keeps the erratum."
+      claude_verdict: "Hardware-proven on the KR260 onchip image built from the PR #8 head: 60/60 CRC-detected sideband shots replayed exactly once where the unfixed main image lost 60/60; 32/32 cold bring-ups with a 28-word stream start each showed no storm (no NACK/revert counter exists in RTL, so 'no storm' means exact delivery at baseline latency with no FIFO-full flags). Not yet run on HAPS or on a two-board pair. Shipped silicon keeps the erratum: every compute stream built before fc0ee9a5 (submitted candidate W1fin7f, logo md5 804f2019, FCSM_6 md5 f232c694; also W1fin7/W1fin7e and W1fin6/ECO4) and eth rc4 (pin 785daee) for compute->eth. Fixed RTL: FCSM_6 md5 361a0d8d at fc0ee9a5."
       evidence: ["Sim evidence is the retained logs of the gate suites sideband_crc_replay and v2_stream_start_anchor; descriptive only, no repo artefact path."]
       approved: false
     related: [TL-036, TL-038, TL-053]

@@ -1,5 +1,6 @@
 sim_build*/
 tidelink_fpga_v2_fcsm_local.flist
+tidelink_fpga_v2_fcsm_local_eccbypass.flist
 __pycache__/
 *.log
 results.xml

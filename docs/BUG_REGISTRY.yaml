@@ -14,7 +14,7 @@ schema_version: 2                # 2 (2026-09-11): hardware claims now carry
                                  # machine-enforced by scripts/ci/registry_coverage.py
 generated: 2026-08-06
 last_truth_pass: 2026-09-11      # see campaign.truth_pass_2026_09_11
-updated: 2026-10-12              # 2026-10-12: TL-036 compute-line HW evidence added, TL-058 bench repaired (sim_proven); earlier 10-10: TL-054..TL-058 added, TL-036/TL-038 amended; NOT a truth pass
+updated: 2026-10-14              # 2026-10-14: TL-059 added (sideband CRC replay, sim_proven); 2026-10-12: TL-036 compute-line HW evidence added, TL-058 bench repaired (sim_proven); earlier 10-10: TL-054..TL-058 added, TL-036/TL-038 amended; NOT a truth pass
 maintainer: autonomous overnight campaign (Claude Opus 4.8)
 approver: David Mapstone <david@mapstone.me>
 
@@ -3788,3 +3788,75 @@ bugs:
       evidence: ["rev2-port-a7-evidence/SUMMARY.md (td-bisect scratch): wlink_pair row and note"]
       approved: false
     related: [TL-054]
+
+  # ---------------------------------------------------------------------------
+  # 2026-10-14: sideband CRC-replay loss (found on the KR260 pair, fixed in sim).
+  # ---------------------------------------------------------------------------
+  - id: TL-059
+    title: "Sideband (DataID 0xA1, WlinkGenericFCSM_6): a CRC-detected packet is never replayed - the L9b forward re-anchor forgives the gap and the L9c backward re-ACK swallows the NACK replay"
+    severity: high
+    area: rtl/wlink
+    status: sim_proven            # 2026-10-14: design E, sim red/green with must-fail arms. HARDWARE NOT YET RUN.
+    registered: 2026-10-14
+    opened: 2026-10-14            # KR260 pair, rev2 line a652c73e: 60/60 sideband shots detected (CRC counter +1) and lost
+    summary: >
+      With link CRC on (POR default since 2026-07-21) a corrupted sideband packet is
+      counted by the receiver's CRC counter and NACKed, but the message is not
+      delivered; a fresh clean packet afterwards is. The AXI data nodes (0x80-0x84)
+      detect AND replay the same shot. Only a packet that is the LAST one launched
+      before the NACK replay survives; every earlier one is lost (sim: position
+      sweep, both directions, with followers). Mechanism: after the CRC drop the
+      next packet looks like an isolated forward gap, the SoC Labs L9b re-anchor
+      (07-07, written for the CRC-off regime in which a corrupted pktnum was
+      undetectable) moves exp_pkt_num PAST the dropped packet, and the NACK-driven
+      replay then arrives "backward" and L9c re-ACK-drops it as a stale echo. L9b
+      also forgives drops that CRC never counted (a DataID hit), so a fix that
+      only reacts to a counted CRC error leaves those silent.
+    root_cause: "L9b/L9c (FCSM_6 only; the AXI nodes have none) are active in the CRC-on configuration they were not designed for, so a real packet loss is classified as a benign gap or echo."
+    fix:
+      approach: >
+        Design E: gate L9b (socl_l9b_reanchor_now) and L9c (socl_l9c_backward) with
+        the existing config flop out_prepend_swi_disable_crc, so they are active
+        only while link CRC is DISABLED (SM_CONTROL bit16 = 1, the regime they were
+        written for). CRC on: a gap is a plain NotExp -> NACK -> replay, exactly as
+        on the AXI nodes, for CRC-counted and silent drops alike. CRC off: behaviour
+        unchanged (sim: bit-identical directed probe). Zero new flops; the term
+        reads a quasi-static config flop in io_rx_clk exactly as crc_corrupt already
+        does, so no new clock-domain crossing source or destination (this was
+        confirmed by reading the flop's clock and its existing readers; no CDC tool
+        was run). +define+SOCL_L9_ALWAYS restores the old behaviour (negative
+        control), +define+SOCL_L9_NEVER ties L9b/L9c off in every mode (evaluation).
+        Fallback if hardware stream-start misbehaves: a one-flop "replay pending"
+        gate (design A), kept as a reviewed alternative.
+      files: [src/rtl/local_overrides/WlinkGenericFCSM_6.v, cocotb/tidelink_axi_datanode_recovery/test_sideband_crc_replay.py]
+      commit: f6966470              # local branch fix/tl059-sideband-crc-e, not pushed
+      branch: fix/tl059-sideband-crc-e
+      netlist_affecting: true       # one inverter-class term into two nets; needs resynthesis or an ECO, not a GDS-only change
+    verification:
+      sim_test: cocotb/tidelink_axi_datanode_recovery/test_sideband_crc_replay.py
+      in_sim_gate: true             # sim_gate_sideband_crc_replay (suite sideband_crc_replay) and sim_gate_v2_stream_start_anchor
+      hw_tested: false
+      red_green: >
+        Invariant: every injected-and-CRC-counted packet leads to the whole message
+        stream delivered exactly once, byte-exact, in order; an injector shot that
+        did not move the CRC counter is an ERROR. GREEN on the fix: clean control,
+        APB-armed replay, position sweep (first / middle / last of message A /
+        second-to-last / last, with followers) in both directions, hit on the
+        header DataID field with header ECC bypassed (silent drop, CRC +0, replayed),
+        two hits in flight, hit on the replay itself, first packet after bring-up,
+        AXI W control. RED (must-fail arms, wrapped so a pass is the error): the
+        pre-fix RTL (+define+SOCL_L9_ALWAYS) loses every position except the last;
+        with the receiver's disable_crc=1 the shot is not detected (CRC +0) and the
+        corrupted word is delivered silently, which is the unchanged CRC-off
+        contract. Stream-start: with the epoch corrector engaged the silicon-profile
+        stream-start probe passes with 0 reverts on the fix, with L9b/L9c tied off
+        and on the pre-fix RTL; the directed L9b/L9c probe with CRC off is identical
+        to the pre-fix RTL, and with CRC on it storms by design (it deposits the
+        July jam state, which CRC-on no longer produces). Not claimed: silicon
+        stream-start behaviour (that is the open hardware item), multi-bit/aliased
+        CRC errors, CRC errors on short ACK/NACK/credit packets.
+    signoff:
+      claude_verdict: "Sim-proven with must-fail arms; NOT hardware-run. The only evidence that can retire L9b/L9c on silicon is a KR260/HAPS run of the fix image (bring-up, 28-word stream-start with revert count, soak). If stream-start storms there, ship the one-flop alternative."
+      evidence: ["Sim evidence is the retained logs of the gate suites sideband_crc_replay and v2_stream_start_anchor; descriptive only, no repo artefact path."]
+      approved: false
+    related: [TL-036, TL-038, TL-053]

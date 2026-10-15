@@ -516,9 +516,30 @@ module WlinkGenericFCSM_6 #(
   wire [8:0] socl_l9b_fwd_raw  = {1'b0, ll_rx_pktnum} + socl_l9b_ring_mod - {1'b0, exp_pkt_num};
   wire [8:0] socl_l9b_fwd_dist = (socl_l9b_fwd_raw >= socl_l9b_ring_mod)
                                  ? (socl_l9b_fwd_raw - socl_l9b_ring_mod) : socl_l9b_fwd_raw;
+  // TL-059 (2026-10-14, fix design E): L9b/L9c are legal ONLY while link CRC is DISABLED.
+  // L9b/L9c were written (July) when CRC was OFF, so a corrupted pktnum was undetectable and
+  // looked like a forward gap. With CRC ON (POR default since 07-21) a damaged packet is a
+  // CRC drop and the gap it leaves is a REAL loss that the NACK replay must fill. L9b would
+  // re-anchor exp_pkt_num PAST the dropped packet on the next packet and L9c would then
+  // re-ACK-drop the replay as a "stale backward echo" -> the packet is lost for good (sideband
+  // 0xA1 only; the AXI nodes have no L9b/L9c). So: CRC on => L9b/L9c inactive, a mismatch is a
+  // plain NotExp -> NACK -> replay exactly as on the AXI nodes; CRC off (SW SM_CONTROL bit16)
+  // => unchanged legacy behaviour. Uses the EXISTING out_prepend_swi_disable_crc config flop
+  // (APB `clock` domain, quasi-static), read in io_rx_clk exactly as crc_corrupt already does:
+  // 0 new flops, no new clock-domain crossing source or destination.
+  // `define SOCL_L9_ALWAYS = negative control (restores the pre-fix always-on L9b/L9c);
+  // `define SOCL_L9_NEVER  = evaluation variant, L9b/L9c tied off in every CRC mode.
+`ifdef SOCL_L9_ALWAYS
+  wire socl_l9_crc_off = 1'b1;
+`elsif SOCL_L9_NEVER
+  wire socl_l9_crc_off = 1'b0;   // L9b/L9c removed outright (evaluation variant for the CRC-off regime)
+`else
+  wire socl_l9_crc_off = out_prepend_swi_disable_crc;
+`endif
   // L9b: forgive an isolated FORWARD gap (1..window) once the stream has started,
   // rate-limited by the hold-down; re-anchors exp_pkt_num below instead of NACKing.
   wire socl_l9b_reanchor_now = exp_pkt_not_seen
+                               & socl_l9_crc_off
                                & ~socl_l9_resync_now
                                & socl_l9_first_data_seen_rx
                                & (socl_l9b_hold == 4'h0)
@@ -528,6 +549,7 @@ module WlinkGenericFCSM_6 #(
   // is a stale replay echo / re-ACK-cadence beat -> RE-ACK it (drop mismatch), never NACK.
   wire [8:0] socl_l9c_back_thresh = {1'b0, socl_l9b_ring_mod[8:1]}; // ring/2
   wire socl_l9c_backward = exp_pkt_not_seen & ~socl_l9b_reanchor_now
+                           & socl_l9_crc_off
                            & (socl_l9b_fwd_dist >= socl_l9c_back_thresh);
   // Masked mismatch fed to the notifier + winc: on a re-anchor or backward-re-ACK
   // cycle drop the mismatch so no isNotExpPacket(3'h1) enqueues -> no NACK->replay storm.

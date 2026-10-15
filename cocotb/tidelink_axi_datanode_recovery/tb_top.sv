@@ -989,6 +989,73 @@ module tb_top #(
         end
     end
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // POSITION-SELECTABLE single-shot injector (HARNESS ONLY, sideband CRC proof).
+    // The real Wlink TX link-layer injector (err_inj_smack -> byte/bit mux in
+    // WlinkTxLinkLayer) corrupts the FIRST packet of the armed DataID after the
+    // APB 0->1 edge.  To corrupt the Nth packet instead, this block counts TX
+    // packets of DataID pi_did using the injector's OWN advance&sop&id-match term
+    // and drives err_inj_smack = (count == pi_tgt).  The corruption mux, byte/bit
+    // selection (APB 0x23C byte/bit fields) and CRC path are the unmodified RTL.
+    // Controls are cocotb-deposited; pi_en_* = 0 leaves the RTL injector untouched.
+    // ─────────────────────────────────────────────────────────────────────────
+    reg        pi_en_m = 1'b0, pi_en_s = 1'b0, pi_clr = 1'b0;
+    integer    pi_tgt  = 0;          // 0-based index of the packet to corrupt
+    integer    pi_tgt2 = -1;         // optional 2nd packet index (-1 = off): two hits in flight
+    reg        pi_rep_en = 1'b0;     // also corrupt the REPLAY of the pi_tgt packet (same pktnum, later)
+    reg [7:0]  pi_did  = 8'hA1;
+    integer    pi_cnt_m = 0, pi_cnt_s = 0;     // 0xA1 TX packets presented so far (window)
+    integer    pi_fired_m = 0, pi_fired_s = 0; // packets actually corrupted (window)
+    reg        pi_hit_vld_m = 1'b0, pi_hit_vld_s = 1'b0, pi_rep_done_m = 1'b0, pi_rep_done_s = 1'b0;
+    reg [7:0]  pi_hit_pn_m, pi_hit_pn_s;       // pktnum (auto_in_data[7:0]) of the pi_tgt packet
+    wire pi_adv_m = u_master.u_chiplet_controller.u_wlink.lltx.blah_0_advance
+                    && u_master.u_chiplet_controller.u_wlink.lltx.auto_in_sop
+                    && u_master.u_chiplet_controller.u_wlink.lltx.auto_in_data_id == pi_did;
+    wire pi_adv_s = u_slave.u_chiplet_controller.u_wlink.lltx.blah_0_advance
+                    && u_slave.u_chiplet_controller.u_wlink.lltx.auto_in_sop
+                    && u_slave.u_chiplet_controller.u_wlink.lltx.auto_in_data_id == pi_did;
+    wire [7:0] pi_pn_m = u_master.u_chiplet_controller.u_wlink.lltx.auto_in_data[7:0];
+    wire [7:0] pi_pn_s = u_slave.u_chiplet_controller.u_wlink.lltx.auto_in_data[7:0];
+    wire pi_rephit_m = pi_rep_en && pi_hit_vld_m && !pi_rep_done_m && pi_cnt_m != pi_tgt && pi_pn_m == pi_hit_pn_m;
+    wire pi_rephit_s = pi_rep_en && pi_hit_vld_s && !pi_rep_done_s && pi_cnt_s != pi_tgt && pi_pn_s == pi_hit_pn_s;
+    wire pi_smack_m = (pi_cnt_m == pi_tgt) || (pi_cnt_m == pi_tgt2) || pi_rephit_m;
+    wire pi_smack_s = (pi_cnt_s == pi_tgt) || (pi_cnt_s == pi_tgt2) || pi_rephit_s;
+    always @(posedge u_master.u_chiplet_controller.u_wlink.lltx.clock) begin
+        if (pi_clr) begin
+            pi_cnt_m <= 0; pi_fired_m <= 0; pi_hit_vld_m <= 1'b0; pi_rep_done_m <= 1'b0;
+        end else if (pi_adv_m) begin
+            pi_cnt_m <= pi_cnt_m + 1;
+            if (pi_en_m && pi_smack_m) pi_fired_m <= pi_fired_m + 1;
+            if (pi_en_m && pi_cnt_m == pi_tgt) begin pi_hit_vld_m <= 1'b1; pi_hit_pn_m <= pi_pn_m; end
+            if (pi_en_m && pi_rephit_m) pi_rep_done_m <= 1'b1;
+        end
+    end
+    always @(posedge u_slave.u_chiplet_controller.u_wlink.lltx.clock) begin
+        if (pi_clr) begin
+            pi_cnt_s <= 0; pi_fired_s <= 0; pi_hit_vld_s <= 1'b0; pi_rep_done_s <= 1'b0;
+        end else if (pi_adv_s) begin
+            pi_cnt_s <= pi_cnt_s + 1;
+            if (pi_en_s && pi_smack_s) pi_fired_s <= pi_fired_s + 1;
+            if (pi_en_s && pi_cnt_s == pi_tgt) begin pi_hit_vld_s <= 1'b1; pi_hit_pn_s <= pi_pn_s; end
+            if (pi_en_s && pi_rephit_s) pi_rep_done_s <= 1'b1;
+        end
+    end
+    reg pi_trace = 1'b0;
+    always @(posedge u_master.u_chiplet_controller.u_wlink.lltx.clock)
+        if (pi_trace && pi_adv_m)
+            $display("PITRACE %0t M cnt=%0d pn=%0h data=%h smack=%b", $time, pi_cnt_m, pi_pn_m, u_master.u_chiplet_controller.u_wlink.lltx.auto_in_data[63:0], pi_en_m && pi_smack_m);
+    always @(posedge u_slave.u_chiplet_controller.u_wlink.lltx.clock)
+        if (pi_trace && pi_adv_s)
+            $display("PITRACE %0t S cnt=%0d pn=%0h data=%h smack=%b", $time, pi_cnt_s, pi_pn_s, u_slave.u_chiplet_controller.u_wlink.lltx.auto_in_data[63:0], pi_en_s && pi_smack_s);
+    always @(pi_en_m) begin
+        if (pi_en_m) force u_master.u_chiplet_controller.u_wlink.lltx.err_inj_smack = pi_smack_m;
+        else release u_master.u_chiplet_controller.u_wlink.lltx.err_inj_smack;
+    end
+    always @(pi_en_s) begin
+        if (pi_en_s) force u_slave.u_chiplet_controller.u_wlink.lltx.err_inj_smack = pi_smack_s;
+        else release u_slave.u_chiplet_controller.u_wlink.lltx.err_inj_smack;
+    end
+
     // ----- Waveform dump ------------------------------------------------------
     // Gated by TB_TOP_DUMP_WAVES so probe-only tests can opt out (the VCD
     // grows ~1 GB / minute under multi-test cocotb runs, OOMing the host).

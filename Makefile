@@ -376,7 +376,7 @@ endef
 	sim_gate_v2_mbox_writeprotect \
 	sim_gate_calibrator_wrap \
 	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5 \
-	sim_gate_a2l_replay_cdc_7 sim_gate_a2l_replay_cdc_9 \
+	sim_gate_a2l_replay_cdc_7 sim_gate_a2l_replay_cdc_9 sim_gate_a2l_replay_cdc_13 \
 	sim_gate_a2l_wready_tear sim_gate_a2l_replay_cdc_deps_mustfail \
 	sim_gate_v2_auto_anchor \
 	sim_gate_fc_adapter_arbiter \
@@ -750,6 +750,13 @@ sim_gate_a2l_replay_cdc_7:
 	$(call sim_gate_run,a2l_replay_cdc_7,\
 	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=7 \
 	    SIM_BUILD=sim_build_a2l_7 COCOTB_RESULTS_FILE=sim_build_a2l_7/res_a2l_7.xml)
+
+# NODE=13 (sideband a2l node, the bench default): includes the directed AddrSync_18 reset-gate test (TL-018 follow-on);
+# its mutant (USE_DEPS_ADDRSYNC=1) is a must-fail arm of a2l_replay_cdc_deps_mustfail.
+sim_gate_a2l_replay_cdc_13:
+	$(call sim_gate_run,a2l_replay_cdc_13,\
+	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=13 \
+	    SIM_BUILD=sim_build_a2l_13 COCOTB_RESULTS_FILE=sim_build_a2l_13/res_a2l_13.xml)
 
 sim_gate_a2l_replay_cdc_9:
 	$(call sim_gate_run,a2l_replay_cdc_9,\
@@ -2267,7 +2274,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	addr_translator \
 	wlink_tx_pstate \
 	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \
-	a2l_replay_cdc_7 a2l_replay_cdc_9 \
+	a2l_replay_cdc_7 a2l_replay_cdc_9 a2l_replay_cdc_13 \
 	a2l_wready_tear a2l_replay_cdc_deps_mustfail \
 	tl044_hol_prefix_mustfail \
 	v2_auto_anchor \
@@ -2455,6 +2462,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_5
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_7
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_9
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_13
 	@# TL-027 w_inc continuous-resend CDC-tearing regression (all 5 data-plane nodes).
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_wready_tear
 	@# ... and the RED halves of both a2l A/Bs, which no gate ran until 2026-09-11.

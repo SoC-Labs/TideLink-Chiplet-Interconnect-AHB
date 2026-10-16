@@ -13,11 +13,14 @@ ROOT CAUSE — two stacked defects, both confirmed here in sim:
    the response never returns -> the initiator hard-wedges. FIX: also latch
    socl_l7_reached_link_data on LINK_IDLE (state 4) — see WlinkGenericFCSM*.v.
 
-2. CRC checking is OFF by RTL reset default on the AXI nodes
-   (WlinkGenericFCSM_2.v:713 out_prepend_swi_disable_crc = 1'h1, "SW re-enable via
-   bit[16]") and nothing re-enables it. With CRC off, `crc_corrupt` is forced 0,
-   so a PAYLOAD (BID/BRESP) bit-error is undetected and mis-delivered. Detection
-   needs CRC on (the designed SM_CONTROL[16]=0 bring-up poke, never issued).
+2. CRC checking WAS OFF by RTL reset default on the AXI nodes (FPGA override
+   WlinkGenericFCSM_2.v out_prepend_swi_disable_crc = 1'h1, "SW re-enable via
+   bit[16]") and nothing re-enabled it. With CRC off, `crc_corrupt` is forced 0,
+   so a PAYLOAD (BID/BRESP) bit-error is undetected and mis-delivered.
+   TL-018 (2026-10): the override now resets CRC ON (0) like deps/ and the ASIC;
+   +define+TIDELINK_FCSM_CRC_OFF_AT_RESET restores the old reset (negative
+   control). The tests below therefore run crc_on=True WITHOUT forcing anything
+   (the shipping default) and crc_on=False by Force(1)-ing the register.
 
 WHAT THE SIM CAN PROVE (the AHB tb models "response never returns"; it does NOT
 model the PS SmartConnect BID-match wedge, so payload mis-delivery is proven via
@@ -160,10 +163,13 @@ def _sig(node, name):
 
 
 def _force_axi_crc(tb, on):
+    # TL-018: CRC is ON at RESET in the shipping RTL (out_prepend_swi_disable_crc resets 0), so on=True must NOT
+    # force anything -- the test then runs the shipping default. on=False Force(1)s CRC OFF explicitly (the
+    # old FPGA reset value was 1 and Release() used to mean off; that is no longer true).
     for side in ("m", "s"):
         for inst in AXI_FC_NODES:
             try:    _axi_node(tb, side, inst).out_prepend_swi_disable_crc.value = \
-                        (Force(0) if on else Release())
+                        (Release() if on else Force(1))
             except Exception: pass
 
 

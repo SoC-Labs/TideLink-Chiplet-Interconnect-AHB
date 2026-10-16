@@ -8,11 +8,12 @@
 # error on the B beat via the Wlink built-in injector (data_id 0x82, the on-
 # silicon 0x2E03_023C model), and classifies recover/wedge/error.
 #
-#   make repro   # AXI_CRC_MODE=off (RTL default) -> B error WEDGES (the bug)
-#   make fixed   # AXI_CRC_MODE=on  (the fix)     -> B error RECOVERS byte-exact
+#   make repro   # Fix G forced off (pre-fix RTL)  -> B error WEDGES (the bug)
+#   make fixed   # shipping RTL                    -> B error RECOVERS byte-exact
 #
-# Root cause: the AXI FC nodes ship CRC-off (WlinkGenericFCSM_2.v:713), so the
-# recovery FSM's only trigger (crc_corrupt) is dead. Enabling CRC arms it.
+# Root cause (historical): the AXI FC nodes used to ship CRC-off, so the recovery FSM's only trigger
+# (crc_corrupt) was dead. TL-018 (2026-10): CRC is now ON at reset in the local FCSM overrides, so `fixed`
+# runs at the shipping default; +define+TIDELINK_FCSM_CRC_OFF_AT_RESET restores the old reset.
 # =============================================================================
 SIM             = vcs
 TOPLEVEL_LANG   = verilog
@@ -37,10 +38,30 @@ COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 # DUT flist: base v2 flist with the five AXI FC nodes re-pointed deps ->
 # local_overrides (so the recovery FCSMs and the CRC path are compiled in).
 BASE_FLIST  ?= $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist
+# TL-018/TL-019: ASIC_FLIST=1 compiles the TAPEOUT flist (flists/tidelink_top_full_asic_v2.flist) under this same
+# testbench -- the rf_16k SRAM model replaces cmsdk_fpga_sram (same convention as cocotb/tidelink_top_pair_v2).
+# Since TL-018/019 the tapeout flist carries the same hardened FC nodes (CRC ON at reset) as the FPGA one.
+# ASIC_FCSM_DEPS=1 (with ASIC_FLIST=1) is the MUTANT: FCSM 0-4 + replay _7/_9 re-pointed back to deps/ (the pre-fix
+# tapeout file set); gates use it to prove the ASIC arms can still go red. ASIC_FLIST=0 is bit-identical to before.
+ASIC_FLIST ?= 0
+export ASIC_FLIST
+ASIC_FCSM_DEPS ?= 0
+ifeq ($(ASIC_FLIST),1)
+BASE_FLIST := $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist
+RF16K_V := $(firstword $(wildcard $(MEM_PATH)/rf_16k.v))
+ifneq ($(RF16K_V),)
+VERILOG_SOURCES += $(RF16K_V)
+COMPILE_ARGS += +notimingcheck
+else
+VERILOG_SOURCES += $(TIDELINK_HOME)/syn/asic/sim_stubs/rf_16k_stub.v
+$(warning [ASIC_FLIST=1] MEM_PATH/rf_16k.v not found -- using syn/asic/sim_stubs/rf_16k_stub.v)
+endif
+endif
 # Default gaps config: FCSM_{,1-4} + WlinkEccSyndrome ALL re-pointed deps->local
 # (recovery FSM present + ECC restored) = the FPGA-V2 flist config.
 #
-# TL-006 A3 COMBINED-CONFIG (ASIC_MIRROR=1): mirror the SHIPPING ASIC-V2 wlink
+# TL-006 A3 COMBINED-CONFIG (ASIC_MIRROR=1): mirror the PRE-TL-018/019 ASIC-V2 wlink (HISTORICAL: since TL-018/019 the
+# tapeout flist takes the local FCSMs; this is now only the recovery-stripped negative control, = ASIC_FCSM_DEPS=1)
 # error-path exactly -- WlinkEccSyndrome=local_override (the _T ECC-restore fix,
 # ON) but WlinkGenericFCSM*=deps (recovery FSM ABSENT), CRC on at runtime. This is
 # the tidelink_top_full_asic_v2.flist combination (Ecc :247 local, FCSM :284-288
@@ -68,6 +89,11 @@ _gen := $(shell sed -E 's@src/rtl/local_overrides/WlinkEccSyndrome\.v@deps/axi-c
 else
 LOCAL_FLIST := $(CURDIR)/tidelink_fpga_v2_fcsm_local.flist
 _gen := $(shell sed -E 's@deps/axi-chiplet-controller/logical/wlink/(WlinkGenericFCSM(_[1-4])?|WlinkEccSyndrome)\.v@src/rtl/local_overrides/\1.v@' $(BASE_FLIST) > $(LOCAL_FLIST))
+endif
+ifeq ($(ASIC_FCSM_DEPS),1)
+# mutant: the pre-TL-018/019 tapeout file set (recovery-stripped deps FCSM 0-4 / replay _7,_9). Runs AFTER the
+# per-mode generation above, so it composes with it. Local flist only; no tracked file changes.
+_gen2 := $(shell sed -i -E 's@src/rtl/local_overrides/(WlinkGenericFCSM(_[1-4])?|WlinkGenericFCReplayV2_[79])\.v@deps/axi-chiplet-controller/logical/wlink/\1.v@' $(LOCAL_FLIST))
 endif
 COMPILE_ARGS += -f $(LOCAL_FLIST)
 
@@ -123,13 +149,13 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
 
 .PHONY: repro fixed persist clean_builds
 
-# Reproduce the silicon wedge: CRC at the shipping default (off) -> injected
-# B-beat error is undetected -> mis-deliver -> B never returns -> WEDGE.
+# Reproduce the silicon wedge: Fix G forced off (pre-fix forgive-armed-forever RTL) -> a detected
+# B-beat error is never NACKed -> B never returns -> WEDGE.
 repro:
 	$(MAKE) SIM_BUILD=sim_build_axirec MODULE=test_axi_datanode_recovery \
 	        TESTCASE=test_axi_b_error_wedges_no_fix
 
-# Prove the fix: CRC enabled on the AXI nodes -> injected B-beat error is
+# Prove the fix: shipping RTL (CRC ON at reset, nothing forced) -> injected B-beat error is
 # detected -> NACK -> replay -> B returns byte-exact -> RECOVER.
 fixed:
 	$(MAKE) SIM_BUILD=sim_build_axirec MODULE=test_axi_datanode_recovery \

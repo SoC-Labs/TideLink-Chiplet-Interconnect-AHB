@@ -29,12 +29,9 @@ compiles the hardened override and the node self-heals:
     That arm is the non-vacuity control and it MUST FAIL; it is gated by
     `make sim_gate_a2l_replay_cdc_deps_mustfail`.
 
-STILL OPEN, AND NOT WHAT THIS TEST MEASURES: the ASIC file set.
-flists/tidelink_top_full_asic_v2.flist:308 still takes _9 from deps/, so the
-TAPEOUT build carries the pre-fix edge form even though the FPGA-V2 flist
-(flists/tidelink_fpga_v2.flist) carries the override. Re-pointing the AR/R nodes
-in the ASIC flist is an open ASIC-recovery decision, not a test bug. A green here
-is evidence about the FPGA/override file set ONLY.
+RESOLVED (TL-019, 2026-10): the ASIC file set. flists/tidelink_top_full_asic_v2.flist now takes _9 from
+src/rtl/local_overrides/, exactly as the FPGA-V2 flist does, so a green here is evidence about the file that tapes
+out (scripts/ci/flist_divergence.py --check fails if the two flists ever resolve _9 differently again).
 
 Silicon correlate on freeze 5e8bdb5a (v0.90): writes 6/6 runs 128/128 byte-exact
 vs cross-die reads 2 PASS / 4 FAIL. The pass/fail split follows the

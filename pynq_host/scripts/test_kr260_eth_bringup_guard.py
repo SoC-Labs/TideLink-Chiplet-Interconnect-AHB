@@ -64,7 +64,7 @@ class FakeBD:
             if self.arm and self.enabled:
                 return st_word(1, 4)
             return st_word(*self.f(self.c.t - self.t_rel))
-        return 1 << 16                     # FC SM_CONTROL: disable_crc=1 (shipping)
+        return 1 << 16                     # FC SM_CONTROL: disable_crc=1 (pre-TL-018 bitstream; the guard logic is value-agnostic)
 
     def wr(self, off, val):
         self.writes.append((off, val))

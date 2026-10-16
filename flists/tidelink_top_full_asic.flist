@@ -154,19 +154,22 @@ ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_5.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_6.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_7.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_7.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_8.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_9.v
-// SoC Labs: FCSM 0-4 HELD on deps for the TAPEOUT netlist. The I1 silicon-feedback P1 fix
-// (local_overrides recovery + lowered SOCL_L7_MIN_CRACK_EMITS 8'd8) is applied + FPGA-proven in
-// tidelink_fpga_v2.flist, but is verified only against a MODELLED marginal link. Per decision
-// 2026-07-29 the ASIC/tapeout flists stay on the recovery-stripped deps copies until a silicon ILA
-// confirms it; re-point to local_overrides ONLY after that ratification.
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_1.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_2.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_3.v
-${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_4.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayV2_9.v
+// TL-018 / TL-019 (David's decision, 2026-10): the TAPEOUT netlist takes the SAME hardened AXI FC nodes as
+// flists/tidelink_fpga_v2.flist (V1 ASIC: FCSM 0-4 + replay _7/_9 only; _1/_3/_5 unchanged) -- WlinkGenericFCSM{,_1.._4} from src/rtl/local_overrides/ (socl_ recovery
+// hooks: Fix A/B/C/D/E, state-2 CRACK gate at 8, TL-033 state-7 watchdog) -- and the link CRC is ON at reset
+// (the override resets out_prepend_swi_disable_crc to 0; +define+TIDELINK_FCSM_CRC_OFF_AT_RESET restores the
+// old FPGA CRC-off reset and is for negative controls only). This SUPERSEDES the 2026-07-29 hold (ratified
+// 2026-08-20) that kept these on the recovery-stripped deps copies: the hold's basis (I1 silicon ILA) was met
+// 2026-07-31. FCSM_5 (GeneralBus node) has no override and stays on deps; _6 (sideband) is the local override.
+// The ASIC/FPGA flists must resolve these files IDENTICALLY: scripts/ci/flist_divergence.py --check enforces it.
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_1.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_2.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_3.v
+${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_4.v
 ${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_5.v
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCSM_6.v
 ${TIDELINK_HOME}/src/rtl/local_overrides/WlinkRxLinkLayer.v

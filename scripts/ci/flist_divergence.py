@@ -24,24 +24,24 @@ ASIC_FLIST = "flists/tidelink_top_full_asic_v2.flist"
 FPGA_FLIST = "flists/tidelink_fpga_v2.flist"
 
 # basename -> (asic path fragment, fpga path fragment).  Checked by --check.
+#
+# TL-018/TL-019 (2026-10, David's decision): the AXI FC nodes WlinkGenericFCSM{,_1.._4} and the AR/R replay nodes
+# WlinkGenericFCReplayV2_7/_9 are NO LONGER shadow pairs -- the ASIC flist takes the same src/rtl/local_overrides/
+# files as the FPGA one (recovery hooks + CRC-on reset).  They are deliberately ABSENT from this table: if any of
+# them diverges again, --check reports it as a NEW shadow pair and fails (the sim_gate_flist_divergence must-fail
+# arm mutates the ASIC flist to prove it).  What is left is a hand-maintained record of the remaining decisions.
 EXPECTED_SHADOW_PAIRS = {
-    "WlinkGenericFCSM.v":                ("deps/", "src/rtl/local_overrides/"),
-    "WlinkGenericFCSM_1.v":              ("deps/", "src/rtl/local_overrides/"),
-    "WlinkGenericFCSM_2.v":              ("deps/", "src/rtl/local_overrides/"),
-    "WlinkGenericFCSM_3.v":              ("deps/", "src/rtl/local_overrides/"),
-    "WlinkGenericFCSM_4.v":              ("deps/", "src/rtl/local_overrides/"),
+    # a2l ACK-pointer reset-skew fix (obs 0x2158); FPGA-only, NOT covered by the TL-018/019 decision.  Open item.
     "WlinkGenericFCReplayAddrSync_18.v": ("deps/", "src/rtl/local_overrides/"),
-    # AR (_7) / R (_9) replay nodes: FPGA takes the TL-027/TL-032 CDC self-heal
-    # overrides; ASIC still ships deps/ (edge-triggered w_inc, loses ACKs on a
-    # torn mailbox -- proven 8/8 on all five nodes, cocotb a2l_wready_tear).
-    # DECISION 2026-09-22: FPGA-only re-point is deliberate. The ASIC flist is
-    # NOT re-pointed -- that is a separate rev-2 decision (GDS seed chain is keyed
-    # on the flist hash). Recorded here so the divergence is a choice, not drift.
-    "WlinkGenericFCReplayV2_7.v":        ("deps/", "src/rtl/local_overrides/"),
-    "WlinkGenericFCReplayV2_9.v":        ("deps/", "src/rtl/local_overrides/"),
     "i2c_master.v":                      ("deps/", "src/rtl/local_overrides/"),
     "tidelink_sram.sv":                  ("src/rtl/fifo/asic/", "src/rtl/fifo/fpga/"),
 }
+
+# Modules the two flists MUST resolve identically (TL-018/TL-019).  Checked independently of the table above so
+# a stale table edit cannot silently re-admit a divergence on them.
+MUST_MATCH = ["WlinkGenericFCSM.v"] + [f"WlinkGenericFCSM_{i}.v" for i in range(1, 5)] + \
+             ["WlinkGenericFCSM_5.v", "WlinkGenericFCSM_6.v",
+              "WlinkGenericFCReplayV2_7.v", "WlinkGenericFCReplayV2_9.v"]
 
 
 def resolve(path):
@@ -73,12 +73,14 @@ def main():
     ap.add_argument("--root", default=os.environ.get("TIDELINK_HOME", "."))
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--asic-flist", default=ASIC_FLIST, help="override (mutant-flist self-test)")
+    ap.add_argument("--fpga-flist", default=FPGA_FLIST, help="override (mutant-flist self-test)")
     ap.add_argument("--diff", action="store_true", help="print a unified diff per pair")
     a = ap.parse_args()
     root = os.path.abspath(a.root)
 
-    af, aopt = resolve(os.path.join(root, ASIC_FLIST))
-    ff, fopt = resolve(os.path.join(root, FPGA_FLIST))
+    af, aopt = resolve(os.path.join(root, a.asic_flist))
+    ff, fopt = resolve(os.path.join(root, a.fpga_flist))
     only_a, only_f = sorted(set(af) - set(ff)), sorted(set(ff) - set(af))
     ba = {os.path.basename(p): p for p in only_a}
     bf = {os.path.basename(p): p for p in only_f}
@@ -141,6 +143,14 @@ def main():
             ga, gf = got[b]
             if ax not in ga or fx not in gf:
                 bad.append(f"{b}: expected ASIC~{ax} FPGA~{fx}, got ASIC={ga} FPGA={gf}")
+        by_a = {os.path.basename(p): p for p in af}
+        by_f = {os.path.basename(p): p for p in ff}
+        for b in MUST_MATCH:
+            if b not in by_a or b not in by_f:
+                bad.append(f"MUST-MATCH module {b} missing from a flist (ASIC={by_a.get(b)} FPGA={by_f.get(b)})")
+            elif by_a[b] != by_f[b]:
+                bad.append(f"MUST-MATCH violated: {b}: ASIC={rel(by_a[b])} FPGA={rel(by_f[b])} -- TL-018/TL-019 "
+                           f"requires the tapeout flist to take the same hardened file as the FPGA flist")
         for b in got:
             if b not in EXPECTED_SHADOW_PAIRS:
                 bad.append(f"NEW shadow pair {b}: ASIC={got[b][0]} FPGA={got[b][1]} -- "

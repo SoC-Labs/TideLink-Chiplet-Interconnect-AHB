@@ -722,7 +722,15 @@ module WlinkGenericFCSM_1(
   end
   always @(posedge clock or posedge reset) begin
     if (reset) begin
-      out_prepend_swi_disable_crc <= 1'h1; // SoC Labs (Bug-C): CRC-off default at GPIO speed; SW re-enable via bit[16]
+`ifdef TIDELINK_FCSM_CRC_OFF_AT_RESET
+      // TL-018: FPGA-fallback / negative control ONLY. Restores the pre-2026-10 FPGA reset (CRC checking OFF;
+      // SoC Labs Bug-C). Never defined by any shipping flist: the default is CRC ON (reset 0), matching deps/.
+      out_prepend_swi_disable_crc <= 1'h1;
+`else
+      // TL-018 (David's decision): link CRC is ON at reset on every AXI FC node, FPGA and ASIC alike.
+      // Software may still turn it off via SM_CONTROL bit[16]=1.
+      out_prepend_swi_disable_crc <= 1'h0;
+`endif
     end else if (out_f_wivalid_6) begin
       out_prepend_swi_disable_crc <= auto_in_pwdata[16];
     end

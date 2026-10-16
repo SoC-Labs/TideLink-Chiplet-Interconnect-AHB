@@ -19,9 +19,8 @@ include $(TIDELINK_HOME)/mk/site.mk
 #           added src/rtl/local_overrides/WlinkGenericFCReplayV2_{7,9}.v, the DUT
 #           selection below therefore resolves both to the OVERRIDE, and
 #           sim_gate_a2l_replay_cdc_7 / _9 are blocking, passing suites.
-#           What is still true, and is a different thing: the TAPEOUT flist
-#           (flists/tidelink_top_full_asic_v2.flist) still sources _7/_9 from
-#           deps/. Re-pointing it is an open ASIC-recovery decision.
+#           TL-019 (2026-10): the TAPEOUT flist (flists/tidelink_top_full_asic_v2.flist)
+#           now sources _7/_9 from the same overrides (flist_divergence.py enforces it).
 NODE ?= 13
 ifeq ($(NODE),7)
   TB_FILE   := tb_top_7.sv

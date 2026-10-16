@@ -16,6 +16,8 @@ Reads (AR/R) are single-outstanding at the AHB master, so they never have follow
 window: position/size only select which of N sequential reads is hit.
 """
 
+import os
+
 DEFAULT_GAP = 4
 
 
@@ -33,6 +35,13 @@ def _shot(node, pos, size="L", gap=DEFAULT_GAP, d="ab", build="zero", byte=5, bi
 def controls(mutants=True, axi_mutant=False):
     c = [
         _c("ctl_ship_default", "control", "zero", KIND="ctl_ship_default", NODE="sb", NAME="ctl_ship_default"),
+        # TL-018 controls: the CRC-ON reset default holds (above), the croff define flips it (below, proves the check
+        # can fail), and the FC-node file set is the hardened local one (hierarchy probe; ctl_fileset_asicdeps proves
+        # the probe goes the other way on the recovery-stripped deps mutant).
+        _c("ctl_croff_define", "control", "croff", KIND="ctl_ship_default", NODE="sb", EXPECT_AXI_DEFAULT=1,
+           NAME="ctl_croff_define"),
+        _c("ctl_fileset_local", "control", "zero", KIND="ctl_fileset", NODE="W", EXPECT_FILESET="local",
+           NAME="ctl_fileset_local"),
         _c("ctl_readback", "control", "zero", KIND="ctl_readback", NODE="sb", NAME="ctl_readback"),
         _c("ctl_live_sb", "control", "zero", KIND="ctl_live", NODE="sb", SIZE="S", NAME="ctl_live_sb"),
         _c("ctl_live_W", "control", "zero", KIND="ctl_live", NODE="W", SIZE="S", NAME="ctl_live_W"),
@@ -45,6 +54,14 @@ def controls(mutants=True, axi_mutant=False):
         _c("ctl_counts_sb", "control", "zero", KIND="ctl_counts", NODE="sb", SIZE="L", NAME="ctl_counts_sb"),
     ]
     if mutants:
+        # TL-018 mutant: AXI nodes reset CRC OFF (pre-2026-10 FPGA reset) with NO APB enable -> an AXI payload hit is
+        # silently delivered (STRAY/LOST).  Proves the AXI matrix cases are only EXACT because CRC is ON at reset.
+        c.append(_c("mut_croff_W_first", "mutant", "croff", KIND="ctl_croff_silent", NODE="W", SIZE="L", POS="first",
+                    NAME="mut_croff_W_first"))
+        # file-set mutant (ASIC_FLIST=1 only: the build re-points FCSM 0-4 to deps): the probe must read 'deps'.
+        if os.environ.get("ASIC_FLIST", "0") == "1":
+            c.append(_c("ctl_fileset_asicdeps", "mutant", "asicdeps", KIND="ctl_fileset", NODE="W",
+                        EXPECT_FILESET="deps", NAME="ctl_fileset_asicdeps"))
         # sideband: pre-fix RTL (L9b/L9c live with CRC on).  first/mid have followers inside the NACK window
         # and must go red; 'last' is documented to stay EXACT on the buggy RTL and is not asserted here.
         c += [

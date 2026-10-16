@@ -332,6 +332,54 @@ class PairV2TB:
             if gap:
                 await ClockCycles(self.dut.hclk, gap)
 
+    async def ahb_tx_write_word_legal(self, side, byte_addr, data, cap=200000):
+        """AHB-LEGAL single write to the TX aperture.  Returns (hresp_error, hready_low_cycles).
+
+        ahb_tx_write_word above gives up after 50 cycles of HREADY=0 and issues the NEXT beat
+        anyway.  The fc_adapter back-pressures honestly (HREADY low while the link credit window is
+        exhausted; bounded by TX_STALL_TIMEOUT, then HRESP=ERROR), and a stall of ~3000 hclk is
+        normal once >16 words are queued, so that give-up silently drops beats (diag/multimsg-drop,
+        2026-10-16: 'lost messages' were this).  Use this one for any burst > 16 words."""
+        dut = self.dut
+        g = lambda n: getattr(dut, f"{side}_ahb_tx_{n}")
+        low = 0
+
+        async def wait_ready():
+            nonlocal low
+            for _ in range(cap):
+                await RisingEdge(dut.hclk)
+                try:
+                    if int(g("hready").value):
+                        return
+                except ValueError:
+                    return
+                low += 1
+            raise AssertionError("TX aperture HREADY stuck low")
+        await wait_ready()
+        g("hsel").value, g("htrans").value = 1, 2
+        g("hsize").value, g("hwrite").value = 2, 1
+        g("haddr").value = byte_addr & ((1 << 14) - 1)
+        await RisingEdge(dut.hclk)
+        g("hsel").value, g("htrans").value, g("hwrite").value = 0, 0, 0
+        g("hwdata").value = data & 0xFFFFFFFF
+        await wait_ready()
+        try:
+            err = int(g("hresp").value)
+        except ValueError:
+            err = 0
+        g("hwdata").value = 0
+        return err, low
+
+    async def ahb_tx_write_packet_legal(self, side, words, gap=0):
+        """-> (hresp_errors, max_hready_low) over the packet."""
+        errs, mx = 0, 0
+        for i, w in enumerate(words):
+            e, low = await self.ahb_tx_write_word_legal(side, i * 4, w)
+            errs += e; mx = max(mx, low)
+            if gap:
+                await ClockCycles(self.dut.hclk, gap)
+        return errs, mx
+
     async def ahb_tx_write_packet_b2b(self, side, words):
         """Back-to-back variant: no inter-word idle gap. Drives the FC TX
         aperture with consecutive AHB writes so the Wlink LL framer packs
@@ -452,6 +500,35 @@ class PairV2TB:
             return int(fa.tl_fc_a2l_valid.value) & int(fa.tl_fc_a2l_ready.value)
         except (AttributeError, ValueError):
             return -1
+
+    async def ahb_fifo_read_word_legal(self, side, byte_addr, cap=2000):
+        """AHB-LEGAL read of the RX FIFO aperture: the address phase is HELD until HREADY is high at
+        a clock edge, then the data phase is waited out.  ahb_fifo_read_word below drives the
+        address for exactly one clock after sampling HREADY on the previous edge; when an inbound
+        FC write takes the SRAM in between (HREADY drops: tidelink_fifo_mem 'AHB stall') the beat is
+        never accepted and a stale HRDATA is returned (single-word corruption of a message being
+        read while the next one lands).  Use this whenever reads overlap incoming writes."""
+        dut = self.dut
+        g = lambda n: getattr(dut, f"{side}_ahb_fifo_{n}")
+        g("hsel").value, g("htrans").value = 1, 2
+        g("hsize").value, g("hwrite").value = 2, 0
+        g("haddr").value = byte_addr & ((1 << 14) - 1)
+        for phase in ("address", "data"):
+            for _ in range(cap):
+                await RisingEdge(dut.hclk)
+                try:
+                    if int(g("hready").value):
+                        break
+                except ValueError:
+                    pass
+            else:
+                raise AssertionError(f"FIFO aperture HREADY stuck low ({phase} phase)")
+            if phase == "address":
+                g("hsel").value, g("htrans").value = 0, 0
+        try:
+            return int(g("hrdata").value)
+        except ValueError:
+            return 0
 
     async def ahb_fifo_read_word(self, side, byte_addr):
         dut = self.dut

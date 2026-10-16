@@ -6,3 +6,7 @@ __pycache__/
 results.xml
 ucli.key
 *.vcd
+# CRC matrix runner outputs (run_crc_matrix.py)
+tidelink_fpga_v2_fcsm_local_w*.flist
+crc_matrix_out/
+results_cm_*.xml

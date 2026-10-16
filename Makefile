@@ -360,6 +360,7 @@ endef
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen sim_gate_txgen_ext_hijack \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
 	sim_gate_axi_datanode_recovery sim_gate_axi_datanode_gaps sim_gate_sideband_crc_replay sim_gate_tl044_hol_write_age \
+	sim_gate_crc_matrix_quick sim_gate_crc_matrix_gate crc_matrix_nightly \
 	sim_gate_tl044_hol_prefix \
 	sim_gate_n1_read_backstop sim_gate_tl044_read_deadgate \
 	sim_gate_tl044_park_recipe sim_gate_xdie_exclusive \
@@ -1272,6 +1273,31 @@ sim_gate_sideband_crc_replay:
 	$(call sim_gate_run,sideband_crc_replay,\
 	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_sbcrc* && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery sbcrc_all)
+
+# ── CRC-injection MATRIX (verification-closure P0 lane 2, 2026-10-16) ────────────
+# One invariant/classifier (cocotb/tidelink_axi_datanode_recovery/crc_matrix_core.py) over node
+# {sideband 0xA1, AXI AW/W/B/AR/R 0x80-0x84} x packet position x direction x spacing x profile
+# {zero, silicon+EPOCH_ANCHOR}.  Every tier runs the MUST-FAIL controls first (injector liveness,
+# wrong-DataID inert, 0x23C readback, CRC-off sense, shots==counter, shipping disable_crc default,
+# +define+SOCL_L9_ALWAYS sideband mutant, and in gate/nightly the pre-Fix-G AXI mutant): a control that
+# does not behave => HARNESS_BROKEN and the matrix is NOT run.
+#   quick   (in the full gate AND sim_gate_quick, scored as suite crc_matrix_quick)   ~5 matrix cases
+#   gate    (separate, NOT in the aggregate: `make sim_gate_crc_matrix_gate`)         ~24 matrix cases
+#   nightly (`make crc_matrix_nightly`, farm/cron; CM_JOBS=N parallel workers)        ~220 matrix cases
+# Measured runtimes: docs/CRC_MATRIX.md.
+sim_gate_crc_matrix_quick:
+	$(call sim_gate_run,crc_matrix_quick,\
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_cm_* && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery crc_matrix_quick)
+
+sim_gate_crc_matrix_gate:
+	$(call sim_gate_run,crc_matrix_gate,\
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_cm_* && \
+	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery crc_matrix_gate)
+
+crc_matrix_nightly:
+	rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_cm_*
+	$(MAKE) -C cocotb/tidelink_axi_datanode_recovery crc_matrix_nightly
 
 # ── TL-042 instance 1 (2026-08-23) — the ahb_sub write backstop STARVES ──────
 # Both existing ahb_sub backstops are AGGREGATE-PROGRESS timers: sub_osr_ctr_r
@@ -2192,7 +2218,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
-	axi_datanode_recovery axi_datanode_gaps sideband_crc_replay tl044_hol_write_age n1_read_backstop \
+	axi_datanode_recovery axi_datanode_gaps sideband_crc_replay crc_matrix_quick tl044_hol_write_age n1_read_backstop \
 	tl044_read_deadgate tl044_park_recipe xdie_exclusive \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
@@ -2224,7 +2250,7 @@ SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
 	v2_autonomous_sync_detect v2_winscan_fsm v2_perf_ctrl v2_reduced_lane \
 	v2_truncated_pkt_credit v2_truncated_pkt_aperture_offset \
 	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
-	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por
+	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por crc_matrix_quick
 
 # GATE-INTEGRITY: the cocotb Makefiles only track tb_top.sv/pad_skid.sv as
 # compile deps — RTL/flist edits do NOT retrigger a VCS compile, so a cached
@@ -2316,6 +2342,8 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_axi_datanode_gaps
 	@# TL-059: sideband CRC-detected packet must replay exactly once (+ must-fail arms).
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_sideband_crc_replay
+	@# CRC matrix QUICK tier (controls first; node x position x direction; sideband mutant arm).
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_crc_matrix_quick
 	@# N1 (TAPEOUT BLOCKER, fix @e008c58): coincident stuck-read/stuck-write
 	@# regression — the write backstop must no longer permanently mask the
 	@# read backstop's AHB ERROR.
@@ -2465,6 +2493,7 @@ sim_gate_quick: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_c
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_zeropoke
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asicelab
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asicelab_v2
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_crc_matrix_quick
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_QUICK_SUITES)"
 
 sim_gate_summary:

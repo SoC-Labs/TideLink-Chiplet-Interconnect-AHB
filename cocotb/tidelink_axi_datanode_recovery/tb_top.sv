@@ -261,6 +261,12 @@ module tb_top #(
     // elaboration. With this define the epoch-skew test MUST fail — that
     // failure is the proof that the suite detects the v37 defect class.
     // ─────────────────────────────────────────────────────────────────────────
+`ifdef TB_TOP_EPOCH_ANCHOR_EN
+    // Silicon-profile builds (CRC matrix, EPOCH_PROFILE=silicon): engage the one-shot
+    // training-exit EPOCH corrector exactly as cocotb/tidelink_top_pair_v2 EPOCH_ANCHOR=1.
+    defparam u_master.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN = 1'b1;
+    defparam u_slave.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN  = 1'b1;
+`endif
 `ifdef TB_TOP_EPOCH_ANCHOR_DIS
     defparam u_master.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN = 1'b0;
     defparam u_slave.u_chiplet_controller.u_wlink.phy.EPOCH_ANCHOR_EN  = 1'b0;
@@ -1039,6 +1045,23 @@ module tb_top #(
             if (pi_en_s && pi_cnt_s == pi_tgt) begin pi_hit_vld_s <= 1'b1; pi_hit_pn_s <= pi_pn_s; end
             if (pi_en_s && pi_rephit_s) pi_rep_done_s <= 1'b1;
         end
+    end
+    // ── REAL-corruption counters (CRC matrix truth source) ───────────────────────────
+    // ri_hit_* counts packets the Wlink TX injector ACTUALLY corrupted: its own
+    // `err_inj` term (smack & sop & DataID-match against the APB 0x23C DataID) at a packet
+    // advance.  Independent of pi_en/pi_did, so a mismatched APB DataID (the wrong-ID inert
+    // control) or an unarmed injector reads 0, and a replay that is corrupted again counts.
+    // Cleared with pi_clr.  Read-only for the tests.
+    integer ri_hit_m = 0, ri_hit_s = 0;
+    always @(posedge u_master.u_chiplet_controller.u_wlink.lltx.clock) begin
+        if (pi_clr) ri_hit_m <= 0;
+        else if (u_master.u_chiplet_controller.u_wlink.lltx.err_inj
+                 && u_master.u_chiplet_controller.u_wlink.lltx.blah_0_advance) ri_hit_m <= ri_hit_m + 1;
+    end
+    always @(posedge u_slave.u_chiplet_controller.u_wlink.lltx.clock) begin
+        if (pi_clr) ri_hit_s <= 0;
+        else if (u_slave.u_chiplet_controller.u_wlink.lltx.err_inj
+                 && u_slave.u_chiplet_controller.u_wlink.lltx.blah_0_advance) ri_hit_s <= ri_hit_s + 1;
     end
     reg pi_trace = 1'b0;
     always @(posedge u_master.u_chiplet_controller.u_wlink.lltx.clock)

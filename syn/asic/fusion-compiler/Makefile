@@ -12,13 +12,7 @@ MODULE ?= tidelink_top_full
 
 include $(dir $(lastword $(MAKEFILE_LIST)))/../common.mk
 
-# Force the ASIC flist regardless of common.mk's wildcard fallback.
-# ASIC_PHY selects the PHY composition: _v2 (default) = the S3 PHY-swap V2 flist
-# (deps/tidelink-phy shared component, +define+TIDELINK_PHY_V2); ASIC_PHY= (empty)
-# selects the legacy V1 flist. The tapeout default is V2.
-ASIC_PHY ?= _v2
-override FLIST := $(TIDELINK_HOME)/flists/$(MODULE)_asic$(ASIC_PHY).flist
-export FLIST
+# FLIST comes from common.mk (ASIC_PHY knob, default _v2; ASIC_PHY= for V1).
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 # Switch work / outputs / etc to a parallel tree for non-production variants

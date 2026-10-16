@@ -2760,11 +2760,20 @@ selfcheck_gates:
 #
 #   make check_host_addrs       lint the tree          (exit 1 on any finding, 2 = cannot evaluate)
 #   make check_host_addrs_list  print every extracted constant and its verdict
-.PHONY: check_host_addrs check_host_addrs_list
+#
+# KR260 regression tooling (pynq_host/hw_regress/, scripts/hw/): offline proof that it can fail --
+# board-tool selftest (simulated register models), injector library controls, hw_test.sh stub
+# rehearsals of every safety feature, and a check_markers must-fail. No board, no network, ~1 min.
+#
+#   make hw_tooling_selftest    prints HW_SELFTEST_RESULT=PASS|FAIL
+.PHONY: check_host_addrs check_host_addrs_list hw_tooling_selftest
 check_host_addrs:
 	@python3 $(TIDELINK_HOME)/scripts/ci/check_host_addrs.py
 check_host_addrs_list:
 	@python3 $(TIDELINK_HOME)/scripts/ci/check_host_addrs.py --list
+hw_tooling_selftest:
+	@bash $(TIDELINK_HOME)/scripts/hw/selftest_hw.sh
+
 # ── registry-driven regression harness (durable, "run for all bugs") ─────────
 .PHONY: sim_gate_registry_coverage sim_gate_regressions sim_gate_one
 
@@ -2776,7 +2785,7 @@ sim_gate_registry_coverage:
 
 # The single authoritative regression front-end: prove registry coverage, then run
 # the tip-stamped, fail-loud, exit-on-FAIL aggregate. Use THIS in CI, not bare sim_gate.
-sim_gate_regressions: selfcheck_gates sim_gate_registry_coverage check_host_addrs sim_gate
+sim_gate_regressions: selfcheck_gates sim_gate_registry_coverage check_host_addrs hw_tooling_selftest sim_gate
 
 # ── controls for the checkers themselves ────────────────────────────────────
 # A checker whose own failure mode is never exercised is decoration. Every

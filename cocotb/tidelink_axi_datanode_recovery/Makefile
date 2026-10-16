@@ -301,7 +301,7 @@ tl044_hol_prefix_mustfail:
 clean_builds:
 	rm -rf sim_build_axirec sim_build_axirec_* sim_build_bidfix sim_build_gaps* \
 	       sim_build_writehold* sim_build_tl042v2* sim_build_tl037* sim_build_tl044* \
-	       sim_build_xdie_excl* sim_build_sbcrc* sim_build_cm_* results_cm_*.xml tidelink_fpga_v2_fcsm_local_w*.flist crc_matrix_out sbcrc_neg_*.log tidelink_fpga_v2_fcsm_local_eccbypass.flist \
+	       sim_build_xdie_excl* sim_build_sbcrc* sim_build_cm_* results_cm_*.xml tidelink_fpga_v2_fcsm_local_w*.flist crc_matrix_out sim_build_mm* multimsg_pos*.log multimsg_neg*.log sbcrc_neg_*.log tidelink_fpga_v2_fcsm_local_eccbypass.flist \
 	       sim_build_wrhold_drain_guard* $(LOCAL_FLIST) \
 	       tl044_mutant_green.log tl044_hol_prefix.log
 
@@ -611,3 +611,25 @@ CM_JOBS_nightly ?= 4
 .PHONY: crc_matrix_quick crc_matrix_gate crc_matrix_nightly
 crc_matrix_quick crc_matrix_gate crc_matrix_nightly:
 	python3 $(CURDIR)/run_crc_matrix.py $(subst crc_matrix_,,$@) --jobs $(or $(CM_JOBS),$(CM_JOBS_$(subst crc_matrix_,,$@)))
+
+# =============================================================================
+# MULTIMSG: N back-to-back sideband messages, per-message accounting at the RX FIFO write port and at
+# the AHB drain (test_sideband_multimsg.py).  diag/multimsg-drop 2026-10-16: the earlier "message 1
+# lost" result was HARNESS (single-flag drain; 50-cycle HREADY give-up on TX; one-clock FIFO read
+# address phase), not the DUT.  Positive cases must PASS; the three legacy-harness arms and the
+# real-drop arm (receiver flushed mid-stream) must FAIL -- proving the checker can see a drop.
+#   make multimsg        positive matrix (+ must-fail arms)
+# =============================================================================
+MM_POS := "MM_N=3" "MM_N=8" "MM_N=8 MM_WHEN=concur MM_LEN=14" "MM_N=3 MM_DIR=ba" "MM_N=4 MM_LEN=30"
+MM_NEG := "MM_N=3 MM_CTL_FLUSH=1" "MM_N=8 MM_LEGACY_WRITE=1" "MM_N=8 MM_LEN=14 MM_WHEN=concur MM_LEGACY_READ=1"
+.PHONY: multimsg
+multimsg:
+	@set -e; i=0; for a in $(MM_POS); do i=$$((i+1)); \
+	  echo "[multimsg] POS $$a"; env $$a $(MAKE) SIM_BUILD=sim_build_mm MODULE=test_sideband_multimsg TESTCASE=test_multimsg > multimsg_pos$$i.log 2>&1 \
+	    || { echo "[multimsg] FAIL (positive case failed): $$a; see multimsg_pos$$i.log"; exit 1; }; done
+	@i=0; for a in $(MM_NEG); do i=$$((i+1)); \
+	  echo "[multimsg] MUST-FAIL $$a"; if env $$a $(MAKE) SIM_BUILD=sim_build_mm MODULE=test_sideband_multimsg TESTCASE=test_multimsg > multimsg_neg$$i.log 2>&1; then \
+	    echo "[multimsg] MUTANT ESCAPED -- harness did not see the drop: $$a"; exit 1; fi; \
+	  grep -qE '\*\*[[:space:]]+TESTS=' multimsg_neg$$i.log || { echo "[multimsg] COULD-NOT-EVALUATE: $$a"; exit 2; }; \
+	  echo "[multimsg] killed (required): $$a"; done
+	@echo "[multimsg] PASS: all positives exact, all must-fail arms detected"

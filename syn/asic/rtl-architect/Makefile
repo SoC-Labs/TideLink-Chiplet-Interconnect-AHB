@@ -1,3 +1,7 @@
+# Pin the same partition cut (and, via common.mk, the same ASIC_PHY flist) as the
+# FC/LEC/STA flows; RTLA used to default to the tidelink_top cut and plain flist.
+MODULE ?= tidelink_top_full
+
 # The RM tarball and the Artisan LEF are site facts; declare them as required
 # before the include so `make site-check` names them too.
 SITE_VARS_REQUIRED += RTLA_RM_PATH RTLA_LEF_FILE

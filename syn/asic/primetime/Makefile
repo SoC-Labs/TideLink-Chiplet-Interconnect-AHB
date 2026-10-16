@@ -4,9 +4,7 @@
 MODULE ?= tidelink_top_full
 include $(dir $(lastword $(MAKEFILE_LIST)))/../common.mk
 
-# Force the ASIC flist for the netlist roles in extract_etm.tcl
-override FLIST := $(TIDELINK_HOME)/flists/$(MODULE)_asic.flist
-export FLIST
+# FLIST comes from common.mk (ASIC_PHY knob, default _v2); do not re-pin it here.
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 export PT_DIR     = $(TIDELINK_HOME)/syn/asic/primetime

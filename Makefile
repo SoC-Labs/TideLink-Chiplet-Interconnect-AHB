@@ -357,7 +357,7 @@ define sim_gate_run
 	esac
 endef
 
-.PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
+.PHONY: sim_gate sim_gate_quick sim_gate_env_check sim_gate_summary sim_gate_asic_flist_consistency sim_gate_apb_preempt sim_gate_fch_wdog sim_gate_zeropoke \
 	sim_gate_t31 sim_gate_t32 sim_gate_t33 sim_gate_t30 sim_gate_ptp_link_sync sim_gate_retire_plumb sim_gate_fifo_twin2_tree \
 	sim_gate_v2_perf sim_gate_v2_reduced_lane sim_gate_v2_fc_contiguous sim_gate_epoch_silicon \
 	sim_gate_epoch_anchor_plumb sim_gate_v2_stream_start_anchor \
@@ -2174,6 +2174,14 @@ sim_gate_cdc_sync_structure:
 	$(call sim_gate_run,cdc_sync_structure,\
 	  python3 $(TIDELINK_HOME)/scripts/ci/cdc_sync_structure.py --check)
 
+# Every ASIC tool Makefile (FC, Formality, PrimeTime, Calibre, RTL-Architect) must
+# resolve to the SAME flist + define set (ASIC_PHY knob, syn/asic/common.mk), so LEC/STA
+# read the RTL synthesis read. Static (make evaluation only), must-fail fixture included.
+sim_gate_asic_flist_consistency:
+	$(call sim_gate_run,asic_flist_consistency,\
+	  python3 $(TIDELINK_HOME)/scripts/ci/asic_flist_consistency.py && \
+	  python3 $(TIDELINK_HOME)/scripts/ci/asic_flist_consistency.py --selftest)
+
 # WHICH FILE COMPILED — asserted from inside the running simulation, both ways.
 # ASIC_FLIST=1 must yield FCSM 0-4 with NO socl_ recovery markers and the rf_16k
 # SRAM; ASIC_FLIST=0 must yield all 5 markers and cmsdk_fpga_sram. Two runs
@@ -2279,7 +2287,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon epoch_anchor_plumb v2_stream_start_anchor \
 	v2_pair_sustained v2_truncated_pkt_credit v2_truncated_pkt_aperture_offset v2_xhb_lostresp_pipe \
 	fifo_rx_phantom_pop fifo_rx_randinit v1_elab asic_v1_elab asic_v2_elab dft_wrapper_elab \
-	flist_divergence ema_tie_check cdc_sync_structure asic_fileset_identity asic_v2_pair_data asic_fcsm_silicon_ratio \
+	flist_divergence ema_tie_check cdc_sync_structure asic_flist_consistency asic_fileset_identity asic_v2_pair_data asic_fcsm_silicon_ratio \
 	asic_l7_starvation_backstop \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
 	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
@@ -2511,6 +2519,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_flist_divergence
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_ema_tie_check
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_cdc_sync_structure
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asic_flist_consistency
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asic_fileset_identity
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asic_v2_pair_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asic_fcsm_ratio

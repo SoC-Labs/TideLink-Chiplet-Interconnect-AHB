@@ -6,7 +6,7 @@
 // src/rtl/local_overrides/ files, and the link CRC is ON at reset in both (override reset value 0;
 // +define+TIDELINK_FCSM_CRC_OFF_AT_RESET is the FPGA fallback / negative control). The earlier
 // "FPGA-only re-point, ASIC held on deps" decision (2026-07-29 hold, ratified 2026-08-20) is superseded.
-// The remaining FPGA/ASIC differences (SRAM wrapper, i2c_master, ReplayAddrSync_18, v2 shims) are listed
+// The remaining FPGA/ASIC differences (SRAM wrapper, i2c_master, v2 shims; ReplayAddrSync_18 now matches too, TL-018 follow-on) are listed
 // and checked by scripts/ci/flist_divergence.py --check.
 // =============================================================================
 // tidelink_fpga_v2.flist — S3 PHY-swap build variant (V2) of the FPGA filelist

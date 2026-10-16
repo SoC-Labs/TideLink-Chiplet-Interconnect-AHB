@@ -127,7 +127,17 @@ $(shell mkdir -p $(DUT_SRC_GEN_DIR); \
 	  printf '%s\n' "$$_new" > $(DUT_SRC_F))
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/$(A2L_FLIST)
+# TL-018 follow-on MUTANT (NODE=13 only): USE_DEPS_ADDRSYNC=1 swaps the WlinkGenericFCReplayAddrSync_18 line of the
+# flist for the UNFIXED deps/ copy (pre-reset-skew-fix = what the tapeout flist carried before).  The DUT node itself
+# stays the override, so test_adversarial_addrsync_reset_skew must go RED on it and green without it.
+USE_DEPS_ADDRSYNC ?= 0
+ifeq ($(USE_DEPS_ADDRSYNC),1)
+A2L_FLIST_PATH := $(DUT_SRC_GEN_DIR)/addrsync_deps_$(A2L_FLIST)
+$(shell sed 's@$${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayAddrSync_18.v@$${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_18.v@' $(TIDELINK_HOME)/flists/$(A2L_FLIST) > $(A2L_FLIST_PATH))
+else
+A2L_FLIST_PATH := $(TIDELINK_HOME)/flists/$(A2L_FLIST)
+endif
+COMPILE_ARGS += -f $(A2L_FLIST_PATH)
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
 # --- Build-staleness guard: recompile on flist-sourced RTL edits. VERILOG_SOURCES

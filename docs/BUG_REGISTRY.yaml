@@ -14,7 +14,7 @@ schema_version: 2                # 2 (2026-09-11): hardware claims now carry
                                  # machine-enforced by scripts/ci/registry_coverage.py
 generated: 2026-08-06
 last_truth_pass: 2026-09-11      # see campaign.truth_pass_2026_09_11
-updated: 2026-10-16              # 2026-10-16: TL-018/TL-019 -> sim_proven (ASIC takes hardened FC overrides, CRC ON at reset); 2026-10-14: TL-059 added (sideband CRC replay, sim_proven); 2026-10-12: TL-036 compute-line HW evidence added, TL-058 bench repaired (sim_proven); earlier 10-10: TL-054..TL-058 added, TL-036/TL-038 amended; NOT a truth pass
+updated: 2026-10-16              # 2026-10-16: TL-019 follow-on (ASIC takes AddrSync_18 reset-skew fix); TL-018/TL-019 -> sim_proven (ASIC takes hardened FC overrides, CRC ON at reset); 2026-10-14: TL-059 added (sideband CRC replay, sim_proven); 2026-10-12: TL-036 compute-line HW evidence added, TL-058 bench repaired (sim_proven); earlier 10-10: TL-054..TL-058 added, TL-036/TL-038 amended; NOT a truth pass
 maintainer: autonomous overnight campaign (Claude Opus 4.8)
 approver: David Mapstone <david@mapstone.me>
 
@@ -1088,12 +1088,16 @@ bugs:
       basis (a silicon ILA of the I1 fix) was met 2026-07-31 but never propagated. DECISION (David, 2026-10): re-point.
       FIX: the V2 and V1 ASIC flists now take FCSM 0-4 + replay _7/_9 from local_overrides, identical to the FPGA v2
       flist; FCSM_5 (no override exists) stays deps, FCSM_6 was already local. scripts/ci/flist_divergence.py --check
-      now fails (MUST-MATCH) if any of these diverge again. Still FPGA-only and NOT covered by this decision:
-      WlinkGenericFCReplayAddrSync_18 (a2l ACK-pointer reset-skew fix), i2c_master, SRAM wrapper.
-    fix: {approach: "re-point ASIC V2/V1 flists to local_override FC nodes + replay _7/_9; update gates (identity, l7 starvation, flist_divergence) with must-fail arms", files: [flists/tidelink_top_full_asic_v2.flist, flists/tidelink_top_full_asic.flist, scripts/ci/flist_divergence.py], commit: d884e623, branch: fix/tl018-019-asic-fc-overrides, netlist_affecting: true}
+      now fails (MUST-MATCH) if any of these diverge again. FOLLOW-ON (2026-10-16, David approved): both ASIC flists
+      also take src/rtl/local_overrides/WlinkGenericFCReplayAddrSync_18.v (the a2l ACK-pointer reset-skew fix for the
+      silicon false-FULL, obs 0x2158; shared by the a2l node link_addr_to_app_clk and the sideband l2a sync), now in
+      MUST_MATCH. Proof: directed force test test_addrsync_reset_gate_directed (FAILS on the unfixed deps copy; the
+      random-skew sim tests are green on it too, an idealised-sim limit) + asic_fileset_identity AddrSync arm +
+      must-fail mutants. Still FPGA-only and NOT covered by this decision: i2c_master, SRAM wrapper.
+    fix: {approach: "re-point ASIC V2/V1 flists to local_override FC nodes + replay _7/_9; update gates (identity, l7 starvation, flist_divergence) with must-fail arms", files: [flists/tidelink_top_full_asic_v2.flist, flists/tidelink_top_full_asic.flist, scripts/ci/flist_divergence.py], commit: d884e623, branch: fix/tl018-019-asic-fc-overrides, netlist_affecting: true, followon: "AddrSync_18 re-point on branch fix/tl018-addrsync18"}
     decision_needed: null
     decision_recorded: "David 2026-10: ASIC takes the hardened local FC-node overrides (supersedes the 2026-07-29 hold, ratified 2026-08-20)."
-    verification: {sim_test: "asic_fileset_identity (both flists + deps mutant must fail), asic_l7_starvation_backstop (both flists ESCAPE + deps mutant WEDGES), flist_divergence (+2 mutant flists), asic_v2_pair_data, asic_fcsm_silicon_ratio, a2l_replay_cdc_*, elab gates", in_sim_gate: true, hw_tested: false}
+    verification: {sim_test: "asic_fileset_identity (both flists + deps mutant must fail), asic_l7_starvation_backstop (both flists ESCAPE + deps mutant WEDGES), flist_divergence (+2 mutant flists), asic_v2_pair_data, asic_fcsm_silicon_ratio, a2l_replay_cdc_* (incl. directed AddrSync_18 reset-gate test + USE_DEPS_ADDRSYNC mutant), elab gates", in_sim_gate: true, hw_tested: false}
     signoff: {claude_verdict: "sim_proven; ASIC area/timing/LEC for ~5x72 socl_ hooks not yet measured; no ASIC-line HW", evidence: ["asic_l7_starvation_backstop 3 arms", "asic_fileset_identity mutant arm"], approved: false}
     related: [TL-004, TL-005, TL-009, TL-018]
 

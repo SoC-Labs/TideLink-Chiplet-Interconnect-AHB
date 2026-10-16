@@ -29,10 +29,9 @@ FPGA_FLIST = "flists/tidelink_fpga_v2.flist"
 # WlinkGenericFCReplayV2_7/_9 are NO LONGER shadow pairs -- the ASIC flist takes the same src/rtl/local_overrides/
 # files as the FPGA one (recovery hooks + CRC-on reset).  They are deliberately ABSENT from this table: if any of
 # them diverges again, --check reports it as a NEW shadow pair and fails (the sim_gate_flist_divergence must-fail
-# arm mutates the ASIC flist to prove it).  What is left is a hand-maintained record of the remaining decisions.
+# arm mutates the ASIC flist to prove it).  TL-018 follow-on (2026-10): WlinkGenericFCReplayAddrSync_18 (a2l ACK-pointer
+# reset-skew fix for the silicon false-FULL, obs 0x2158) likewise takes the override on the ASIC flist -> MUST_MATCH.  What is left is a hand-maintained record of the remaining decisions.
 EXPECTED_SHADOW_PAIRS = {
-    # a2l ACK-pointer reset-skew fix (obs 0x2158); FPGA-only, NOT covered by the TL-018/019 decision.  Open item.
-    "WlinkGenericFCReplayAddrSync_18.v": ("deps/", "src/rtl/local_overrides/"),
     "i2c_master.v":                      ("deps/", "src/rtl/local_overrides/"),
     "tidelink_sram.sv":                  ("src/rtl/fifo/asic/", "src/rtl/fifo/fpga/"),
 }
@@ -41,7 +40,8 @@ EXPECTED_SHADOW_PAIRS = {
 # a stale table edit cannot silently re-admit a divergence on them.
 MUST_MATCH = ["WlinkGenericFCSM.v"] + [f"WlinkGenericFCSM_{i}.v" for i in range(1, 5)] + \
              ["WlinkGenericFCSM_5.v", "WlinkGenericFCSM_6.v",
-              "WlinkGenericFCReplayV2_7.v", "WlinkGenericFCReplayV2_9.v"]
+              "WlinkGenericFCReplayV2_7.v", "WlinkGenericFCReplayV2_9.v",
+              "WlinkGenericFCReplayAddrSync_18.v"]
 
 
 def resolve(path):

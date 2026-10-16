@@ -136,3 +136,29 @@ async def test_sram_fileset_identity(dut):
     else:
         assert has_bram, "FPGA flist requested but the rf_16k (ASIC) wrapper compiled"
         dut._log.info("PROVEN: src/rtl/fifo/fpga/tidelink_sram.sv (cmsdk_fpga_sram) compiled.")
+
+
+@cocotb.test()
+async def test_addrsync18_fileset_identity(dut):
+    """TL-018 follow-on: the a2l ACK-pointer reset-skew fix (obs 0x2158) lives in
+    src/rtl/local_overrides/WlinkGenericFCReplayAddrSync_18.v (regs wrst_meta/wrst_sync, absent from deps/).
+    Both instances of the module (a2l node link_addr_to_app_clk, l2a l2a_fifo_addr_to_tx) must carry it on
+    BOTH flists.  Control: the instance's `raddr` register must exist, so a wrong path cannot pass vacuously."""
+    tb = PairV2TB(dut)
+    await tb.reset()
+    bad = []
+    for side in ("m", "s"):
+        top = dut.u_master if side == "m" else dut.u_slave
+        fc = top.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl
+        for scope, inst in (("a2l_fc_replay", "link_addr_to_app_clk"), (None, "l2a_fifo_addr_to_tx")):
+            parent = getattr(fc, scope) if scope else fc
+            node = getattr(parent, inst)
+            assert _has(node, "raddr"), (
+                f"CONTROL FAILED: {side}.{inst}.raddr not found -- hierarchy path is wrong, proves nothing.")
+            for m in ("wrst_meta", "wrst_sync"):
+                if not _has(node, m):
+                    bad.append(f"{side}.{inst}.{m} ABSENT -- the unfixed deps/ WlinkGenericFCReplayAddrSync_18 was "
+                               f"compiled (the tapeout flist must take src/rtl/local_overrides/)")
+    assert not bad, "FILE-SET IDENTITY MISMATCH:\n  " + "\n  ".join(bad)
+    dut._log.info("PROVEN: reset-skew-fixed WlinkGenericFCReplayAddrSync_18 (local_overrides) compiled on all "
+                  "4 instances (ASIC_FLIST=%s)." % os.environ.get("ASIC_FLIST", "0"))

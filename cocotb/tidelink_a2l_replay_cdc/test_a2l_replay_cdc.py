@@ -542,6 +542,66 @@ async def test_adversarial_addrsync_reset_skew(dut):
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  TL-018 follow-on — DIRECTED proof of the AddrSync_18 reset-skew gate       ║
+# ║  (obs 0x2158).  MUST FAIL with USE_DEPS_ADDRSYNC=1, MUST PASS otherwise.   ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+@cocotb.test()
+async def test_addrsync_reset_gate_directed(dut):
+    """The silicon trigger is a read-side delivery (r_ready + lap-ahead r_data) latched by the app-domain raddr flop
+    while the write side (link_reset) is still in / just leaving reset.  The idealised sim never produces that
+    delivery by itself (hence the random-skew tests above are green on the unfixed file too, see SUMMARY), so this
+    test FORCES it: app_reset released, link_reset still HELD, then a one-cycle forced r_ready=1 / r_data=0x10
+    (a full lap ahead of wbin_ptr=0).  The fixed module holds raddr in reset until link_reset has released
+    (wrst_sync) and stays 0; the unfixed module latches 0x10 and a2l_full sticks (nothing legitimate ever ACKs
+    during bring-up), i.e. the false-FULL of obs 0x2158.  Non-vacuity control: after link_reset releases, a
+    legitimate delivery of the same value MUST still be latched (the gate is not simply a stuck-at-0)."""
+    await start_clocks(dut)
+    tie_idle(dut)
+    asy = dut.dut.link_addr_to_app_clk
+    rdy, dat = asy.addrsync_r_ready, asy.addrsync_r_data
+
+    dut.app_reset.value = 1
+    dut.link_reset.value = 1
+    await ClockCycles(dut.link_clk, 4)
+    await RisingEdge(dut.app_clk)
+    dut.app_reset.value = 0                      # app side released FIRST, link side still held
+    await ClockCycles(dut.app_clk, 6)
+    assert _sigint(dut.link_reset) == 1
+
+    await RisingEdge(dut.app_clk)
+    rdy.value = Force(1)
+    dat.value = Force(0x10)
+    await ClockCycles(dut.app_clk, 2)
+    rdy.value = Release()
+    dat.value = Release()
+    await ClockCycles(dut.app_clk, 4)
+    held = _sigint(dut.dut.a2l_link_addr_app_clk)
+    dut._log.info("directed: synced_ack after forced early delivery (link_reset held) = %d", held)
+    assert held == 0, (
+        f"AddrSync_18 latched a delivery (synced_ack={held}) while link_reset was still asserted: the reset-skew "
+        f"gate (wrst_sync) is absent -- the unfixed deps/ file is compiled (silicon false-FULL, obs 0x2158).")
+
+    await RisingEdge(dut.link_clk)
+    dut.link_reset.value = 0
+    await ClockCycles(dut.app_clk, 40)
+    pre = probe(dut)
+    assert pre["a2l_full"] == 0 and pre["app_ready"] == 1, f"false-full at idle after the skew window: {pre}"
+
+    # NON-VACUITY: with both resets released the same forced delivery MUST be latched.
+    await RisingEdge(dut.app_clk)
+    rdy.value = Force(1)
+    dat.value = Force(0x10)
+    await ClockCycles(dut.app_clk, 2)
+    rdy.value = Release()
+    dat.value = Release()
+    await ClockCycles(dut.app_clk, 4)
+    live = _sigint(dut.dut.a2l_link_addr_app_clk)
+    assert live == 0x10, f"CONTROL FAILED: forced delivery not latched with both resets released (synced_ack={live})"
+    dut._log.info("directed PASS: early delivery gated (0), post-reset delivery latched (0x10)")
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
 # ║  TL-032 — REVERT-AWARENESS of the a2l ACK-window guard (residual R1)        ║
 # ║  A NACK-driven replay asserts link_revert and rewinds the FIFO read ptr;    ║
 # ║  the TL-027 window guard must stay in-window so recovery ACKs are accepted. ║

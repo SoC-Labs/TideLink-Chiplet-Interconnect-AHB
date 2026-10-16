@@ -749,7 +749,7 @@ restores the old CRC-off reset. Gate expectations that changed, each with its mu
 
 | suite | new expectation | must-fail arm (proves the expectation can go red) |
 |---|---|---|
-| `flist_divergence` | the ASIC/FPGA divergence set is {ReplayAddrSync_18, i2c_master, tidelink_sram}; FC nodes + replay _7/_9 are MUST-MATCH | mutated copies of the ASIC flist (FCSM_2 / Replay_9 back on deps) must fail `--check` with "MUST-MATCH violated" |
+| `flist_divergence` | the ASIC/FPGA divergence set is {i2c_master, tidelink_sram}; FC nodes + replay _7/_9 + ReplayAddrSync_18 are MUST-MATCH | mutated copies of the ASIC flist (FCSM_2 / Replay_9 / AddrSync_18 back on deps) must fail `--check` with "MUST-MATCH violated" |
 | `asic_fileset_identity` | BOTH flists: all 10 AXI FC node instances carry all 5 `socl_` markers and reset CRC ON | `ASIC_FLIST=1 ASIC_FCSM_DEPS=1` must fail with "FILE-SET IDENTITY MISMATCH" |
 | `asic_l7_starvation_backstop` | FPGA arm AND ASIC arm ESCAPE state 7 | `ASIC_FLIST=1 ASIC_FCSM_DEPS=1` arm must still WEDGE (the stimulus detects the missing backstop) |
 | `crc_matrix_quick` (+ new `crc_matrix_quick_asic`, `ASIC_FLIST=1`) | AXI cases run at the shipping default with NO APB write; `ctl_ship_default` expects 0 on all six nodes | `croff` build: `ctl_croff_define` (reset reads 1), `mut_croff_W_first` (no APB enable -> silent corruption); `ctl_detect_sense_*` write bit16=1 explicitly; `ctl_fileset_asicdeps` |

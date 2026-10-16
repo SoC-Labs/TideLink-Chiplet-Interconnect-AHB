@@ -851,10 +851,20 @@ sim_gate_a2l_replay_cdc_deps_mustfail:
 	      fi; \
 	    done; \
 	  done; \
-	  echo "a2l deps must-fail arms killed: $$ok/10"; \
+	  d=sim_build_deps_mf_addrsync18; x=$$d/res.xml; rm -rf $$d; \
+	  echo "=== MUST-FAIL arm: NODE=13 USE_DEPS_ADDRSYNC=1 [unfixed AddrSync_18 reset-skew gate]"; \
+	  if $(MAKE) NODE=13 USE_DEPS_ADDRSYNC=1 MODULE=test_a2l_replay_cdc TESTCASE=test_addrsync_reset_gate_directed \
+	       SIM_BUILD=$$d COCOTB_RESULTS_FILE=$$d/res.xml; then \
+	    echo "!!! MUTANT ESCAPED: directed AddrSync_18 test PASSED on the unfixed deps copy."; esc=1; \
+	  elif [ ! -s $$x ] || ! grep -q '<failure' $$x; then \
+	    echo "??? COULD-NOT-EVALUATE: AddrSync_18 arm failed WITHOUT a recorded cocotb failure."; nogo=1; \
+	  else \
+	    echo "    killed: directed AddrSync_18 test FAILS on unfixed deps [required]"; ok=$$((ok+1)); \
+	  fi; \
+	  echo "a2l deps must-fail arms killed: $$ok/11"; \
 	  if [ $$esc -ne 0 ]; then echo "FAIL: a must-fail arm PASSED"; exit 1; fi; \
 	  if [ $$nogo -ne 0 ]; then echo "FAIL: an arm could not be evaluated"; exit 1; fi; \
-	  if [ $$ok -ne 10 ]; then echo "FAIL: only $$ok/10 arms were graded"; exit 1; fi)
+	  if [ $$ok -ne 11 ]; then echo "FAIL: only $$ok/11 arms were graded"; exit 1; fi)
 
 # ---------------------------------------------------------------------------
 # Rescued from the link-survey line (analysis/link-survey-2026-08-01, folded
@@ -2130,6 +2140,9 @@ sim_gate_flist_divergence:
 	    $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist > $(SIM_GATE_DIR)/mutant_asic_fcsm2_deps.flist && \
 	  sed 's@src/rtl/local_overrides/WlinkGenericFCReplayV2_9.v@deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_9.v@' \
 	    $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist > $(SIM_GATE_DIR)/mutant_asic_replay9_deps.flist && \
+	  sed 's@src/rtl/local_overrides/WlinkGenericFCReplayAddrSync_18.v@deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_18.v@' \
+	    $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist > $(SIM_GATE_DIR)/mutant_asic_addrsync18_deps.flist && \
+	  $(call must_fail,flist_div_addrsync18,python3 $(TIDELINK_HOME)/scripts/ci/flist_divergence.py --check --asic-flist $(SIM_GATE_DIR)/mutant_asic_addrsync18_deps.flist,MUST-MATCH violated: WlinkGenericFCReplayAddrSync_18.v) && \
 	  $(call must_fail,flist_div_fcsm2,python3 $(TIDELINK_HOME)/scripts/ci/flist_divergence.py --check --asic-flist $(SIM_GATE_DIR)/mutant_asic_fcsm2_deps.flist,MUST-MATCH violated: WlinkGenericFCSM_2.v) && \
 	  $(call must_fail,flist_div_replay9,python3 $(TIDELINK_HOME)/scripts/ci/flist_divergence.py --check --asic-flist $(SIM_GATE_DIR)/mutant_asic_replay9_deps.flist,MUST-MATCH violated: WlinkGenericFCReplayV2_9.v))
 
@@ -2147,6 +2160,8 @@ sim_gate_asic_fileset_identity:
 	    COCOTB_RESULTS_FILE=sim_build_zero/res_ident.xml \
 	    MODULE=test_asic_fileset_identity && \
 	  $(call must_fail,asic_identity_deps_mutant,$(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 ASIC_FCSM_DEPS=1 \
+	    EPOCH_PROFILE=zero MODULE=test_asic_fileset_identity,FILE-SET IDENTITY MISMATCH) && \
+	  $(call must_fail,asic_identity_addrsync_mutant,$(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 ASIC_ADDRSYNC_DEPS=1 \
 	    EPOCH_PROFILE=zero MODULE=test_asic_fileset_identity,FILE-SET IDENTITY MISMATCH))
 
 # THE GAP-CLOSER: bilateral link-up + M->S and S->M byte-exact delivery on the

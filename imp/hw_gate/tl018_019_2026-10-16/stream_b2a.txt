@@ -1,0 +1,26 @@
+rev2hw stream start 2026-10-16 20:26:37
+STREAM dir=b2a tx=die_b rx=die_a DataID 0xa1, 4 starts of 28 payload words (30 words on ahb_tx), idle gap 0.30 s, latency limit 100 ms
+STREAM note: no revert/NACK counter exists in this RTL; storm = non-exact delivery OR latency OR Ack/Nack FIFO full/almost-full OR CRC/witness movement.
+  read die_a TX FC FIFO (node6+0x08) 0x84031708 ...
+       -> 0x00000001
+  read die_a Ack/Nack FIFO (node6+0x10) 0x84031710 ...
+       -> 0x00020601
+  read die_b TX FC FIFO (node6+0x08) 0x8c031708 ...
+       -> 0x00000001
+  read die_b Ack/Nack FIFO (node6+0x10) 0x8c031710 ...
+       -> 0x00020601
+STREAM receiver sideband CRC check is ON (SM_CONTROL=0x00000708); design E is only exercised with CRC ON
+STREAM-WITNESS pre   die_a 0x21E0=0xad800000 (marker ok) 0x21F8=0xb5000001 (marker ok)
+STREAM-WITNESS pre   die_b 0x21E0=0xad800000 (marker ok) 0x21F8=0xb5000001 (marker ok)
+START  1 (first after setup) tag=0x5780001c pkts=1 -> EXACT  latency=0.3 ms acknack nonempty/full/almost-full=0/0/0 of 503 samples, txfifo busy 1  crc_delta a+0 b+0  link=True
+START  2 tag=0x5780011c pkts=1 -> EXACT  latency=0.3 ms acknack nonempty/full/almost-full=0/0/0 of 503 samples, txfifo busy 1  crc_delta a+0 b+0  link=True
+START  3 tag=0x5780021c pkts=1 -> EXACT  latency=0.3 ms acknack nonempty/full/almost-full=0/0/0 of 503 samples, txfifo busy 1  crc_delta a+0 b+0  link=True
+START  4 tag=0x5780031c pkts=1 -> EXACT  latency=0.3 ms acknack nonempty/full/almost-full=0/0/0 of 502 samples, txfifo busy 1  crc_delta a+0 b+0  link=True
+STREAM-WITNESS post  die_a 0x21E0=0xad800000 (marker ok) 0x21F8=0xb5000001 (marker ok)
+STREAM-WITNESS post  die_b 0x21E0=0xad800000 (marker ok) 0x21F8=0xb5000001 (marker ok)
+
+STREAM SUMMARY dir=b2a starts=4 of 4 wanted  exact=4/4  latency median 0.31 ms max 0.32 ms (limit 100 ms)
+  Ack/Nack FIFO full samples 0  almost-full samples 0  CRC counter moved in 0 start(s)  witness changes 0
+  revert/NACK counter: NOT AVAILABLE in this RTL (verdict rests on delivery + latency + FIFO flags + witnesses)
+STREAM_RESULT=NO_STORM_OBSERVED exact=4/4 median_ms=0.31 max_ms=0.32
+VERDICT: PASS stream b2a: 4/4 28-word starts delivered exactly once, latency <= 100 ms, Ack/Nack FIFO never full/almost-full, CRC counters and witnesses unchanged (no revert counter exists: absence of a storm, not a count of 0)

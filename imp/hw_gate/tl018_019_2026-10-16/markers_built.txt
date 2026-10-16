@@ -1,0 +1,37 @@
+check_markers: tree=<host>/tl018-019 mode=built flist=tidelink_fpga_v2.flist groups=a7,asic,errinj,h30,h31,tl036,tl059
+  [PASS         ] a7.phy.tx_idle_q_reg              WavD2DGpio_v2.v  :: reg tx_idle_q
+  [PASS         ] a7.phy.tx_idle_q_flop             WavD2DGpio_v2.v  :: tx_idle_q <= io_link_tx_tx_idle
+  [PASS         ] a7.phy.sync_gate                  WavD2DGpio_v2.v  :: io_swi_auto_anchor_force_in & io_link_tx_tx_idle & tx_idle_q
+  [PASS         ] a7.phy.old_gate_gone              WavD2DGpio_v2.v
+  [PASS         ] a7.ctl.axi_any_valid              axi_chiplet_controller.sv  :: axi_a2l_any_v = axi_tgt_0_aw_valid | axi_tgt_0_w_valid | axi_tgt_0_ar_
+  [PASS         ] a7.ctl.two_flop_sync              axi_chiplet_controller.sv  :: sync_axi_a2l_v_1 <= sync_axi_a2l_v_0
+  [PASS         ] a7.ctl.stop_input                 axi_chiplet_controller.sv  :: auto_anchor_tx_idle = ~(sync_obs_a2l_app_v_1 | sync_axi_a2l_v_1)
+  [PASS         ] a7.ctl.old_stop_gone              axi_chiplet_controller.sv
+  [PASS         ] h30.reg                           axi_chiplet_controller.sv  :: reg cal_swreset_q
+  [PASS         ] h30.merge_flop                    axi_chiplet_controller.sv  :: cal_swreset_q <= swi_recal_r |
+  [PASS         ] h30.port_uses_q                   axi_chiplet_controller.sv  :: .swreset (cal_swreset_q)
+  [PASS         ] h30.old_comb_merge_gone           axi_chiplet_controller.sv
+  [PASS         ] h31.s_cancel_uses_sync            tidelink_phy_align_calibrator_v2.sv  :: !swreset_sync
+  [PASS         ] h31.s_cancel_raw_gone             tidelink_phy_align_calibrator_v2.sv
+  [PASS         ] tl036.fcsm6_is_local_override     WlinkGenericFCSM_6.v  :: <host>/WlinkGenericFCSM_6.v
+  [PASS         ] tl036.force_clear_ungated         WlinkGenericFCSM_6.v  :: (socl_l7_wdog_cnt == SOCL_L7_WDOG_THRESHOLD)
+  [PASS         ] tl036.force_clear_threshold       WlinkGenericFCSM_6.v  :: wire socl_l7_wdog_force_clear = (socl_l7_wdog_cnt == SOCL_L7_WDOG_THRE
+  [PASS         ] tl036.state7_exit_on_force_clear  WlinkGenericFCSM_6.v  :: _GEN_115 = (auto_tx_out_advance | socl_l7_wdog_force_clear) ? 3'h4 : s
+  [PASS         ] tl036.progress_clears_counter     WlinkGenericFCSM_6.v  :: wire socl_l7_wdog_progress = auto_tx_out_advance;
+  [PASS         ] tl036.counter_not_held_by_crc     WlinkGenericFCSM_6.v
+  [PASS         ] tl036.legacy_define_absent        (all compiled files)
+  [PASS         ] tl059.crc_off_term                WlinkGenericFCSM_6.v  :: wire socl_l9_crc_off = out_prepend_swi_disable_crc;
+  [PASS         ] tl059.l9_gated                    WlinkGenericFCSM_6.v  :: & socl_l9_crc_off
+  [PASS         ] tl059.always_define_absent        (all compiled files)
+  [PASS         ] errinj.lib_uses_023C              xfer_corners_lib.py  :: REG_ERR_INJECT    = _TLAPB + 0x023C
+  [PASS         ] errinj.lib_alias_gone             xfer_corners_lib.py
+  [PASS         ] errinj.poke_uses_023C             eth_tlapb_poke.py  :: wr(0x023C,
+  [PASS         ] errinj.poke_alias_gone            eth_tlapb_poke.py
+  [PASS         ] asic.sram_ema_010                 tidelink_sram.sv  :: .EMA   (3'b010)
+  [PASS         ] asic.sram_ema_000_gone            tidelink_sram.sv
+  [PASS         ] asic.sram_by_aw                   tidelink_sram.sv  :: AW == 13
+  [PASS         ] asic.file_not_in_fpga_flist       tidelink_sram.sv  :: not compiled by tidelink_fpga_v2.flist
+  [PASS         ] asic.fpga_sram_in_flist           tidelink_sram.sv  :: <host>/tidelink_sram.sv
+  [PASS         ] asic.fpga_sram_in_flist           tidelink_sram.sv  :: packaged tidelink_sram.sv is the BRAM wrapper
+check_markers: a7 8/8  asic 6/6  errinj 4/4  h30 4/4  h31 2/2  tl036 7/7  tl059 3/3
+MARKERS_RESULT=PASS (34 of 34 markers pass)

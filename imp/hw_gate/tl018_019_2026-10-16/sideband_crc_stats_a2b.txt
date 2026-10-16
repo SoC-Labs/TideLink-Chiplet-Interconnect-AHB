@@ -1,0 +1,48 @@
+rev2hw crc start 2026-10-16 20:27:03
+CRC-STATS dir=a2b tx=die_a (inject at 0x8403023c) rx=die_b (counter 0x8c031720) DataID 0xa1, 30 shots, collect window 3 s
+CRC-STATS note: only the sideband (ahb_tx) path is host-drivable here; the AXI-data-node control is replaced by one fresh clean sideband packet after every shot (and 8 before the first).
+CTL pre: 8/8 clean packets exact, CRC counter quiet at 0
+SHOT  1 byte= 4 bit=0 arm=0x010004a1 crc 0->1 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT  2 byte= 5 bit=1 arm=0x010105a1 crc 1->2 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT  3 byte= 6 bit=2 arm=0x010206a1 crc 2->3 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT  4 byte= 7 bit=3 arm=0x010307a1 crc 3->4 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT  5 byte= 8 bit=4 arm=0x010408a1 crc 4->5 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT  6 byte= 9 bit=5 arm=0x010509a1 crc 5->6 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT  7 byte=10 bit=6 arm=0x01060aa1 crc 6->7 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT  8 byte=11 bit=7 arm=0x01070ba1 crc 7->8 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT  9 byte= 4 bit=1 arm=0x010104a1 crc 8->9 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 10 byte= 5 bit=2 arm=0x010205a1 crc 9->10 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 11 byte= 6 bit=3 arm=0x010306a1 crc 10->11 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 12 byte= 7 bit=4 arm=0x010407a1 crc 11->12 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 13 byte= 8 bit=5 arm=0x010508a1 crc 12->13 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 14 byte= 9 bit=6 arm=0x010609a1 crc 13->14 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 15 byte=10 bit=7 arm=0x01070aa1 crc 14->15 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 16 byte=11 bit=0 arm=0x01000ba1 crc 15->16 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 17 byte= 4 bit=2 arm=0x010204a1 crc 16->17 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 18 byte= 5 bit=3 arm=0x010305a1 crc 17->18 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 19 byte= 6 bit=4 arm=0x010406a1 crc 18->19 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 20 byte= 7 bit=5 arm=0x010507a1 crc 19->20 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 21 byte= 8 bit=6 arm=0x010608a1 crc 20->21 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 22 byte= 9 bit=7 arm=0x010709a1 crc 21->22 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 23 byte=10 bit=0 arm=0x01000aa1 crc 22->23 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 24 byte=11 bit=1 arm=0x01010ba1 crc 23->24 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 25 byte= 4 bit=3 arm=0x010304a1 crc 24->25 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 26 byte= 5 bit=4 arm=0x010405a1 crc 25->26 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 27 byte= 6 bit=5 arm=0x010506a1 crc 26->27 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 28 byte= 7 bit=6 arm=0x010607a1 crc 27->28 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 29 byte= 8 bit=7 arm=0x010708a1 crc 28->29 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+SHOT 30 byte= 9 bit=0 arm=0x010009a1 crc 29->30 (d=1) pkts=1 -> EXACT           control=alive link=True disarmed=True
+
+CRC-STATS SUMMARY dir=a2b
+  shots run          30 of 30 wanted
+  detected (crc +1)  30     inert (crc +0, data exact) 0     undetected-bad (crc +0, lost/wrong) 0
+  outcomes | detected:  EXACT(replayed) 30   LOST 0   STRAY/WRONG 0   DUP 0
+  lost packet arrived late (after its 3 s window, seen in the control window): 0
+  liveness controls  30/30 fresh clean packets delivered after a shot; pre-controls 8/8; credit resets 0
+  P(lost | detected)  = 0/30 = 0.0% (Wilson95 0.0%..11.4%)
+  P(exact | detected) = 30/30 = 100.0% (Wilson95 88.6%..100.0%)
+  P(stray | detected) = 0/30 = 0.0% (Wilson95 0.0%..11.4%)
+  by payload byte (detected: lost/total):  b4:0/4  b5:0/4  b6:0/4  b7:0/4  b8:0/4  b9:0/4  b10:0/3  b11:0/3
+  P(replayed exactly once | detected) = 30/30 = 100.0% (Wilson95 88.6%..100.0%)   Wilson95 lower bound 88.6%
+STATS_RESULT=FIXED_PASS exact=30 detected=30 lost=0 stray=0 dup=0 undetected_bad=0 exact_wilson95_lo=0.886
+VERDICT: PASS EXPECT_FIXED a2b: 30/30 detected CRC errors replayed exactly once (0 lost, 0 stray, 0 dup, 0 undetected-bad); Wilson95 lower bound 88.6%

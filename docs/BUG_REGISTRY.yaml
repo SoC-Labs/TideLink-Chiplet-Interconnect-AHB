@@ -3711,8 +3711,8 @@ bugs:
         nanosoc-ethernet-chiplet docs/tapeout/67-rc4-issue-register.md. The rev-2
         line carries the corrected tie for any re-spin; it does not change rc4.
     verification:
-      sim_test: null                # model-level check (tb_ema) lives in the evidence dir, not a gate suite
-      in_sim_gate: false            # only asic_v1_elab / asic_v2_elab / dft_wrapper_elab / force_recal_w1p compile this file (elaboration + one pair build)
+      sim_test: "sim_gate_ema_tie_check (scripts/ci/ema_tie_check.py; must-fail control scripts/ci/tests/test_ema_tie_check.py)"
+      in_sim_gate: true             # 2026-10-16: structural gate, no simulator; FAILS if any rf_* macro in the FPGA-v2/ASIC-v2 file sets ties EMA != 3'b010 or EMAW != 2'b00. 6 mutants (incl. the original EMA=000) go red. Model-level tb_ema (evidence dir) remains the margin-warning check.
       hw_tested: false
       hw_validated: false
       evidence: null

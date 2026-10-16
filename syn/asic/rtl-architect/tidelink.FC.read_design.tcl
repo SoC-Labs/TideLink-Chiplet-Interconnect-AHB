@@ -130,22 +130,38 @@ if {$mem_db_ss ne "" || $mem_db_ff ne ""} {
     puts "INFO: Updated link_library with memory macro .db files"
 }
 
-# Single functional mode with two process corners
+# Single functional mode with two process corners.
+#
+# The operating-condition labels and the Liberty LIBRARY NAMES below encode the
+# PVT characterisation corner and the vendor library drop, so they come from
+# the environment (see <repo>/site.env and site.env.example) rather than being
+# committed. A wrong -library name is reported by the tool as a missing
+# library, not as a misconfiguration, so there is no default to guess with.
+proc _rtla_env {var what} {
+    if {[info exists ::env($var)] && $::env($var) ne ""} { return $::env($var) }
+    error "\[MCMM\] $var is not set — it is $what. Set it in <repo>/site.env\n\
+           \      (see site.env.example) or export it. There is no default."
+}
+set _oc_ss  [_rtla_env RTLA_OC_SS       "the slow-corner operating-condition label"]
+set _oc_ff  [_rtla_env RTLA_OC_FF       "the fast-corner operating-condition label"]
+set _lib_ss [_rtla_env RTLA_LIB_NAME_SS "the slow-corner Liberty library name"]
+set _lib_ff [_rtla_env RTLA_LIB_NAME_FF "the fast-corner Liberty library name"]
+
 create_mode func
 create_corner slow
 create_scenario -mode func -corner slow -name scen_slow
 set_operating_conditions \
     -analysis_type on_chip_variation \
-    -max ss_typical_max_1p08v_125c -min ss_typical_max_1p08v_125c \
-    -library sc12_cln65lp_base_rvt_ss_typical_max_1p08v_125c
+    -max $_oc_ss -min $_oc_ss \
+    -library $_lib_ss
 
 # Fast corner (best-case hold timing)
 create_corner fast
 create_scenario -mode func -corner fast -name scen_fast
 set_operating_conditions \
     -analysis_type on_chip_variation \
-    -max ff_typical_min_1p32v_m40c -min ff_typical_min_1p32v_m40c \
-    -library sc12_cln65lp_base_rvt_ff_typical_min_1p32v_m40c
+    -max $_oc_ff -min $_oc_ff \
+    -library $_lib_ff
 
 #-----------------------------------------------------------------------------
 # Parasitic extraction models (TLU+)

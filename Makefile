@@ -1445,3 +1445,116 @@ clean_syn:
 	$(MAKE) -C syn/asic/rtl-architect clean
 	$(MAKE) -C syn/asic/design-compiler clean
 	@echo "Synthesis clean completed"
+
+# =============================================================================
+# Publication guard — no vendor/foundry collateral  (added 2026-08-14)
+# =============================================================================
+#
+# THIS REPOSITORY IS PUBLIC:
+#   github.com/SoC-Labs/TideLink-Chiplet-Interconnect-AHB
+#
+# The scanner is the nanoSoC-ASIC-Toolkit's ci/check-vendor-collateral.sh. It is
+# NOT copied here: it operates on `git ls-files` in whatever repository it is
+# run from, so it works cross-repo by design, and one copy that gets maintained
+# beats three that drift.
+#
+# It scans HEAD *and* the untracked-but-not-ignored files that the next
+# `git add -A` would publish — the second corpus being the one that matters,
+# since both of this estate's actual disclosures were files nobody had ignored.
+# No EDA tool, no licence, no PDK; about a minute on this tree.
+#
+# WHERE THE TOOLKIT IS. The default below is the layout inside the
+# nanosoc-ethernet-chiplet superproject, where this repository is a submodule
+# and the toolkit is its sibling under ASIC/. A STANDALONE clone of TideLink has
+# no toolkit beside it, and the targets say so and exit 2 rather than reporting
+# a pass they did not measure:
+#
+#   make vendor-check ASIC_TOOLKIT_DIR=/path/to/nanoSoC-ASIC-Toolkit
+#
+# EVERY TARGET REPORTS THE SCANNER'S OWN EXIT CODE — no `|| true` anywhere. A
+# guard that cannot fail the build is not a guard.
+#
+# MEASURED 2026-08-14, so nobody reads a red as a broken wiring: this tree does
+# NOT pass. Both checkouts report absolute site paths and revision-coded vendor
+# release names at HEAD, concentrated in cocotb/ flists and Makefiles. That is
+# pre-existing debt the guard made visible, not damage the guard did.
+# =============================================================================
+.PHONY: vendor-check vendor-check-staged vendor-check-rev vendor-check-history \
+        vendor-scan-guard install-git-hooks
+
+ASIC_TOOLKIT_DIR ?= $(CURDIR)/../ASIC/asic-toolkit
+VENDOR_SCAN      := $(ASIC_TOOLKIT_DIR)/ci/check-vendor-collateral.sh
+
+## Fail with a sentence rather than "No such file or directory", because the
+## standalone-clone case is normal and the fix is one variable.
+vendor-scan-guard:
+	@test -x "$(VENDOR_SCAN)" || { \
+	    echo "vendor-check: scanner not found."; \
+	    echo ""; \
+	    echo "  Looked for: $(VENDOR_SCAN)"; \
+	    echo ""; \
+	    echo "  It lives in the nanoSoC-ASIC-Toolkit, a SEPARATE repository"; \
+	    echo "  (git@github.com:SoC-Labs/nanoSoC-ASIC-Toolkit.git). Inside the"; \
+	    echo "  nanosoc-ethernet-chiplet superproject it is at ASIC/asic-toolkit"; \
+	    echo "  and the default above finds it. From a standalone TideLink clone,"; \
+	    echo "  point at your checkout:"; \
+	    echo ""; \
+	    echo "      make $(MAKECMDGOALS) ASIC_TOOLKIT_DIR=/path/to/nanoSoC-ASIC-Toolkit"; \
+	    echo ""; \
+	    exit 2; }
+
+## What publishing this working tree today would expose. The default mode.
+vendor-check: vendor-scan-guard
+	@$(VENDOR_SCAN)
+
+## The INDEX rather than the working tree — what `git commit` is about to write.
+## This is the mode the pre-commit hook runs.
+vendor-check-staged: vendor-scan-guard
+	@$(VENDOR_SCAN) --staged
+
+## The tree at an arbitrary ref: what pushing THAT would publish, which is a
+## different question from what your working tree holds. The mode the pre-push
+## hook runs, once per ref.  e.g.  make vendor-check-rev REV=origin/main
+REV ?= HEAD
+vendor-check-rev: vendor-scan-guard
+	@$(VENDOR_SCAN) --rev $(REV)
+
+## Every blob reachable from every ref. Slow; the right thing before making a
+## repository public or after rewriting history.
+vendor-check-history: vendor-scan-guard
+	@$(VENDOR_SCAN) --history
+
+# ── Git hooks ────────────────────────────────────────────────────────────────
+# The hooks are the toolkit's, installed by the toolkit's own installer. This
+# target LOCATES it and runs it; it does not write a hook itself, because two
+# implementations of a hook drift and the toolkit's is the maintained one.
+#
+# NOT run automatically and NOT run by CI: installing into .git changes a
+# developer's own checkout, so it is a thing a person does once, knowingly.
+HOOK_INSTALL_ARGS ?=
+install-git-hooks:
+	@set -e; \
+	found=""; \
+	for c in "$(ASIC_TOOLKIT_DIR)/hooks/install.sh" \
+	         "$(ASIC_TOOLKIT_DIR)/hooks/install-hooks.sh" \
+	         "$(ASIC_TOOLKIT_DIR)/scripts/install-git-hooks" \
+	         "$(ASIC_TOOLKIT_DIR)/scripts/install-hooks.sh"; do \
+	    [ -x "$$c" ] && { found="$$c"; break; }; \
+	done; \
+	if [ -z "$$found" ]; then \
+	    echo "install-git-hooks: no toolkit hook installer found."; \
+	    echo ""; \
+	    echo "  Looked under ASIC_TOOLKIT_DIR = $(ASIC_TOOLKIT_DIR)"; \
+	    echo "    hooks/install.sh  hooks/install-hooks.sh"; \
+	    echo "    scripts/install-git-hooks  scripts/install-hooks.sh"; \
+	    echo ""; \
+	    if [ ! -d "$(ASIC_TOOLKIT_DIR)" ]; then \
+	        echo "  That directory does not exist — pass ASIC_TOOLKIT_DIR=<toolkit checkout>."; \
+	    else \
+	        echo "  The toolkit is present but ships no installer at those paths yet."; \
+	        echo "  Until it does, the gate is usable by hand and in CI:  make vendor-check"; \
+	    fi; \
+	    exit 2; \
+	fi; \
+	echo "install-git-hooks: running $$found"; \
+	"$$found" $(HOOK_INSTALL_ARGS)

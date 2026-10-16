@@ -39,13 +39,17 @@ if {[info exists ::env(MEM_BASE)] && $::env(MEM_BASE) ne ""} {
     set mem_base [file dirname $::env(MEM_PATH)]
 }
 
-# tcbn65lp 9-track stdcell LEF (9lm_T2 stack). STANDARD_CELL_LEF_FILE is
-# the canonical SoC-Labs name; falls back to a build inferred from
-# PHYS_IP_PATH so an unset env doesn't break the script.
+# Standard-cell LEF. STANDARD_CELL_LEF_FILE names it whole: its release
+# directory and its metal-stack suffix are per-site facts, so there is no
+# inferred fallback — a guessed LEF for the wrong metal stack is not diagnosed
+# by the tools, it just builds a library that routes wrong.
 if {[info exists ::env(STANDARD_CELL_LEF_FILE)] && $::env(STANDARD_CELL_LEF_FILE) ne ""} {
     set stdcell_lef $::env(STANDARD_CELL_LEF_FILE)
 } else {
-    set stdcell_lef "${phys_ip_path}/Back_End/lef/tcbn65lpbwp12t_140b/lef/tcbn65lpbwp12t_9lmT2.lef"
+    error "\[lib\] STANDARD_CELL_LEF_FILE is not set — it locates the standard-cell\n\
+           \      LEF for the metal stack this design targets, and must describe the\n\
+           \      same stack as TF_FILE. Set it in <repo>/site.env (see\n\
+           \      site.env.example) or export it. There is no default."
 }
 
 # Memory LEFs — only rf_16k is currently instantiated, but include the

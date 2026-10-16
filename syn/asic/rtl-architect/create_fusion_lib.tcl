@@ -24,7 +24,18 @@ set mem_path     $::env(MEM_PATH)
 set mem_db_ss    $::env(MEM_DB_SS)
 set mem_db_ff    $::env(MEM_DB_FF)
 
-set stdcell_lef  "${phys_ip_path}/sc12_base_rvt/r0p0/lef/sc12_cln65lp_base_rvt.lef"
+# The Arm Artisan std-cell LEF. Its path carries the library variant and the
+# drop revision — per-site facts — so it is named whole in <repo>/site.env as
+# RTLA_LEF_FILE (the Makefile passes it through as LEF_FILE). No default.
+if {[info exists ::env(LEF_FILE)] && $::env(LEF_FILE) ne ""} {
+    set stdcell_lef $::env(LEF_FILE)
+} elseif {[info exists ::env(RTLA_LEF_FILE)] && $::env(RTLA_LEF_FILE) ne ""} {
+    set stdcell_lef $::env(RTLA_LEF_FILE)
+} else {
+    error "\[lib\] RTLA_LEF_FILE is not set — it locates the Arm Artisan standard-cell\n\
+           \      LEF this fusion library is built from. Set it in <repo>/site.env\n\
+           \      (see site.env.example) or export it. There is no default."
+}
 set mem_lef      "${mem_path}/rf_16k.lef"
 set output_lib   "./fusion_lib/sc12_lib"
 

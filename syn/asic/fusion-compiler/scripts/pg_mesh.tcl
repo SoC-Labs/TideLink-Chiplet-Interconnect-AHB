@@ -56,17 +56,27 @@ puts "INFO: \[pg_mesh\] connect_pg_net -automatic"
 connect_pg_net -automatic
 
 # ── Step 3: M1 follow-pin pattern (std-cell rails) ───────────────────────
-# tcbn65lp 9-track std cells carry their own M1 PG rails by construction;
-# this pattern tells compile_pg to use them so it drops via stacks from
-# the M5 mesh down to M1 at every crossing. rail_width 0.18 is the
-# follow-pin nominal that lands via stacks correctly on both
-# tcbn65lp 9-track and Arm sc12 cells (same rough M1 PG rail
-# geometry); a tighter value can be set in pg_mesh.tcl if the foundry
-# rail width differs materially.
-puts "INFO: \[pg_mesh\] creating M1 follow-pin pattern"
+# Standard cells carry their own M1 PG rails by construction; this pattern
+# tells compile_pg to use them so it drops via stacks from the M5 mesh down to
+# M1 at every crossing.
+#
+# rail_width is a NOMINAL chosen here, not a value copied from any library:
+# it only has to be close enough that the via stacks land, and it was picked
+# to do that across the cell families this design has been built against.
+# It is not a foundry minimum and must not be read as one.
+#
+# Override with FC_PG_RAIL_WIDTH=<μm> if your cells' M1 PG rail geometry
+# differs enough that via stacks miss. pg_rails.tcl rebuilds this same pattern
+# against the routed block and reads the same variable, so set it once in the
+# environment rather than editing either file.
+set pg_rail_width 0.18
+if {[info exists ::env(FC_PG_RAIL_WIDTH)] && $::env(FC_PG_RAIL_WIDTH) ne ""} {
+    set pg_rail_width $::env(FC_PG_RAIL_WIDTH)
+}
+puts "INFO: \[pg_mesh\] creating M1 follow-pin pattern (rail_width=${pg_rail_width} μm)"
 create_pg_std_cell_conn_pattern std_cell_rail \
     -layers {M1} \
-    -rail_width 0.18
+    -rail_width $pg_rail_width
 
 # ── Step 4: M5 horizontal + M6 vertical mesh ─────────────────────────────
 # 2 μm wide straps, 25 μm pitch, interleaved VDD/VSS pairs.

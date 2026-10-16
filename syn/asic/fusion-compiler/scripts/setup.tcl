@@ -49,8 +49,9 @@ if {[sizeof_collection $_icg_cells] == 0} {
     puts "ERROR: \[setup\] no CKLNQD*/CKLHQD* (or BWP12T variants) lib_cells visible"
     puts "ERROR: \[setup\]   — Wav clock-gate substitution path is broken. Likely causes:"
     puts "ERROR: \[setup\]     * wrong TARGET_LIB / DB_SS / DB_FF in common.mk"
-    puts "ERROR: \[setup\]     * tcbn65lpbwp12t_200a NLDM .db files not at the expected path"
-    puts "ERROR: \[setup\]     * fusion_lib was built without tcbn65lpbwp12t Liberty"
+    puts "ERROR: \[setup\]     * NLDM .db files not where DB_SS/DB_TT/DB_FF point"
+    puts "ERROR: \[setup\]       (check <repo>/site.env; `make site-check` lists unset ones)"
+    puts "ERROR: \[setup\]     * fusion_lib was built without standard-cell Liberty"
     error "ICG library check failed"
 }
 puts "INFO: \[setup\] [sizeof_collection $_icg_cells] CKLNQD*/CKLHQD*(*BWP12T*) ICG lib_cells visible"

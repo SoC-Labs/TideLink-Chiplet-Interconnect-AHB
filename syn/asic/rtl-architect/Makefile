@@ -1,3 +1,6 @@
+# The RM tarball and the Artisan LEF are site facts; declare them as required
+# before the include so `make site-check` names them too.
+SITE_VARS_REQUIRED += RTLA_RM_PATH RTLA_LEF_FILE
 include $(dir $(lastword $(MAKEFILE_LIST)))/../common.mk
 
 # ── Paths ──────────────────────────────────────────────────────────────────
@@ -7,12 +10,16 @@ LOGFILE      = $(MODULE)_ra.log
 RPT_DIR      = $(MODULE)_ra_reports
 
 # ── EDA tool binaries ───────────────────────────────────────────────────
-RTLA_BIN_DIR = /eda/synopsys/2022-23/RHELx86/RTL-ARCH_2022.12/bin
-ICC2_BIN_DIR = /eda/synopsys/2022-23/RHELx86/ICC2_2022.12/bin
-export PATH := $(RTLA_BIN_DIR):$(ICC2_BIN_DIR):$(PATH)
+# Set in <repo>/site.env, or leave unset with the tools already on PATH from a
+# site module file. An install path with its exact version is a per-machine
+# fact, so it is not committed here.
+export PATH := $(if $(RTLA_BIN_DIR),$(RTLA_BIN_DIR):)$(if $(ICC2_BIN_DIR),$(ICC2_BIN_DIR):)$(PATH)
 
 # ── LEF file for fusion library creation ─────────────────────────────────
-LEF_FILE     = $(PHYS_IP_PATH)/sc12_base_rvt/r0p0/lef/sc12_cln65lp_base_rvt.lef
+# The Arm Artisan std-cell LEF. Its path carries the library variant and the
+# drop revision, so it is named whole in site.env (RTLA_LEF_FILE) rather than
+# assembled from PHYS_IP_PATH here.
+LEF_FILE     = $(RTLA_LEF_FILE)
 export LEF_FILE
 
 .PHONY: ra gui clean setup fusion_lib help

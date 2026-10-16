@@ -61,20 +61,31 @@ variables:
   GIT_STRATEGY: none
   # Workspace directory for the pipeline
   WORK_DIR: "${CI_BUILDS_DIR}/${CI_PROJECT_NAME}/${CI_PIPELINE_ID}"
-  # Synopsys EDA tool paths
-  VCS_HOME: /eda/synopsys/2022-23/RHELx86/VCS_2022.06-SP2
-  VERDI_HOME: /eda/synopsys/2022-23/RHELx86/VERDI_2022.06-SP2
-  RTLA_HOME: /eda/synopsys/2022-23/RHELx86/RTL-ARCH_2022.12
-  VIP_HOME: /eda/synopsys/2022-23/RHELx86/VC-VIP-SOC_2022.12
-  # Cadence Xcelium (provides HAL linter)
-  XCELIUM_HOME: /eda/cadence/xcelium
-  # Synopsys SpyGlass (CDC lint)
-  SPYGLASS_HOME: /eda/synopsys/2022-23/RHELx86/SPYGLASS_2022.06-SP2/SPYGLASS_HOME
-  # ARM CMSDK -- configurable via CI variable
-  CMSDK_DIR: "/research/AAA/ip_library/Corstone-101/BP210-r1p1-00rel0/BP210-BU-00000-r1p1-00rel0"
-  # cmsdk_fpga_sram.v is missing from the Corstone-101 BP210 install above; pull
-  # it from the standalone BP210 install. Flists reference ${CMSDK_FPGA_SRAM_V}.
-  CMSDK_FPGA_SRAM_V: "/research/AAA/ip_library/BP210/BP210-BU-00000-r1p1-00rel0/logical/models/memories/cmsdk_fpga_sram.v"
+  # ── Host facts: tool installs and vendor IP roots ────────────────────────
+  # NOT SET HERE. A tool install path with its exact version, and an IP
+  # directory whose name carries a release code, are an inventory of what one
+  # site is licensed for -- and they resolve on that site's runners only.
+  # Both belong to the RUNNER, not to this file, which is published.
+  #
+  # Provide them either way round; the jobs need nothing else:
+  #
+  #   a) put them in the runner's login profile / site module file, or
+  #   b) set them as GitLab CI/CD variables (Settings > CI/CD > Variables),
+  #      which is also how a second site runs this pipeline unchanged.
+  #
+  # Expected names, and what each locates -- <repo>/site.env.example carries
+  # the same list with a sentence on each:
+  #
+  #   VCS_HOME VERDI_HOME VIP_HOME   simulator, waveform viewer, VIP
+  #   RTLA_HOME SPYGLASS_HOME        RTL Architect, SpyGlass (CDC lint)
+  #   DC_HOME                        Design Compiler (synthesis stage)
+  #   XCELIUM_HOME                   Cadence Xcelium (provides the HAL linter)
+  #   CMSDK_DIR                      Arm Cortex-M System Design Kit package
+  #   CMSDK_FPGA_SRAM_V              cmsdk_fpga_sram.v, IF absent from CMSDK_DIR
+  #                                  (flists reference ${CMSDK_FPGA_SRAM_V})
+  #
+  # Unset, set_env.sh names the missing variable and the ASIC Makefiles refuse
+  # to start -- never a silent default onto some other site's mount.
   # PTP Hardware Clock (separate component, cloned for PTP tests)
   PHC_REPO: "https://git.soton.ac.uk/soclabs/chiplets/ptp-hardware-clock-ahb.git"
   PHC_BRANCH: "main"
@@ -210,6 +221,42 @@ strip-generalbus-check:
   needs: [clone, preflight]
   script:
     - cd "$WORK_DIR" && bash ci/check_strip_generalbus.sh
+
+# Publication guard. THIS REPOSITORY IS PUBLIC
+# (github.com/SoC-Labs/TideLink-Chiplet-Interconnect-AHB), and the licence on
+# the foundry collateral this project builds against does not permit
+# redistributing it.
+#
+# Scans HEAD *and* the untracked-but-not-ignored files that the next
+# `git add -A` would publish. That second corpus is the one that matters: both
+# of this estate's actual disclosures were files sitting untracked in a
+# directory nobody had ignored, invisible to a guard that read only the index.
+#
+# Costs no EDA licence and no PDK — bash and git, about a minute — so no `tags:`,
+# same as the other Tier-0 lint jobs above.
+#
+# ASIC_TOOLKIT_DIR IS A HOST FACT, exactly like VCS_HOME and RTLA_HOME, and it is
+# set the same two ways (runner profile, or Settings > CI/CD > Variables). It
+# points at a nanoSoC-ASIC-Toolkit checkout, which holds the scanner. It is NOT
+# defaulted in this file: a path that resolves on one site's runners belongs to
+# the runner, and this file is published.
+#
+# If it is unset or wrong the job FAILS with the path it looked for — it does not
+# skip. A guard that quietly passes because it could not find itself is the
+# precise defect the scanner was written to replace.
+#
+# MEASURED 2026-08-14 — a red here is a real result, not broken wiring. This tree
+# does not currently pass: absolute site paths and revision-coded vendor release
+# names at HEAD, concentrated in cocotb/ flists and Makefiles. That debt predates
+# the guard. Left blocking deliberately; if it cannot be triaged now, set
+# `allow_failure: true` HERE with a date and an owner in this comment, so the
+# waiver is a decision somebody made rather than a job reporting a hollow green.
+vendor-collateral:
+  stage: lint
+  needs: [clone, preflight]
+  script:
+    - cd "$WORK_DIR" && make vendor-check
+  allow_failure: false
 
 # Pre-build gate, Tier-0 (fast, pure-Python — no EDA license). Ratcheted
 # xdc_lint + sv_anti_pattern: a NEW dropped-XDC / latch / incomplete-case fails
@@ -1015,7 +1062,9 @@ fpga-ptp-pair:
 
 .dc_setup: &dc_setup
   before_script:
-    - export PATH="$VCS_HOME/bin:$RTLA_HOME/bin:/eda/synopsys/syn/bin:$PATH"
+    # DC_HOME is a runner fact like VCS_HOME/RTLA_HOME above — set it on the
+    # runner or as a CI/CD variable, not here. See the variables: block.
+    - export PATH="$VCS_HOME/bin:$RTLA_HOME/bin:${DC_HOME:+$DC_HOME/bin:}$PATH"
     - export TIDELINK_HOME="$WORK_DIR"
     - export WLINK_VERILOG_DIR="$WORK_DIR/deps/axi-chiplet-controller/wav-wlink-hw/output_tidelink"
 

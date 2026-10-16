@@ -20,8 +20,10 @@ export FC_DIR     = $(TIDELINK_HOME)/syn/asic/fusion-compiler
 export FC_OUTPUTS = $(FC_DIR)/outputs
 
 # ── Tool binary ────────────────────────────────────────────────────────────
-PT_BIN_DIR = /eda/synopsys/2022-23/RHELx86/PT_2022.12/bin
-export PATH := $(PT_BIN_DIR):$(PATH)
+# PT_BIN_DIR is set in <repo>/site.env, or left unset with pt_shell already on
+# PATH from a site module file. An install path with its exact version is a
+# per-machine fact, so it is not committed here.
+export PATH := $(if $(PT_BIN_DIR),$(PT_BIN_DIR):)$(PATH)
 
 PT_SHELL = pt_shell
 

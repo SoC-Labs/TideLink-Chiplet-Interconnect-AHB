@@ -1,11 +1,11 @@
 #------------------------------------------------------------------------------
 # TideLink — MBIST Insertion Wrapper (SCAFFOLD)
 #
-# Target memory: rf_16k (Arm/TSMC65 4096 x 32 SP register file)
+# Target memory: rf_16k (4096 x 32 SP register file)
 #   - one instance per chiplet (TideLink RX FIFO)
-#   - CTL model at /research/precompiled_mems/TSMC65/rf_16k/rf_16k.ctl
+#   - CTL model at $MEM_CTL_FILE (see <repo>/site.env)
 #   - Test Muxes: OFF, Retention: ON, EMA/EMAW present
-#   - read-only — do not modify the CTL or .v under /research/AAA/...
+#   - the vendor macro tree is READ-ONLY — never modify the CTL or .v there
 #
 # Two flows supported via MBIST_FLOW env var:
 #   tessent — Mentor Tessent MemoryBIST (preferred, vendor-recommended)
@@ -16,7 +16,7 @@
 #   MBIST_FLOW        tessent | custom            (default: tessent)
 #   MEM_NAME          memory cell name            (default: rf_16k)
 #   MEM_INSTANCE      hier path of macro inst     (default: u_dft_wrapper/u_top/u_fifo/u_sram/u_rf)
-#   MEM_CTL_FILE      CTL test model              (default: /research/precompiled_mems/TSMC65/rf_16k/rf_16k.ctl)
+#   MEM_CTL_FILE      CTL test model              (default: $MEM_PATH/rf_16k.ctl)
 #   ALGO              mats+ | march-c | march-lr  (default: march-c)
 #   RUN_RETENTION     0 | 1                       (default: 1)
 #   RUN_EMA_SWEEP     0 | 1                       (default: 1)
@@ -33,7 +33,15 @@
 if {![info exists env(MBIST_FLOW)]}     { set env(MBIST_FLOW)     "tessent" }
 if {![info exists env(MEM_NAME)]}       { set env(MEM_NAME)       "rf_16k" }
 if {![info exists env(MEM_INSTANCE)]}   { set env(MEM_INSTANCE)   "u_dft_wrapper/u_top/u_fifo/u_sram/u_rf" }
-if {![info exists env(MEM_CTL_FILE)]}   { set env(MEM_CTL_FILE)   "/research/precompiled_mems/TSMC65/rf_16k/rf_16k.ctl" }
+if {![info exists env(MEM_CTL_FILE)] || $env(MEM_CTL_FILE) eq ""} {
+    if {[info exists env(MEM_PATH)] && $env(MEM_PATH) ne ""} {
+        set env(MEM_CTL_FILE) "$env(MEM_PATH)/rf_16k.ctl"
+    } else {
+        error "\[mbist\] neither MEM_CTL_FILE nor MEM_PATH is set — one of them must\n\
+               \      locate the rf_16k CTL test model. Set MEM_PATH in <repo>/site.env\n\
+               \      (see site.env.example) or export MEM_CTL_FILE directly."
+    }
+}
 if {![info exists env(ALGO)]}           { set env(ALGO)           "march-c" }
 if {![info exists env(RUN_RETENTION)]}  { set env(RUN_RETENTION)  "1" }
 if {![info exists env(RUN_EMA_SWEEP)]}  { set env(RUN_EMA_SWEEP)  "1" }

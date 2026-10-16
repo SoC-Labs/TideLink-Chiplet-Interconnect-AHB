@@ -1,5 +1,9 @@
 # Pin MODULE before include so common.mk's `?=` no-ops.
 MODULE ?= tidelink_top_full
+# Signoff decks and the Calibre binary are site facts; declare them as
+# required before the include so `make site-check` names them too.
+SITE_VARS_REQUIRED += CALIBRE_DRC_DECK CALIBRE_LVS_DECK CAL_BIN
+SITE_SOFT_GOALS    += runsets
 include $(dir $(lastword $(MAKEFILE_LIST)))/../common.mk
 
 # Force the ASIC flist (same convention as the FC + Formality + PrimeTime
@@ -19,19 +23,25 @@ export CAL_RUNSETS = $(CAL_DIR)/runsets
 export FC_DIR      = $(TIDELINK_HOME)/syn/asic/fusion-compiler
 export FC_OUTPUTS  = $(FC_DIR)/outputs
 
-# ── Foundry decks (override via env on a per-system basis) ────────────────
-# DRC: TSMC MAIN_DECK CALIBRE_FLOW, nonUTM, 9m metal (matches our 9lm_T2
-# stack in TF_FILE). Comprehensive DFM/LVS/RC + DRC combined deck.
-# Decks now sourced from /tsmc65pdk consistent with the 12-track lib
-# switch; same deck files as the legacy /home/dwn1c21 paths.
-export CALIBRE_DRC_DECK ?= /tsmc65pdk/65/CMOS/util/MAIN_DECK/CALIBRE_FLOW/nonUTM/DFM_LVS_RC_CAL_N65_ALRDL_noU_v16a.9m
-
-# LVS: PDK-bundled calibre.lvs (the simpler stand-alone LVS deck).
-export CALIBRE_LVS_DECK ?= /tsmc65pdk/65/CMOS/LP/pdk/Calibre/lvs/calibre.lvs
+# ── Foundry decks ─────────────────────────────────────────────────────────
+# Set both in <repo>/site.env. A deck FILENAME encodes the node, the RDL
+# option, the UTM variant, the deck version and the metal count — i.e. exactly
+# which signoff release this site holds — so it is configured, never committed.
+#
+# DRC: the combined DFM/LVS/RC + DRC main deck, in the variant matching the
+#      metal stack picked in TF_FILE. A deck for a different metal count will
+#      run to completion and report the wrong thing.
+# LVS: the PDK-bundled stand-alone calibre.lvs.
+export CALIBRE_DRC_DECK
+export CALIBRE_LVS_DECK
+# Device/pin declarations v2lvs prepends to the CDL. Defaults next to the LVS
+# deck, which is where the PDK ships it.
+export CALIBRE_LVS_SOURCE_ADDED ?= $(if $(CALIBRE_LVS_DECK),$(dir $(CALIBRE_LVS_DECK))source.added)
 
 # ── Tool binary ───────────────────────────────────────────────────────────
-CAL_BIN     ?= /eda/mentor/calibre/bin/calibre
-export PATH := $(dir $(CAL_BIN)):$(PATH)
+# CAL_BIN is the calibre executable; v2lvs is taken from the same directory.
+export CAL_BIN
+export PATH := $(if $(CAL_BIN),$(dir $(CAL_BIN)):)$(PATH)
 
 # GDS + netlist roles (FC writes them under outputs/<TOP>.*)
 GDS_GZ      = $(FC_OUTPUTS)/$(TOP).gds.gz
@@ -48,9 +58,13 @@ dirs:
 # canonical SoC-Labs runset format, then invoke calibre. .err DB is parsed
 # into reports/09_calibre_drc.rep.
 drc: | dirs
-	@if [ ! -f "$(CALIBRE_DRC_DECK)" ]; then \
-	    echo "ERROR: DRC deck not found at $(CALIBRE_DRC_DECK)"; \
-	    echo "       set CALIBRE_DRC_DECK=<path> or install the foundry deck"; exit 1; \
+	@if [ -z "$(CALIBRE_DRC_DECK)" ]; then \
+	    echo "ERROR: CALIBRE_DRC_DECK is not set — it locates the foundry DRC"; \
+	    echo "       main deck for this metal stack. Set it in $(SITE_ENV)"; \
+	    echo "       (see site.env.example) or export it. There is no default."; exit 1; \
+	elif [ ! -f "$(CALIBRE_DRC_DECK)" ]; then \
+	    echo "ERROR: CALIBRE_DRC_DECK is set but does not exist:"; \
+	    echo "       $(CALIBRE_DRC_DECK)"; exit 1; \
 	fi
 	@if [ ! -f "$(GDS)" ] && [ ! -f "$(GDS_GZ)" ]; then \
 	    echo "ERROR: no GDS at $(GDS)(.gz) — run 'make -C ../fusion-compiler gdsii' first"; exit 1; \
@@ -71,8 +85,12 @@ drc: | dirs
 # Source = FC-emitted Verilog netlist (.v) — Calibre extracts the source
 # via the v2lvs flow.
 lvs: | dirs
-	@if [ ! -f "$(CALIBRE_LVS_DECK)" ]; then \
-	    echo "ERROR: LVS deck not found at $(CALIBRE_LVS_DECK)"; exit 1; \
+	@if [ -z "$(CALIBRE_LVS_DECK)" ]; then \
+	    echo "ERROR: CALIBRE_LVS_DECK is not set — it locates the PDK's LVS deck."; \
+	    echo "       Set it in $(SITE_ENV) (see site.env.example) or export it."; exit 1; \
+	elif [ ! -f "$(CALIBRE_LVS_DECK)" ]; then \
+	    echo "ERROR: CALIBRE_LVS_DECK is set but does not exist:"; \
+	    echo "       $(CALIBRE_LVS_DECK)"; exit 1; \
 	fi
 	@if [ ! -f "$(NETLIST_PG)" ]; then \
 	    echo "ERROR: $(NETLIST_PG) missing — run 'make -C ../fusion-compiler fc_abstract' first"; exit 1; \

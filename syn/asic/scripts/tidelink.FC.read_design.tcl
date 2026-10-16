@@ -132,21 +132,30 @@ elaborate $top_module
 set_top_module $top_module
 
 #-----------------------------------------------------------------------------
-# MCMM (Multi-Corner Multi-Mode) setup — tcbn65lpbwp12t 200a operating
-# conditions (12-track).
-#   tcbn65lpbwp12twc  worst case  V_LO T_HI  → SS (max-delay) → scen_slow
-#   tcbn65lpbwp12ttc  typical case            → TT             → scen_typ
-#   tcbn65lpbwp12tbc  best  case  V_HI T_LO  → FF (min-delay) → scen_fast
-# Library names match the .db filenames (without extension); env-
-# overridable via FC_LIB_NAME_SS / FC_LIB_NAME_FF if STANDARD_CELL_BASE_PATH
-# is repointed at the legacy 9-track install (tcbn65lpwc/tcbn65lpbc).
-# Operating-condition labels WCCOM/BCCOM are foundry-standard, same for
-# 9-track and 12-track libraries.
+# MCMM (Multi-Corner Multi-Mode) setup.
+#   FC_LIB_NAME_SS  worst case  V_LO T_HI  → SS (max-delay) → scen_slow
+#   FC_LIB_NAME_FF  best  case  V_HI T_LO  → FF (min-delay) → scen_fast
+#
+# These are the Liberty LIBRARY NAMES as they appear inside the .db (normally
+# the .db filename without its extension), not paths. The stems encode the PVT
+# characterisation corner and therefore differ per library family and per
+# release, so they are set in <repo>/site.env (see site.env.example) — deriving
+# them here from DB_SS/DB_FF would be a guess, and a wrong -library name is
+# reported by fc_shell as a missing library rather than as a misconfiguration.
+#
+# Operating-condition labels WCCOM/BCCOM are foundry-standard across families.
 #-----------------------------------------------------------------------------
 echo "FC_RTL_SCRIPT: MCMM"
 
-set _lib_name_ss [expr {[info exists ::env(FC_LIB_NAME_SS)] && $::env(FC_LIB_NAME_SS) ne "" ? $::env(FC_LIB_NAME_SS) : "tcbn65lpbwp12twc"}]
-set _lib_name_ff [expr {[info exists ::env(FC_LIB_NAME_FF)] && $::env(FC_LIB_NAME_FF) ne "" ? $::env(FC_LIB_NAME_FF) : "tcbn65lpbwp12tbc"}]
+proc _fc_lib_name {var corner} {
+    if {[info exists ::env($var)] && $::env($var) ne ""} { return $::env($var) }
+    error "\[MCMM\] $var is not set — it is the $corner-corner Liberty library\n\
+           \      name as it appears inside the .db (usually the .db filename\n\
+           \      without its extension). Set it in <repo>/site.env (see\n\
+           \      site.env.example) or export it. There is no default."
+}
+set _lib_name_ss [_fc_lib_name FC_LIB_NAME_SS slow]
+set _lib_name_ff [_fc_lib_name FC_LIB_NAME_FF fast]
 puts "INFO: \[MCMM\] -library SS=$_lib_name_ss  FF=$_lib_name_ff"
 
 create_mode func
@@ -165,13 +174,20 @@ set_operating_conditions \
     -library $_lib_name_ff
 
 #-----------------------------------------------------------------------------
-# Parasitic extraction (TLU+) — cln65lp 1p05m+alrdl, top2 = 9lm_T2 stack
-# (12-track tcbn65lpbwp12t convention; 9-track tcbn65lp shipped as
-# 1p09m+alrdl). Env-overridable via FC_TLU_STACK if you re-point
-# STANDARD_CELL_BASE_PATH at a library family that uses a different
-# stack name.
+# Parasitic extraction (TLU+).
+# FC_TLU_STACK is the filename stem the TLU+ files in TLUPLUS_PATH are named
+# with. It encodes the metal-stack option, which differs per library family and
+# per release, so it is set in <repo>/site.env (see site.env.example) rather
+# than committed. It must describe the same stack as TF_FILE: a mismatched
+# TLU+ set is read without complaint and extracts the wrong parasitics.
 #-----------------------------------------------------------------------------
-set _stack [expr {[info exists ::env(FC_TLU_STACK)] && $::env(FC_TLU_STACK) ne "" ? $::env(FC_TLU_STACK) : "cln65lp_1p05m+alrdl"}]
+if {![info exists ::env(FC_TLU_STACK)] || $::env(FC_TLU_STACK) eq ""} {
+    error "\[MCMM\] FC_TLU_STACK is not set — it is the filename stem of the TLU+\n\
+           \      files in TLUPLUS_PATH, encoding the metal stack (the flow reads\n\
+           \      <stem>_typical_top2.tluplus and its rcbest/rcworst siblings).\n\
+           \      Set it in <repo>/site.env (see site.env.example). No default."
+}
+set _stack $::env(FC_TLU_STACK)
 puts "INFO: \[MCMM\] TLU+ stack = $_stack"
 read_parasitic_tech -name typical -tlup ${tluplus_path}/${_stack}_typical_top2.tluplus -layermap ${tluplus_map}
 read_parasitic_tech -name rcbest  -tlup ${tluplus_path}/${_stack}_rcbest_top2.tluplus  -layermap ${tluplus_map}

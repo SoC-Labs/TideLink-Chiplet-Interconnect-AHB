@@ -81,10 +81,11 @@ export FC_CORE_OFFSET      ?= 8
 export FC_CLOCK_GATING     ?= on
 
 # ── EDA tool binaries ─────────────────────────────────────────────────────
-FC_BIN_DIR   = /eda/synopsys/2022-23/RHELx86/FS-COMPILER_2022.12/bin
-ICC2_BIN_DIR = /eda/synopsys/2022-23/RHELx86/ICC2_2022.12/bin
-LC_BIN_DIR   = /eda/synopsys/2022-23/RHELx86/LC_2022.12/bin
-export PATH := $(FC_BIN_DIR):$(ICC2_BIN_DIR):$(LC_BIN_DIR):$(PATH)
+# Set in <repo>/site.env, or leave unset and put the tools on PATH from your
+# site's module file — these are only prepended to PATH. An install path with
+# its exact version is a per-machine fact, so it is not committed here.
+# Empty entries are dropped rather than prepending ":" to PATH.
+export PATH := $(if $(FC_BIN_DIR),$(FC_BIN_DIR):)$(if $(ICC2_BIN_DIR),$(ICC2_BIN_DIR):)$(if $(LC_BIN_DIR),$(LC_BIN_DIR):)$(PATH)
 
 # ── Library / fusion-lib (tcbn65lp 9-track) ───────────────────────────────
 LEF_FILE     = $(STANDARD_CELL_LEF_FILE)

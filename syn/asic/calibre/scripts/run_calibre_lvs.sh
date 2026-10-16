@@ -33,15 +33,32 @@ svdb_dir="$work/svdb"
 log="$logs/calibre_lvs.log"
 spice_netlist="$work/${top}.cdl"
 
+# Tool + PDK locations are per-machine facts and come from site.env via the
+# Makefile (CAL_BIN, CALIBRE_LVS_SOURCE_ADDED). No defaults: see site.env.example.
+cal_bin="${CAL_BIN:-}"
+if [ -z "$cal_bin" ]; then
+    echo "ERROR: CAL_BIN is not set — it locates the calibre executable."
+    echo "       Set it in <repo>/site.env (see site.env.example)."
+    exit 1
+fi
+cal_dir_bin="$(dirname "$cal_bin")"
+source_added="${CALIBRE_LVS_SOURCE_ADDED:-}"
+if [ -z "$source_added" ]; then
+    echo "ERROR: CALIBRE_LVS_SOURCE_ADDED is not set — it locates the PDK's"
+    echo "       v2lvs device/pin declaration file (source.added), normally"
+    echo "       alongside the LVS deck. Set it in <repo>/site.env."
+    exit 1
+fi
+
 # SVRF does not support SOURCE SYSTEM VERILOG — the deck's LVS engine
 # expects a SPICE/CDL source. Pre-convert the gate-level Verilog netlist
 # with Calibre's v2lvs utility (ships with the install). Standard
-# tcbn65lp v2lvs invocation: -v <netlist.v> -o <out.cdl> -s <suppress_list>.
+# v2lvs invocation: -v <netlist.v> -o <out.cdl> -lsp <source.added>.
 echo "INFO: [calibre_lvs] running v2lvs $netlist -> $spice_netlist"
-/eda/mentor/calibre/bin/v2lvs \
+"$cal_dir_bin/v2lvs" \
     -v "$netlist" \
     -o "$spice_netlist" \
-    -lsp /tsmc65pdk/65/CMOS/LP/pdk/Calibre/lvs/source.added \
+    -lsp "$source_added" \
     2>&1 | tail -20 || true
 if [ ! -s "$spice_netlist" ]; then
     echo "ERROR: v2lvs produced empty/missing $spice_netlist"
@@ -86,7 +103,7 @@ echo "INFO: [calibre_lvs] top        = $top"
 
 cd "$work"
 set +e
-/eda/mentor/calibre/bin/calibre -lvs -hier -64 "$local_deck" 2>&1 | tee "$log"
+"$cal_bin" -lvs -hier -64 "$local_deck" 2>&1 | tee "$log"
 rc=${PIPESTATUS[0]}
 set -e
 

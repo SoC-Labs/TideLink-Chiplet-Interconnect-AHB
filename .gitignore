@@ -328,3 +328,4 @@ cocotb/tidelink_a2l_replay_cdc/dut_src*.f
 # stale file from an older checkout out of `git status`.
 imp/gen/
 scripts/hw/hw_rig.env
+verif/formal/*.resolved

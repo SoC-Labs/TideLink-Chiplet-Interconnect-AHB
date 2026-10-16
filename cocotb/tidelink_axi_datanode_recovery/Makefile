@@ -80,6 +80,16 @@ export BYPASS_AUTONEG = 1
 # 2^16 default. Passed only by the `persist` target (separate sim_build).
 COMPILE_ARGS += $(EXTRA_DEFINES)
 
+# Verification-closure P1: bind the CRC-replay contract SVA (verif/sva/) into every
+# WlinkGenericFCSM* node. Off by default (bit-identical builds). `TL_FC_SVA=1 make ...`
+# adds +define+TL_FC_SVA and the two SVA sources; failures print as `TL_FC_SVA FAIL`.
+# NOTE: SIM_BUILD dirs are not keyed on this flag -- rm -rf sim_build_* when toggling
+# (`make fc_sva` at the top level does that for you).
+ifeq ($(TL_FC_SVA),1)
+VERILOG_SOURCES += $(TIDELINK_HOME)/verif/sva/fc_crc_contract_sva.sv $(TIDELINK_HOME)/verif/sva/fc_crc_contract_bind.sv
+COMPILE_ARGS += +define+TL_FC_SVA +define+TL_FC_SVA_CRC_MODE=$(or $(TL_FC_SVA_CRC_MODE),0)
+endif
+
 # Silicon clock ratio (ref_clk period ns). 40.0 = the ~40 ns silicon ratio.
 REF_PERIOD_NS ?= 40.0
 export TIDELINK_SIM_REF_PERIOD_NS = $(REF_PERIOD_NS)

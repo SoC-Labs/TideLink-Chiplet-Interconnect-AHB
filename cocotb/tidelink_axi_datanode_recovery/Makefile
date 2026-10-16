@@ -84,6 +84,23 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 REF_PERIOD_NS ?= 40.0
 export TIDELINK_SIM_REF_PERIOD_NS = $(REF_PERIOD_NS)
 
+# Whole-word epoch-skew profile (same definitions as cocotb/tidelink_top_pair_v2). Default zero
+# leaves every existing target bit-identical.  silicon = v37 fingerprint (3..7 words on the master's
+# RX, S->M) WITH the epoch anchor engaged (EPOCH_ANCHOR_EN=1) -- the CRC matrix's silicon profile.
+EPOCH_PROFILE ?= zero
+ifeq ($(EPOCH_PROFILE),zero)
+else ifeq ($(EPOCH_PROFILE),silicon)
+COMPILE_ARGS += \
+	+define+TB_TOP_EPOCH_S2M_L0=3 +define+TB_TOP_EPOCH_S2M_L1=7 \
+	+define+TB_TOP_EPOCH_S2M_L2=5 +define+TB_TOP_EPOCH_S2M_L3=4 \
+	+define+TB_TOP_EPOCH_S2M_L4=6 +define+TB_TOP_EPOCH_S2M_L5=3 \
+	+define+TB_TOP_EPOCH_S2M_L6=7 +define+TB_TOP_EPOCH_S2M_L7=5 \
+	+define+TB_TOP_EPOCH_ANCHOR_EN
+else
+$(error EPOCH_PROFILE must be zero|silicon)
+endif
+export CM_PROFILE = $(EPOCH_PROFILE)
+
 DUMP ?= 0
 ifeq ($(DUMP),1)
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
@@ -284,7 +301,7 @@ tl044_hol_prefix_mustfail:
 clean_builds:
 	rm -rf sim_build_axirec sim_build_axirec_* sim_build_bidfix sim_build_gaps* \
 	       sim_build_writehold* sim_build_tl042v2* sim_build_tl037* sim_build_tl044* \
-	       sim_build_xdie_excl* sim_build_sbcrc* sbcrc_neg_*.log tidelink_fpga_v2_fcsm_local_eccbypass.flist \
+	       sim_build_xdie_excl* sim_build_sbcrc* sim_build_cm_* results_cm_*.xml tidelink_fpga_v2_fcsm_local_w*.flist crc_matrix_out sbcrc_neg_*.log tidelink_fpga_v2_fcsm_local_eccbypass.flist \
 	       sim_build_wrhold_drain_guard* $(LOCAL_FLIST) \
 	       tl044_mutant_green.log tl044_hol_prefix.log
 
@@ -578,3 +595,19 @@ sbcrc_hdr_noecc:
 	        TESTCASE=test_sideband_hit_header_field
 # ... and its must-fail arm: pre-fix RTL (L9b forgives the silent DataID drop -> packet lost).
 $(eval $(call SBCRC_MUSTFAIL,sbcrc_neg_l9_hdr,test_sideband_hit_header_field,SB_HDR_ECC=off,ASIC_MIRROR=3 EXTRA_DEFINES=+define+SOCL_L9_ALWAYS))
+
+# =============================================================================
+# CRC-injection MATRIX (crc_matrix_core.py / test_crc_matrix.py / crc_matrix_cases.py).
+# One sim per case, controls first, python runner owns the sim_build_cm_<build>_w<k> dirs.
+#   make crc_matrix_quick     controls + 5 cases + sideband mutant arm     (sim_gate quick/full tier)
+#   make crc_matrix_gate      controls + 24 cases + all mutant arms        (separate gate target)
+#   make crc_matrix_nightly   controls + ~220 cases   (CM_JOBS=4 for parallel workers)
+# Env: CM_JOBS (workers; defaults quick 2 / gate 3 / nightly 4). Results: crc_matrix_out/<tier>/.
+# =============================================================================
+# Workers per tier (each owns its own sim_build_cm_<build>_w<k> compile): override with CM_JOBS=N.
+CM_JOBS_quick ?= 2
+CM_JOBS_gate ?= 3
+CM_JOBS_nightly ?= 4
+.PHONY: crc_matrix_quick crc_matrix_gate crc_matrix_nightly
+crc_matrix_quick crc_matrix_gate crc_matrix_nightly:
+	python3 $(CURDIR)/run_crc_matrix.py $(subst crc_matrix_,,$@) --jobs $(or $(CM_JOBS),$(CM_JOBS_$(subst crc_matrix_,,$@)))

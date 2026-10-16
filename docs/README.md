@@ -4,6 +4,9 @@ The documentation set for the **TideLink** chiplet-interconnect subsystem
 (Wlink link layer + XHB500 + FIFO + a dedicated flow-control node + the GPIO
 PHY consumed from `deps/tidelink-phy`).
 
+**Taking over?** Start with [HANDOVER.md](HANDOVER.md): state, open work, errata, landmines.
+Files here whose names carry a date are historical records; the registry is current.
+
 **New here?** Read [ARCHITECTURE.md](ARCHITECTURE.md), then
 [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md).
 **Bringing up hardware?** Start at

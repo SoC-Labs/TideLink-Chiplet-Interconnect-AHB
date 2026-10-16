@@ -334,6 +334,22 @@ path is not broken). This slot was the reserved `SWI_BIT_SLIP_HI`
 (16-lane builds); repurposed for the 8-lane FPGA bring-up. Defaults 0 →
 behaviour bit-exact to the pre-§9.7 single-global-phase design.
 
+### Region 9: SYNC-insert / RX SYNC-detect Observability (paddr[8:5] = 1001, offsets 0x120-0x13F, V2)
+
+Added 2026-06-15 (`src/rtl/local_overrides/axi_chiplet_controller.sv`, "Region 9"). **V2 only**
+(`TIDELINK_PHY_V2`): V1 images read 0 here. Slot = `paddr[4:2]`; all apb_clk 2-flop-synced.
+
+| Offset | Name              | Access | Reset | Description |
+|--------|-------------------|--------|-------|-------------|
+| 0x2120 | SYNC_OBS          | RO     | 0     | `[15:0]` tx_sync_ins_cnt (saturating count of word-clk cycles the PHY drove a SYNC word), `[16]` tx_link_idle level, `[17]` tx training level, `[31:24]` presence marker `0x5C`. |
+| 0x2124 | SYNC_DETECT       | RO     | 0     | `[15:0]` sync_seen_cnt (mask-aware SYNC matches), `[23:16]` per-lane "ever matched" sticky vector, `[31:24]` presence marker `0x5D`. |
+| 0x2128 | SYNC_LANE_MASK    | RW     | 0xFF  | `[7:0]` per-lane detector enable, `[12:8]` SYNC-slice Hamming tolerance. |
+| 0x212C | RAWWORD_0         | RO     | 0     | RX raw word `[31:0]` (post-deskew). |
+| 0x2130 | RAWWORD_1         | RO     | 0     | RX raw word `[63:32]`. |
+| 0x2134 | RAWWORD_2         | RO     | 0     | RX raw word `[95:64]`. |
+| 0x2138 | RAWWORD_3         | RO     | 0     | RX raw word `[127:96]`. |
+| 0x213C | SLICE_MAP         | RO     | 0     | 8 x 4-bit carried-slice index per RX lane. |
+
 ### Region 10: Eye Visibility v2 (paddr[8:5] = 1010, offsets 0x140-0x17F)
 
 **Module:** `tidelink_eye_regs` (instantiated in `tidelink_top.sv`, routed by
@@ -391,7 +407,13 @@ from Region 9/10/D). **Live in both V1 and V2.** Built by
 | Offset | Name          | Access | Description |
 |--------|---------------|--------|-------------|
 | 0x21E0 | OBS_AXI_NODES | RO     | AXI data-node health. `[4:0]` tgt live-stall `{r,ar,b,w,aw}` (valid&!ready this cycle); `[9:5]` ini live-stall `{r,ar,b,w,aw}`; `[14:10]` tgt wedge-sticky (channel held stalled ≥ 2^12 app_clk cycles — a real wedge, not backpressure); `[19:15]` ini wedge-sticky; `[20]` tgt B/R resp-error sticky (`resp[1]` on a completed handshake); `[21]` ini resp-error sticky; `[22]` any-live-stall; `[23]` **data_nodes_healthy** = ~(any wedge) & ~(any resp err); `[31:24]` presence marker `0xAD` (reads 0x0000_0000 on older images). Detection in app_clk, 2-flop apb-synced. MMIO 0x440321E0. |
-| 0x21E4 - 0x21FC | (slots 1-7)   | RO     | Read 0 (reserved for future AXI-node obs). |
+| 0x21E4 | WINSCAN_STAT  | RO     | I1 forwarded-clock calibrator winscan status: FSM state, cal_done, val_timeout, ever-reached, lane_fault[7:0]. Packed by `src/rtl/tidelink_winscan_obs.sv` (layout there). Live in V1 and V2. |
+| 0x21E8 | WINSCAN_EYE   | RO     | I1 selected-lane eye width / best slip / best phase, lane_locked[7:0]. Packed by `src/rtl/tidelink_winscan_obs.sv`. |
+| 0x21EC | FCEMIT_STAT   | RO     | I1 FC-emit / router-grant verdict (`src/rtl/tidelink_fcemit_obs.sv`, `WlinkTxRouter` boundary): `[4:0]` AXI {R,AR,B,W,AW} ever presented SOP, `[5]` sideband ch6 SOP, `[6]` general-bus ch5 SOP, `[12:8]` AXI ever granted, `[13]` sideband granted, `[14]` general-bus granted (all sticky), `[16]` router io_enable (live), `[17]` serializer accepted >= 1 word, `[18]` any SOP live, `[31:24]` marker `0xE1`. |
+| 0x21F0 | FCEMIT_IDCNT  | RO     | `[7:0]` last emitted data_id on AXI AW, `[15:8]` last emitted data_id on the sideband, `[23:16]` sideband grant count (saturating), `[31:24]` marker `0xE2`. |
+| 0x21F4 | AUTO_ANCHOR_OBS | RO   | A7/auto-anchor beacon diagnostic (`docs/AUTO_ANCHOR_HW_DIAGNOSTIC_2026_08_04.md`): `[15:0]` dwell_max, `[16]` pulsed_ever, `[17]` done, `[18]` pulse (live), `[19]` link_up (live), `[20]` tx_idle (live), `[21]` reanchored, `[22]` training_mode, `[23]` AUTO_ANCHOR_EN. `AUTO_ANCHOR_EN=0` images read 0 (kr260-pair-onchip builds with it 0). |
+| 0x21F8 | XHB_SUB_OBS   | RO     | **V2 only** (reads 0 in V1): ahb_sub / XHB500 health witness. `[31:24]` presence marker `0xB5`; fault stickies `[14:8]` (TL-044 `xhb_dead_perm`/`xhb_dead`, TL-042 head-of-line write-age expiry, TL-021 bounded-ext-stall, XHB stall-stuck, sub error, sub write stuck); `[7:5]` write outstanding high-water mark. Built in `src/rtl/tidelink_top.sv` (`xhb_sub_obs_word`). |
+| 0x21FC | (slot 7)      | RO     | Reserved, reads 0. |
 
 ---
 

@@ -49,6 +49,21 @@ compose:
   - {path: sub, run: [lint-fast], when: on_bump}
 """
 
+SUB_MANIFEST = """schema: 1
+component: subcomp
+capabilities:
+  - id: lint-fast
+    kind: lint
+    tier: t1
+    run: %s
+    gate: block
+  - id: own-only
+    kind: unit
+    tier: t1
+    run: "false"
+    gate: block
+"""
+
 
 def sh(cwd, *args):
     return subprocess.run(list(args), cwd=cwd, check=True, stdout=subprocess.PIPE,
@@ -56,14 +71,31 @@ def sh(cwd, *args):
 
 
 class Repo:
-    """A repo whose HEAD~1..HEAD moves gitlink `sub` (and optionally adds a manifest)."""
+    """A repo whose HEAD~1..HEAD moves gitlink `sub` from commit a to b of a real nested repo checked out at b
+    (and optionally adds a manifest). The nested repo declares `lint-fast` (running `sub_cmd`) at both commits."""
 
-    def __init__(self, run_cmd="true", manifest=True, move=True):
+    def __init__(self, run_cmd="true", manifest=True, move=True, sub_cmd="true", sub_at=None):
         self.dir = tempfile.mkdtemp(prefix="bump_check_test_")
         g = lambda *a: sh(self.dir, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
+        subdir = os.path.join(self.dir, "sub")
+        os.makedirs(os.path.join(subdir, ".nanosoc"))
+        gs = lambda *a: sh(subdir, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
+        gs("init", "-q")
+        gs("config", "commit.gpgsign", "false")
+        shas = []
+        for n in (1, 2):
+            with open(os.path.join(subdir, ".nanosoc", "capabilities.yaml"), "w") as f:
+                f.write(SUB_MANIFEST % json.dumps(sub_cmd))
+            with open(os.path.join(subdir, "v"), "w") as f:
+                f.write("%d\n" % n)
+            gs("add", "-A")
+            gs("commit", "-q", "-m", "s%d" % n)
+            shas.append(gs("rev-parse", "HEAD"))
+        if sub_at == "a":
+            gs("checkout", "-q", shas[0])
+        self.a, self.b = a, b = shas
         g("init", "-q")
         g("config", "commit.gpgsign", "false")
-        a, b = "1" * 40, "2" * 40
         if manifest:
             os.makedirs(os.path.join(self.dir, ".nanosoc"))
             with open(os.path.join(self.dir, ".nanosoc", "capabilities.yaml"), "w") as f:
@@ -96,7 +128,7 @@ class Repo:
 class FakeRM:
     """Answers GET /api/v1/bump-check with a fixed verdict and records the query."""
 
-    def __init__(self, verdict, status=200):
+    def __init__(self, verdict, status=200, command=None):
         self.queries = []
         outer = self
 
@@ -105,7 +137,10 @@ class FakeRM:
                 u = urllib.parse.urlparse(self.path)
                 outer.queries.append((u.path, dict(urllib.parse.parse_qsl(u.query)),
                                       self.headers.get("Authorization")))
-                body = json.dumps({"verdict": verdict, "url": "/jobs/1"}).encode()
+                doc = {"verdict": verdict, "url": "/jobs/1"}
+                if command:
+                    doc["command"] = command
+                body = json.dumps(doc).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -150,13 +185,16 @@ class BumpCheck(unittest.TestCase):
     def test_move_found_with_paths_and_shas(self):
         r = self.repo()
         self.assertEqual(bump_check.changed_gitlinks(r.base, r.tip, cwd=r.dir),
-                         [("sub", "1" * 40, "2" * 40)])
+                         [("sub", r.a, r.b)])
 
     def test_unverified_move_blocks_in_block_mode(self):
-        rc, out = self.repo().check("block")
+        r = self.repo()
+        rc, out = r.check("block")
         self.assertEqual(rc, 1, out)
         self.assertIn("FAIL", out)
-        self.assertIn("nanosoc-rm test-bump <configuration> sub --to " + "2" * 40, out)
+        # the release manager's CLI: positional CONFIG PATH TO, the full tree path, no --to
+        self.assertIn("nanosoc-rm test-bump <configuration> sub " + r.b, out)
+        self.assertNotIn("--to", out)
 
     def test_unverified_move_only_warns_in_warn_mode(self):
         rc, out = self.repo().check("warn")
@@ -181,8 +219,9 @@ class BumpCheck(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         path, q, auth = rm.queries[0]
         self.assertEqual(path, "/api/v1/bump-check")
-        self.assertEqual((q["component"], q["path"], q["from"], q["to"]),
-                         ("demo", "sub", "1" * 40, "2" * 40))
+        # root = this tree's commit before the move: the release manager's gate matches the test-bump's root
+        self.assertEqual((q["component"], q["path"], q["from"], q["to"], q["root"]),
+                         ("demo", "sub", r.a, r.b, r.base))
         self.assertEqual(auth, "Bearer tok")
 
     def test_rm_fail_blocks(self):
@@ -211,6 +250,66 @@ class BumpCheck(unittest.TestCase):
         rc, out = self.repo(run_cmd="echo LINT OK").check("block", run_local=True)
         self.assertEqual(rc, 0, out)
         self.assertIn("run-local lint", out)
+        self.assertIn("run-local sub:lint-fast", out)
+        self.assertNotIn("own-only", out)        # composed by name: only lint-fast of the moved tree runs
+
+    def test_run_local_a_failing_composed_capability_blocks(self):
+        rc, out = self.repo(run_cmd="echo LINT OK", sub_cmd="exit 1").check("block", run_local=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("run-local sub:lint-fast", out)
+
+    def test_run_local_never_passes_without_the_moved_tree_at_the_moved_commit(self):
+        rc, out = self.repo(run_cmd="echo LINT OK", sub_at="a").check("block", run_local=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("not the moved commit", out)
+
+    def test_run_local_runs_the_moved_trees_own_gates_when_not_composed(self):
+        r = self.repo(run_cmd="echo LINT OK")
+        g = lambda *a: sh(r.dir, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
+        with open(os.path.join(r.dir, ".nanosoc", "capabilities.yaml"), "w") as f:
+            f.write((MANIFEST % json.dumps("echo LINT OK")).split("compose:")[0])
+        g("add", ".nanosoc/capabilities.yaml")
+        g("commit", "-q", "-m", "no compose")
+        r.tip = g("rev-parse", "HEAD")
+        rc, out = r.check("block", run_local=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("run-local sub:own-only", out)      # its own blocking gate ran, and it fails
+
+    def test_run_local_a_capability_above_max_tier_is_not_a_pass(self):
+        rc, out = self.repo(run_cmd="echo LINT OK").check("block", run_local=True, max_tier=0)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("above --max-tier", out)
+
+    def test_forbid_and_require_are_literal_substrings(self):
+        r = self.repo()
+        cap = {"id": "x", "run": "echo PASS", "verdict": {"forbid": ["[SKIP]"]}}
+        ok, detail = bump_check.run_capability(cap, r.dir)
+        self.assertTrue(ok, detail)                      # as a regex, [SKIP] would match the S of PASS
+        cap["run"] = "echo 'x [SKIP] y'"
+        ok, detail = bump_check.run_capability(cap, r.dir)
+        self.assertFalse(ok, detail)
+        cap = {"id": "y", "run": "echo 'a.b'", "verdict": {"require": [{"pattern": "a.b"}]}}
+        self.assertTrue(bump_check.run_capability(cap, r.dir)[0])
+        cap["run"] = "echo axb"
+        self.assertFalse(bump_check.run_capability(cap, r.dir)[0])
+
+    def test_declared_rows_are_not_a_pass_here(self):
+        r = self.repo()
+        cap = {"id": "x", "run": "true", "verdict": {"rows": {"format": "junit", "path": "r.xml"}}}
+        ok, detail = bump_check.run_capability(cap, r.dir)
+        self.assertFalse(ok, detail)
+        self.assertIn("release manager only", detail)
+
+    def test_the_rm_command_is_the_suggestion(self):
+        r = self.repo()
+        rm = FakeRM(None, command="nanosoc-rm test-bump eth-main sub " + r.b)
+        try:
+            os.environ["NANOSOC_RM_URL"] = rm.url
+            rc, out = r.check("block")
+        finally:
+            rm.close()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("to check it: nanosoc-rm test-bump eth-main sub " + r.b, out)
 
     def test_run_local_forbidden_output_fails_despite_exit_0(self):
         rc, out = self.repo(run_cmd="echo 'PASS 3 WRAPPER: SKIPPED'").check("block", run_local=True)
@@ -274,6 +373,17 @@ class BumpCheck(unittest.TestCase):
         rng = bump_check.pre_push_ranges(io.StringIO(line), "origin", cwd=r.dir)
         self.assertEqual(len(rng), 1)
         self.assertEqual(rng[0][1], r.tip)
+
+    def test_a_new_branch_checks_only_its_own_commits(self):
+        # The remote already holds HEAD~1 on another branch: a new branch with one commit on top is checked
+        # from HEAD~1, never from an old default branch (every older move would block it).
+        r = self.repo()
+        g = lambda *a: sh(r.dir, "git", "-c", "user.name=t", "-c", "user.email=t@t", *a)
+        g("update-ref", "refs/remotes/origin/main", r.base)
+        line = "refs/heads/x %s refs/heads/x %s\n" % (r.tip, bump_check.ZERO)
+        self.assertEqual(bump_check.pre_push_ranges(io.StringIO(line), "origin", cwd=r.dir), [(r.base, r.tip)])
+        g("update-ref", "refs/remotes/origin/main", r.tip)          # nothing new: nothing to check
+        self.assertEqual(bump_check.pre_push_ranges(io.StringIO(line), "origin", cwd=r.dir), [(r.tip, r.tip)])
 
     def test_hook_warns_but_never_blocks(self):
         r = self.repo()

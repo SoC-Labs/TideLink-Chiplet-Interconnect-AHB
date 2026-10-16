@@ -61,29 +61,43 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           BEFORE: ${{ github.event.before }}
-          DEFAULT: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           tip="$(git rev-parse HEAD)"
           if [ "$EVENT" = pull_request ]; then
-            base="$PR_BASE"; tip="$PR_HEAD"
+            # The fork point, not the base branch's tip: a two-dot diff against the tip would show every gitlink
+            # the base branch moved since the PR forked as a reverse move of this PR.
+            tip="$PR_HEAD"; base="$(git merge-base "$PR_BASE" "$PR_HEAD")"
           elif [ -n "${BEFORE:-}" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
                && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
             base="$BEFORE"
           else
-            base="$(git merge-base "origin/${DEFAULT}" "$tip" || git rev-list --max-parents=0 "$tip" | tail -1)"
+            # A new branch: only its own commits (those no other branch of this repo holds), never every move
+            # since the default branch.
+            first="$(git rev-list --reverse "$tip" --not --exclude="refs/remotes/origin/${REF_NAME}" --remotes=origin | head -1)"
+            if [ -z "$first" ]; then base="$tip"
+            else base="$(git rev-parse --verify --quiet "${first}^" || echo "$first")"; fi
           fi
           echo "range=${base}..${tip}" >> "$GITHUB_OUTPUT"
+          echo "base=${base}" >> "$GITHUB_OUTPUT"
           echo "checking ${base}..${tip}"
 
       - name: PyYAML (reads .nanosoc/capabilities.yaml)
         run: python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
 
-      - name: Bump gate
+      - name: Bump gate (the BASE commit's copy of the script)
         env:
           NANOSOC_RM_URL: ${{ vars.NANOSOC_RM_URL }}
           NANOSOC_RM_TOKEN: ${{ secrets.NANOSOC_RM_TOKEN }}
-        run: python3 scripts/ci/bump_check.py --mode block --range "${{ steps.range.outputs.range }}"
+          BASE: ${{ steps.range.outputs.base }}
+        run: |
+          set -euo pipefail
+          # A PR must not be able to edit the gate that judges it: run the script as the base commit has it. Only
+          # the PR that first adds the script runs its own copy (there is no older one to run).
+          script="$RUNNER_TEMP/bump_check.py"
+          git show "${BASE}:scripts/ci/bump_check.py" > "$script" 2>/dev/null || cp scripts/ci/bump_check.py "$script"
+          python3 "$script" --mode block --range "${{ steps.range.outputs.range }}"
 
       - name: Bump-check self-test
         run: python3 scripts/ci/test_bump_check.py
@@ -107,7 +121,7 @@ jobs:
       - name: Run the affected capabilities
         env:
           BEFORE: ${{ github.event.before }}
-          DEFAULT: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
           NANOSOC_RM_URL: ${{ vars.NANOSOC_RM_URL }}
           NANOSOC_RM_TOKEN: ${{ secrets.NANOSOC_RM_TOKEN }}
           TIDELINK_PHY_V2: "1"
@@ -116,6 +130,10 @@ jobs:
           tip="$(git rev-parse HEAD)"
           if [ -n "${BEFORE:-}" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
              && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then base="$BEFORE"
-          else base="$(git merge-base "origin/${DEFAULT}" "$tip")"; fi
+          else
+            first="$(git rev-list --reverse "$tip" --not --exclude="refs/remotes/origin/${REF_NAME}" --remotes=origin | head -1)"
+            if [ -z "$first" ]; then base="$tip"
+            else base="$(git rev-parse --verify --quiet "${first}^" || echo "$first")"; fi
+          fi
           python3 scripts/ci/bump_check.py --mode block --run-local --range "${base}..${tip}"
 

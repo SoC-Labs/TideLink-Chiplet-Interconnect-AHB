@@ -1,0 +1,17 @@
+step	name	verdict	seconds	detail
+00	lock_check	PASS	6	flock held: board.lock; sudo pre-check OK on ubuntu@<kr260-ip>
+01	por_both	PASS	103	kr260_01 + kr260_02 POR'd and back (ping + ssh), CmaTotal ok; PL EMPTY on both until step 04
+02	bit2bin	PASS	0	bin md5 df32ee3c (tidelink.bin)
+03	stage	PASS	8	staged bin (md5 df32ee3c), pynq_host scripts, rev2hw tools; md5 equal on the board; synced to SD
+04	deploy	PASS	2	PL loaded (fpga0 operating), fpgautil rc 0
+05	afi_a7obs	PASS	1	AFI+canaries PASS; A7 NOT TESTABLE on this image (AUTO_ANCHOR_EN=0 in kr260-pair-onchip; beacon FSM absent). Steps 18-21 skipped. A7 HW evidence stays the compute KR260 run.
+06	autonomy	PASS	6	autonomy proven, zero host writes; stream-start: b2a rc=0 STREAM_RESULT=NO_STORM_OBSERVED ; a2b rc=0 STREAM_RESULT=NO_STORM_OBSERVED
+07	smoke	PASS	2	plumbing smoke PASS (no --unlock)
+08	regs	PASS	1	new registers read OK: 0x23C==0 on both dies, sideband DataID 0xA1, sideband CRC check ON
+09	soak5000	PASS	7	5000/5000 good, 0 bad, 0 stalls
+10	smoke1	PASS	1	smoke1 byte-exact
+11	b19_dip	PASS	1	dip 0x27F00 then restore 0x27F07: swi_enable held mid-dip (0x27f01), restored, OBS_FC_CREDIT unchanged
+12	postdip_soak5000	PASS	6	5000/5000 good, 0 bad, 0 stalls
+13	postdip_smoke1	PASS	1	smoke1 byte-exact
+14	crc_ctl	PASS	27	quiet counters + wrong-DataID arm inert + 0x23C holds its value, both directions (b2a clean traffic proven before any injection); stats a2b rc=0 STATS_RESULT=FIXED_PASS exact=30 detected=30 lost=0 stray=0 dup=0 undetected_bad=0 exact_wilson95_lo=0.886; stats b2a rc=0 STATS_RESULT=FIXED_PASS exact=30 detected=30 lost=0 stray=0 dup=0 undetected_bad=0 exact_wilson95_lo=0.886; EXPECT_FIXED replayed exactly once 60/60 over both directions (need all, and >= 60 detected)
+22	restore	PASS	96	both boards POR'd; compute session must restore 993e7709 (kr260-01) + 8f1252bb (kr260-02)

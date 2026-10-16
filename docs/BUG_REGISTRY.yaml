@@ -3796,7 +3796,7 @@ bugs:
     title: "Sideband (DataID 0xA1, WlinkGenericFCSM_6): a CRC-detected packet is never replayed - the L9b forward re-anchor forgives the gap and the L9c backward re-ACK swallows the NACK replay"
     severity: high
     area: rtl/wlink
-    status: sim_proven            # 2026-10-14: design E, sim red/green with must-fail arms. HARDWARE NOT YET RUN.
+    status: hw_proven             # 2026-10-15: design E on KR260 onchip: 60/60 detected shots replayed (unfixed 60/60 lost), 32/32 cold bring-ups no storm
     registered: 2026-10-14
     opened: 2026-10-14            # KR260 pair, rev2 line a652c73e: 60/60 sideband shots detected (CRC counter +1) and lost
     summary: >
@@ -3829,13 +3829,25 @@ bugs:
         Fallback if hardware stream-start misbehaves: a one-flop "replay pending"
         gate (design A), kept as a reviewed alternative.
       files: [src/rtl/local_overrides/WlinkGenericFCSM_6.v, cocotb/tidelink_axi_datanode_recovery/test_sideband_crc_replay.py]
-      commit: f6966470              # local branch fix/tl059-sideband-crc-e, not pushed
-      branch: fix/tl059-sideband-crc-e
+      commit: f6966470              # merged to main via PR #8 (merge fc0ee9a5, tag keep/tl059/fix-fc0ee9a5)
+      branch: main
       netlist_affecting: true       # one inverter-class term into two nets; needs resynthesis or an ECO, not a GDS-only change
     verification:
       sim_test: cocotb/tidelink_axi_datanode_recovery/test_sideband_crc_replay.py
       in_sim_gate: true             # sim_gate_sideband_crc_replay (suite sideband_crc_replay) and sim_gate_v2_stream_start_anchor
-      hw_tested: false
+      hw_tested: true
+      hw_validated: true
+      vehicle: onchip
+      evidence:
+        - imp/hw_gate/tl059_2026-10-14/README.md
+        - imp/hw_gate/tl059_2026-10-14/unfixed_crc_stats_a2b.txt
+        - imp/hw_gate/tl059_2026-10-14/unfixed_crc_stats_b2a.txt
+        - imp/hw_gate/tl059_2026-10-14/fixed_crc_stats_a2b.txt
+        - imp/hw_gate/tl059_2026-10-14/fixed_crc_stats_b2a.txt
+        - imp/hw_gate/tl059_2026-10-14/fixed_bringups_run1.tsv
+        - imp/hw_gate/tl059_2026-10-14/fixed_bringups_run2.tsv
+        - imp/hw_gate/tl059_2026-10-14/fixed_bringups_run3.tsv
+        - imp/hw_gate/tl059_2026-10-14/fixed_stream_results.txt
       red_green: >
         Invariant: every injected-and-CRC-counted packet leads to the whole message
         stream delivered exactly once, byte-exact, in order; an injector shot that
@@ -3856,7 +3868,7 @@ bugs:
         stream-start behaviour (that is the open hardware item), multi-bit/aliased
         CRC errors, CRC errors on short ACK/NACK/credit packets.
     signoff:
-      claude_verdict: "Sim-proven with must-fail arms; NOT hardware-run. The only evidence that can retire L9b/L9c on silicon is a KR260/HAPS run of the fix image (bring-up, 28-word stream-start with revert count, soak). If stream-start storms there, ship the one-flop alternative."
+      claude_verdict: "Hardware-proven on the KR260 onchip image built from the PR #8 head: 60/60 CRC-detected sideband shots replayed exactly once where the unfixed main image lost 60/60; 32/32 cold bring-ups with a 28-word stream start each showed no storm (no NACK/revert counter exists in RTL, so 'no storm' means exact delivery at baseline latency with no FIFO-full flags). Not yet run on HAPS or on a two-board pair. Shipped silicon keeps the erratum: every compute stream built before fc0ee9a5 (submitted candidate W1fin7f, logo md5 804f2019, FCSM_6 md5 f232c694; also W1fin7/W1fin7e and W1fin6/ECO4) and eth rc4 (pin 785daee) for compute->eth. Fixed RTL: FCSM_6 md5 361a0d8d at fc0ee9a5."
       evidence: ["Sim evidence is the retained logs of the gate suites sideband_crc_replay and v2_stream_start_anchor; descriptive only, no repo artefact path."]
       approved: false
     related: [TL-036, TL-038, TL-053]

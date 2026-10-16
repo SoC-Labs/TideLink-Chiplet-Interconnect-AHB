@@ -1,0 +1,8 @@
+cycle	verdict	seconds	why
+1	PASS	116	
+2	PASS	116	
+3	PASS	120	
+4	PASS	120	
+5	PASS	115	
+6	PASS	116	
+7	FAIL	13	POR of kr260_01/kr260_02 failed or a board did not come back

@@ -31,7 +31,7 @@ case "$cmd" in
       slog "   >>> STALE bin md5 returned (injected)"; echo "00000000000000000000000000000000  td/tidelink.bin"; exit 0; fi
     echo "$(md5sum < "$STUB_BIN" | cut -d' ' -f1)  td/tidelink.bin"; exit 0 ;;
   sync) slog "   >>> SYNC (flush to SD)"; : > "${STUBLOG:-/dev/null}.sync"; exit 0 ;;
-  *"td/rev2hw && md5sum"*) (cd "${STUB_BOARD_DIR:?STUB_BOARD_DIR must point at pynq_host/hw_regress}" && md5sum rev2hw.py b19_dip.py); exit 0 ;;
+  *"td/rev2hw && md5sum"*) (cd "${STUB_BOARD_DIR:?STUB_BOARD_DIR must point at pynq_host/hw_regress}" && md5sum rev2hw.py b19_dip.py injector_controls.py); exit 0 ;;
 esac
 case "$cmd" in
   sudo*)

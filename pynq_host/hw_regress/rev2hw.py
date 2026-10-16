@@ -14,6 +14,11 @@ board as root (/dev/mem).  Staged by hw_test.sh to ~/td/rev2hw/.  Contains no cr
                                       revert counter exists in the RTL, so it reports delivery exactness, latency, Ack/Nack-FIFO
                                       full / almost-full samples, CRC counters and the Region F / 0x21F8 witnesses before vs after)
   rev2hw.py health                    both dies fcsm==4 and cal==1
+  rev2hw.py errprobe                  information only: does each die's 0x23C hold a write (enable bit CLEAR)
+
+Every command that arms the injector goes through injector_controls.py (same directory, staged with this
+file): offset == RDL 0x23C (never the 0x003C alias), arm readback, wrong-DataID inert control, counter
+movement per shot, slave-die debug unlock restored on every exit path.
 
 Registers used (all documented as decoded; nothing else is touched.  0x8403_xxxx / 0x8C03_xxxx addresses
 that are not documented hang the PS, so there is NO read of TLAPB+0x3C, the unmapped alias):
@@ -29,6 +34,9 @@ that are not documented hang the PS, so there is NO read of TLAPB+0x3C, the unma
 Exit status: 0 PASS, 1 FAIL, 4 INCONCLUSIVE (nothing was proven either way), 2 usage/precondition.
 """
 import argparse, ctypes, mmap, os, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(globals().get("__file__", "."))))   # staged next to injector_controls.py
+import injector_controls as ic
 
 SIDEBAND_ID = 0xA1
 APB = {"a": 0x84030000, "b": 0x8C030000}
@@ -301,6 +309,13 @@ class Path:
     def errinj_addr(self):
         return APB[self.t] + ERRINJ
 
+    @property
+    def inj(self):
+        """The injector driver of the TX die (raises ic.ControlError if ERRINJ is not the RDL offset)."""
+        if getattr(self, "_inj", None) is None:
+            self._inj = ic.Injector(rd, wr, APB[self.t], offset=ERRINJ, unlock=lambda on: _unlock(self, on), sleep=time.sleep, log=P)
+        return self._inj
+
 
 def stream_payload(tag, length):
     return [((tag + i) ^ (i << 24) ^ 0xA5A5A5A5) & 0xFFFFFFFF for i in range(length)]
@@ -327,40 +342,29 @@ def _unlock(path, on):
 
 
 def arm(path, did, byte, bit):
-    v = _arm(path, did, byte, bit)
-    if not v:
-        _unlock(path, False)       # failed arm: never leave die_b unlocked
-    return v
-
-
-def _arm(path, did, byte, bit):
-    a = path.errinj_addr()
-    _unlock(path, True)
-    wr(a, 0); time.sleep(0.005)
-    if rd(a) != 0:
-        return None
-    val = (1 << 24) | ((bit & 7) << 16) | ((byte & 0xFF) << 8) | (did & 0xFF)
-    wr(a, val); time.sleep(0.005)
-    r = rd(a)
-    if r != val:
-        # 2026-10-13: die_b's 0x23C failed this check and the value was thrown away. Record what it
-        # actually reads, and whether it settles (CDC into the link clock) before calling it a failure.
-        seen = [r]
-        for dt in (0.05, 0.5):
-            time.sleep(dt); seen.append(rd(a))
-        P("  arm 0x%08x wrote 0x%08x; read 0x%08x @5ms, 0x%08x @55ms, 0x%08x @555ms" % (a, val, seen[0], seen[1], seen[2]))
-        r = seen[-1]
-    return val if r == val else False          # False: the register did not hold what was written
+    """-> the armed value; None if 0x23C was not 0 before the arm; False if it did not hold the write.
+    (Adapter over injector_controls.Injector: failure also drops the die_b unlock.)"""
+    r = path.inj.arm(did, byte, bit)
+    return r.value if r.ok else (None if r.status == "NOT_ZERO" else False)
 
 
 def disarm(path):
-    a = path.errinj_addr()
-    wr(a, 0); time.sleep(0.005)
-    ok = rd(a) == 0
-    _unlock(path, False)
-    return ok
+    return path.inj.disarm()
 
 
+def harness_guard(fn):
+    """A broken instrument (injector offset is not the RDL address) is a FAIL, never a quiet pass."""
+    def wrapped(args):
+        try:
+            return fn(args)
+        except ic.ControlError as e:
+            P("HARNESS_BROKEN: %s" % e)
+            return verdict(False, "", fail="HARNESS_BROKEN: %s" % e)
+    wrapped.__name__ = fn.__name__
+    return wrapped
+
+
+@harness_guard
 def cmd_crc_ctl(args):
     p = Path(args.dir)
     P("CRC-CTL dir=%s  tx=%s rx=%s" % (p.dir, NAME[p.t], NAME[p.r]))
@@ -383,23 +387,27 @@ def cmd_crc_ctl(args):
     P("CTL1 quiet: 16 clean packets, bad=%d, sideband CRC counters a %d->%d b %d->%d" % (bad, c0["a"], c1["a"], c0["b"], c1["b"]))
     if bad or c0 != c1:
         ok = False; P("  FAIL: clean traffic must be byte-exact with counters unchanged")
-    # control 2: injector armed for a DataID nobody uses must be inert (the injector is selective)
-    v = arm(p, 0x7E, 5, 0)
-    P("CTL2 arm DataID 0x7E byte5 bit0: 0x23C readback = %s" % ("0x%08x" % v if v else v))
-    if not v:
-        ok = False; P("  FAIL: 0x23C is not a holding register (readback differs from the write)")
-    bad = 0
-    for i in range(4):
-        tag = 0x7C200000 + i
-        if not p.send(tag):
-            ok = False; break
-        if not exact(p.collect(), tag):
-            bad += 1
-    dis = disarm(p)
-    c2 = {d: rd(APB[d] + N6 + CRCCNT) & 0xFFFF for d in "ab"}
-    P("CTL2 wrong-DataID armed: 4 packets, bad=%d, CRC counters unchanged=%s, disarmed=%s" % (bad, c2 == c1, dis))
-    if bad or c2 != c1 or not dis:
-        ok = False; P("  FAIL: a wrong-DataID arm must change nothing")
+    # control 2 (C-REG-HOLD + C-INJ-INERT, injector_controls.run_wrong_id_control): armed for a DataID
+    # nobody uses, the injector must change nothing
+    def _drive():
+        bad = 0
+        for i in range(4):
+            tag = 0x7C200000 + i
+            if not p.send(tag):
+                raise ic.ControlError("no receiver credit while the wrong-DataID control was armed")
+            if not exact(p.collect(), tag):
+                bad += 1
+        return bad
+    try:
+        errs, info = ic.run_wrong_id_control(p.inj, _drive, lambda: {d: rd(APB[d] + N6 + CRCCNT) & 0xFFFF for d in "ab"}, did=0x7E, byte=5, bit=0)
+    except ic.ControlError as e:
+        p.inj.disarm()
+        errs, info = [str(e)], {}
+    ar = info.get("armed")
+    P("CTL2 arm DataID 0x7E byte5 bit0: 0x23C readback = %s" % ("0x%08x" % ar.value if ar is not None and ar.ok else (ar.why() if ar is not None else "n/a")))
+    P("CTL2 wrong-DataID armed: 4 packets, bad=%s, CRC counters unchanged=%s, disarmed=%s" % (info.get("bad"), info.get("unchanged"), info.get("disarmed")))
+    for e in errs:
+        ok = False; P("  FAIL: " + e)
     if not link_ok():
         ok = False; P("  FAIL: link degraded")
     return verdict(ok, "CRC controls %s: clean traffic exact with quiet counters; wrong-DataID arm inert; 0x23C holds its value" % p.dir,
@@ -426,6 +434,7 @@ def postmortem(p, tag):
     P("  PM crc counters after: a=%d b=%d" % (rd(APB["a"] + N6 + CRCCNT) & 0xFFFF, rd(APB["b"] + N6 + CRCCNT) & 0xFFFF))
 
 
+@harness_guard
 def cmd_crc_sweep(args):
     p = Path(args.dir)
     want = args.n
@@ -440,6 +449,7 @@ def cmd_crc_sweep(args):
         return verdict(False, "receiver sideband CRC check is OFF (SM_CONTROL=0x%08x): injection cannot be detected" % sm)
     p.setup()
     eff, inert, fails, attempts = 0, 0, 0, 0
+    ledger, crc_start = ic.ShotLedger(), p.crc()
     for byte, bit in CANDIDATES:
         if eff >= want:
             break
@@ -457,9 +467,11 @@ def cmd_crc_sweep(args):
         c1 = p.crc()
         d = (c1 - c0) & 0xFFFF
         good = exact(pk, tag)
-        if good and d == 1:
+        ledger.add(None, d, "SHOT %d" % attempts)
+        cls = ic.classify_board_shot(d, good)
+        if cls == "EFFECTIVE":
             res = "EFFECTIVE"; eff += 1
-        elif good and d == 0:
+        elif cls == "INERT":
             res = "INERT(byte not covered by the CRC or not in this packet)"; inert += 1
         else:
             res = "FAIL"; fails += 1
@@ -473,6 +485,10 @@ def cmd_crc_sweep(args):
         if not link_ok():
             P("  FAIL: link degraded after the shot"); fails += 1; break
     P("CRC-SWEEP %s: effective=%d inert=%d fail=%d attempts=%d" % (p.dir, eff, inert, fails, attempts))
+    cerr = ledger.errors(total_delta=(p.crc() - crc_start) & 0xFFFF)     # C-COUNT-EXPECT
+    for e in cerr:
+        P("  COUNT-EXPECT FAIL: " + e)
+    fails += len(cerr)
     ok = fails == 0 and eff >= want
     if not ok and fails == 0:
         return verdict(False, "only %d of %d wanted shots were effective (%d inert): the injection may not reach this packet" % (eff, want, inert))
@@ -510,6 +526,7 @@ def classify(pk, tag):
     return "STRAY"
 
 
+@harness_guard
 def cmd_crc_stats(args):
     """Statistics for the sideband CRC-replay question: of the shots whose CRC error was DETECTED (counter +1),
     how many were replayed byte-exact and how many were lost?  One armed single shot per iteration (0->1 edge arms ONE
@@ -544,6 +561,7 @@ def cmd_crc_stats(args):
         return verdict(False, "pre-controls failed (clean %d/8, counter %d->%d): link not clean before any injection" % (ctl_ok, c0, p.crc()))
     P("CTL pre: 8/8 clean packets exact, CRC counter quiet at %d" % c0)
     cnt = {"EXACT": 0, "LOST": 0, "STRAY": 0, "DUP": 0}
+    ledger, crc_run0 = ic.ShotLedger(), p.crc()
     inert = undet_bad = late = credit_resets = shots = fails = 0
     degraded = None
     rows = []
@@ -566,6 +584,7 @@ def cmd_crc_stats(args):
         dis = disarm(p)
         shots += 1
         d = (p.crc() - crc0) & 0xFFFF
+        ledger.add(None, d, "SHOT %d" % (i + 1))
         oc = classify(pk, tag)
         if d == 0:
             if oc == "EXACT":
@@ -621,6 +640,10 @@ def cmd_crc_stats(args):
     if shots < n:
         P("STATS_RESULT=INCOMPLETE")
         return verdict(False, "", fail="CRC stats %s ran %d of %d shots" % (p.dir, shots, n))
+    cerr = ledger.errors(total_delta=(p.crc() - crc_run0) & 0xFFFF)     # C-COUNT-EXPECT
+    if cerr:
+        P("STATS_RESULT=COUNT_MISMATCH  (" + "; ".join(cerr) + ")")
+        return verdict(False, "", fail="CRC stats %s: counter accounting failed: %s" % (p.dir, "; ".join(cerr)))
     if undet_bad:
         P("STATS_RESULT=UNDETECTED_BAD  (%d shot(s) with no CRC count and the packet lost or wrong: silent corruption or a counter that does not count)" % undet_bad)
         return verdict(False, "", fail="CRC stats %s: %d shot(s) lost/corrupted WITHOUT a CRC count (see UNDETECTED lines)" % (p.dir, undet_bad))
@@ -783,10 +806,12 @@ def cmd_stream(args):
                    % (p.dir, ex, len(rows), length, STREAM_LAT_MAX * 1000))
 
 
+@harness_guard
 def cmd_errprobe(_):
     """2026-10-14 diagnostic for 'die_b 0x23C does not hold a write'. Writes the injector with the
     ENABLE bit CLEAR (0x0000057E: DataID 0x7E, byte 5, bit 0, enable 0), so nothing can be injected,
     and records exactly what each die reads back and when. Restores 0. Information only."""
+    ic.assert_injector_offset(ERRINJ)
     if not link_ok():
         return verdict(False, "link not up: nothing written")
     held = {}

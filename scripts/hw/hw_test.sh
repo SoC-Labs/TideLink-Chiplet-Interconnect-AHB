@@ -44,7 +44,7 @@ set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd -P)                 # the repository this tooling lives in (board tools are staged from HERE's repo)
 BOARD_SRC=$REPO/pynq_host/hw_regress              # rev2hw.py, b19_dip.py, injector_controls.py  (run ON the board)
-BOARD_FILES="rev2hw.py b19_dip.py"
+BOARD_FILES="rev2hw.py b19_dip.py injector_controls.py"
 TARGET=kr260-pair-onchip
 SELF=$HERE/$(basename "${BASH_SOURCE[0]}")
 

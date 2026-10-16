@@ -1264,7 +1264,7 @@ sim_gate_axi_datanode_gaps:
 
 # ── TL-059 (2026-10-14): sideband (0xA1, FCSM_6) CRC-replay acceptance ───────────
 # Every CRC-detected sideband packet must be delivered exactly once (invariant in
-# cocotb/tidelink_axi_datanode_recovery/test_sideband_crc_replay.py). Runs the nine positive
+# cocotb/tidelink_axi_datanode_recovery/test_sideband_crc_replay.py). Runs the ten positive
 # cases, the header-ECC-bypassed variant, and the FOUR MUST-FAIL arms (pre-fix RTL via
 # +define+SOCL_L9_ALWAYS x3, receiver disable_crc=1 x1) -- a green result is only meaningful
 # because the same bench goes red on those. 14 sims of ~1-3 min each (compile shared).

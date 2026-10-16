@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# STUB ssh: logs argv (so a password on a command line would show up), records whether stdin line 1 is a password
+# (yes/no only), and prints canned output for the commands hw_test.sh sends.  STUB_FAIL_MATCH=<substring> makes any
+# sudo command containing it fail (rc 1) to test the restore trap.
+. "$(dirname "$0")/_log.sh"
+args=("$@"); cmd="${args[$#-1]}"
+slog "ssh $*"
+pwline=no
+if [ ! -t 0 ]; then
+  IFS= read -r -t 1 first || true
+  for v in "${KR260_SUDO_PASSWORD:-}" "${KR260_PASSWORD:-}"; do [ -n "$v" ] && [ "$first" = "$v" ] && pwline=yes; done
+  [ "$pwline" = yes ] && slog "   stdin line 1 = a password (consumed by sudo -S)"
+fi
+case "$*" in *" -O exit "*) exit 0 ;; esac
+case "$*" in *"target reset"*)
+  t=$(grep -o 'kr260_0[0-9]' <<<"$cmd" | head -1)
+  # STUB_POR_FAIL_FIRST=n : the first n POR commands fail like a dropped JTAG cable (tests the por_one 3x retry)
+  if [ -n "${STUB_POR_FAIL_FIRST:-}" ]; then
+    pf="${STUBLOG:-/dev/null}.por"; pn=$(( $(cat "$pf" 2>/dev/null || echo 0) + 1 )); echo "$pn" > "$pf"
+    if [ "$pn" -le "$STUB_POR_FAIL_FIRST" ]; then slog "   >>> POR $t FAILED (injected #$pn)"; echo "target-select failed: no targets"; exit 1; fi
+  fi
+  slog "   >>> POR $t"; : > "${STUBLOG:-/dev/null}.porred"; echo "reset $t ok"; exit 0 ;; esac
+case "$cmd" in
+  true) exit 0 ;;
+  *CmaTotal*) echo "CmaTotal:       524288 kB"; exit 0 ;;
+  mkdir*) exit 0 ;;
+  *"cat /sys/class/fpga_manager"*) echo operating; exit 0 ;;
+  "md5sum td/tidelink.bin")
+    # STUB_STALE_AFTER_POR=1 : after the first POR the board holds an OLD image (a write lost to the page cache)
+    if [ "${STUB_STALE_AFTER_POR:-0}" = 1 ] && [ -e "${STUBLOG:-/dev/null}.porred" ] && [ -e "${STUBLOG:-/dev/null}.sync" ]; then
+      slog "   >>> STALE bin md5 returned (injected)"; echo "00000000000000000000000000000000  td/tidelink.bin"; exit 0; fi
+    echo "$(md5sum < "$STUB_BIN" | cut -d' ' -f1)  td/tidelink.bin"; exit 0 ;;
+  sync) slog "   >>> SYNC (flush to SD)"; : > "${STUBLOG:-/dev/null}.sync"; exit 0 ;;
+  *"td/rev2hw && md5sum"*) (cd "${STUB_BOARD_DIR:?STUB_BOARD_DIR must point at pynq_host/hw_regress}" && md5sum rev2hw.py b19_dip.py); exit 0 ;;
+esac
+case "$cmd" in
+  sudo*)
+    slog "   >>> SUDO CMD: $cmd"
+    if [ -n "${STUB_FAIL_MATCH:-}" ] && [[ "${cmd//\\/}" == *"$STUB_FAIL_MATCH"* ]]; then echo "STUB INJECTED FAILURE"; exit 1; fi
+    c="${cmd//\\/}"
+    # STUB_FAIL_NTH="substring:N:rc" : the Nth sudo command containing substring exits rc (e.g. "autonomy:3:1" soft fail, "smoke:2:124" simulated timeout/wedge)
+    if [ -n "${STUB_FAIL_NTH:-}" ]; then
+      IFS=: read -r fsub fn frc <<<"$STUB_FAIL_NTH"
+      if [[ "$c" == *"$fsub"* ]]; then
+        cf="${STUBLOG:-/dev/null}.nth"; cnt=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 )); echo "$cnt" > "$cf"
+        if [ "$cnt" = "$fn" ]; then slog "   >>> STUB_FAIL_NTH hit ($fsub #$fn rc $frc)"; echo "STUB INJECTED FAILURE #$fn"; exit "${frc:-1}"; fi
+      fi
+    fi
+    [[ "$c" == *"echo SUDO_OK"* ]] && echo SUDO_OK
+    [[ "$c" == *fpgautil* ]] && slog "   >>> PL LOAD (fpgautil)"
+    [[ "$c" == *"kr260_afi.sh fix"* ]] && {
+      echo "AFI: applying width fix"
+      echo "    [PASS] 0x84030204 = 0x00000001 (expect 0x00000001)"
+      echo "    [PASS] 0x84030214 = 0x0000E4E4 (expect 0x0000E4E4)"
+      echo "AFI: FIX OK"; }
+    [[ "$c" == *"rev2hw.py a7obs"* ]] && { if [ "${STUB_A7_OFF:-0}" = 1 ]; then echo "A7OBS_STATE die_a=OFF die_b=OFF"; echo "VERDICT: FAIL AUTO_ANCHOR_EN is 0"; else echo "A7OBS_STATE die_a=RUNNING die_b=RUNNING"; echo "VERDICT: PASS"; fi; }
+    [[ "$c" == *"rev2hw.py a7window"* ]] && echo "VERDICT: PASS a7 window ok"
+    [[ "$c" == *autonomy* ]] && echo "AUTONOMY PROVEN"
+    [[ "$c" == *"rev2hw.py regs"* ]] && echo "VERDICT: PASS"
+    [[ "$c" == *"rev2hw.py health"* ]] && echo "VERDICT: PASS"
+    [[ "$c" == *b19_dip* ]] && echo "VERDICT: PASS"
+    for n in $(grep -o 'soak [0-9]*' <<<"$c" | cut -d' ' -f2); do echo "SOAK: sent=$n drained=$n good=$n bad=0 stalls=0"; done
+    [[ "$c" == *smoke1* ]] && echo "SMOKE1 PASS"
+    for d in $(grep -o 'crc ctl --dir [a-z0-9]*' <<<"$c" | awk '{print $4}'); do echo "VERDICT: PASS"; done
+    for d in $(grep -o 'crc stats --dir [a-z0-9]*' <<<"$c" | awk '{print $4}'); do
+      echo "CRC-STATS SUMMARY dir=$d"
+      if [[ "$c" == *"--expect-fixed"* ]]; then
+        if [ "${STUB_STATS_LOST:-0}" = 1 ]; then echo "STATS_RESULT=FIXED_FAIL exact=19 detected=24 lost=5 stray=0 dup=0 undetected_bad=0 exact_wilson95_lo=0.6"; echo "VERDICT: FAIL (stub)"; exit 1; fi
+        echo "STATS_RESULT=FIXED_PASS exact=${STUB_STATS_DETECTED:-30} detected=${STUB_STATS_DETECTED:-30} lost=0 stray=0 dup=0 undetected_bad=0 exact_wilson95_lo=0.886"
+        echo "VERDICT: PASS EXPECT_FIXED (stub)"
+      else
+        echo "  P(lost | detected)  = 5/24 = 20.8% (Wilson95 9.2%..40.5%)  [STUB canned]"
+        echo "STATS_RESULT=BUG_REPRODUCED lost=5 detected=24 stray=0 dup=0 undetected_bad=0 lost_wilson95_lo=0.092"
+        echo "VERDICT: PASS measurement valid (stub)"
+      fi; done
+    for d in $(grep -o 'rev2hw.py stream --dir [a-z0-9]*' <<<"$c" | awk '{print $4}'); do
+      if [ "${STUB_STORM:-0}" = 1 ]; then echo "STREAM_RESULT=STORM_SUSPECT  (stub)"; echo "VERDICT: FAIL stream $d (stub)"; exit 1; fi
+      echo "STREAM SUMMARY dir=$d (stub)"; echo "STREAM_RESULT=NO_STORM_OBSERVED exact=4/4 median_ms=1.0 max_ms=2.0"; echo "VERDICT: PASS stream $d (stub)"; done
+    for d in $(grep -o 'crc sweep --dir [a-z0-9]*' <<<"$c" | awk '{print $4}'); do echo "CRC-SWEEP $d: effective=7 fail=0"; echo "VERDICT: PASS"; done
+    exit 0 ;;
+esac
+echo "stub ssh: unhandled command: $cmd" >&2; exit 0

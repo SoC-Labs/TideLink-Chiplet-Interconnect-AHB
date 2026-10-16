@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+. "$(dirname "$0")/_log.sh"; slog "scp $*"; exit 0

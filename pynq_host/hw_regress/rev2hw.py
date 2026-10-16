@@ -13,6 +13,8 @@ board as root (/dev/mem).  Staged by hw_test.sh to ~/td/rev2hw/.  Contains no cr
   rev2hw.py stream --dir a2b|b2a [--n N] [--len 28] [--gap S]   stream-start / NACK-revert-storm observation (see cmd_stream; no
                                       revert counter exists in the RTL, so it reports delivery exactness, latency, Ack/Nack-FIFO
                                       full / almost-full samples, CRC counters and the Region F / 0x21F8 witnesses before vs after)
+  rev2hw.py axi [--n 10] [--rounds 20]   AXI data nodes (TL-018/019): CRC on at reset, clean ahb_sub traffic exact + quiet counters,
+                                      W-node (DataID 0x81) single-bit shots each CRC +1 with exact data (WRITES through die_a ahb_sub)
   rev2hw.py health                    both dies fcsm==4 and cal==1
   rev2hw.py errprobe                  information only: does each die's 0x23C hold a write (enable bit CLEAR)
 
@@ -26,6 +28,7 @@ that are not documented hang the PS, so there is NO read of TLAPB+0x3C, the unma
     +0x2108 STATUS [19:17] fcsm [16] cal     +0x21F4 AUTO_ANCHOR_OBS (docs/AUTO_ANCHOR_HW_DIAGNOSTIC_2026_08_04.md)
     +0x023C Wlink LINK_ERROR_INJECTION ([7:0] DataID [15:8] byte [18:16] bit [24] enable; 0->1 edge arms ONE shot)
     +0x1704 / +0x1714 / +0x1720 sideband (TideLink FC node 6) DataID / SM_CONTROL [16]=1 means CRC check OFF / CRC error count
+    +0x1000/1100/1200/1300/1400 AXI FC nodes AW/W/B/AR/R, same layout: +0x14 SM_CONTROL [16]=1 CRC check OFF, +0x20 CRC error count (axi only)
     +0x1708 TX FC FIFO [0]=empty   +0x1710 Ack/Nack FIFO [0] empty [1] full [2] half [3] almost-empty [4] almost-full (stream only)
     +0x21E0 OBS_AXI_NODES (marker 0xAD)   +0x21F8 witness word (marker 0xB5)   (stream only, read pre/post, both documented)
     +0x2004 REL_THRESHOLD +0x200C RX credit +0x2010 RX status[4]=avail +0x201C RX ctrl(2=flush) +0x2030 PAIR_CREDIT_EN
@@ -844,6 +847,95 @@ def cmd_errprobe(_):
     return verdict(True, "errprobe recorded (information only)")
 
 
+AXI_NODES = (("AW", 0x1000), ("W", 0x1100), ("B", 0x1200), ("AR", 0x1300), ("R", 0x1400))   # FC node bases (docs/REGISTER_MAP.md); +0x14 SM_CONTROL, +0x20 CRC error count
+AXI_W_BASE, AXI_W_DATAID = 0x1100, 0x81        # the W node (write data) and its DataID: die_a TX -> die_b RX counter
+
+
+@harness_guard
+def cmd_axi(args):
+    """TL-018/019 HW check (proven on HW 2026-10-16): AXI data nodes with CRC ON at reset.
+    (1) every AXI node on both dies resets SM_CONTROL[16]=0 (CRC on);
+    (2) wrong-DataID control (injector_controls C-INJ-INERT): armed for 0x7E, AXI traffic exact, no AXI counter moves;
+    (3) clean peer writes through die_a ahb_sub read back exact, AXI CRC counters quiet;
+    (4) single-bit shots on the W node (DataID 0x81, die_a TX): each is EFFECTIVE (die_b W CRC +1, data exact),
+        INERT or any other outcome fails; shot count == counter motion (C-COUNT-EXPECT).
+    RISK: a hung ahb_sub hangs the PS; recover with a POR (see scripts/hw/RUNBOOK.md)."""
+    if not link_ok():
+        return verdict(False, "link not up on both dies: nothing written")
+    p = Path("a2b")
+    if rd(p.errinj_addr()) != 0:
+        return verdict(False, "0x23C of %s does not read 0: nothing written" % NAME[p.t])
+    ok = True
+    crc_on = True
+    for d in "ab":
+        for nm, base in AXI_NODES:
+            sm = rd(APB[d] + base + SMCTL)
+            if (sm >> 16) & 1:
+                crc_on = False
+            P("AXI %s %-2s SM_CONTROL=0x%08x crc_check=%s" % (NAME[d], nm, sm, "OFF" if (sm >> 16) & 1 else "on"))
+    if not crc_on:
+        ok = False; P("  FAIL: an AXI node resets with CRC OFF (TL-018/019 image should reset CRC on)")
+    cnt = lambda: {(d, nm): rd(APB[d] + base + CRCCNT) & 0xFFFF for d in "ab" for nm, base in AXI_NODES}
+    NW, ROUNDS = 64, args.rounds
+    seed = int(time.time() * 1000) & 0xFFFF
+
+    def traffic(r, tag):
+        """One round of NW peer writes + read-back through die_a ahb_sub; returns the mismatch count."""
+        pat = lambda i: (tag ^ (r << 16) ^ (i << 4) ^ seed) & 0xFFFFFFFF
+        for i in range(NW):
+            wr(SUB["a"] + 4 * i, pat(i))
+        return sum(rd(SUB["a"] + 4 * i) != pat(i) for i in range(NW))
+
+    # (2) C-INJ-INERT / C-REG-HOLD on the AXI path
+    errs, info = ic.run_wrong_id_control(p.inj, lambda: traffic(0xFF, 0xB2000000), cnt, did=0x7E, byte=5, bit=0)
+    ar = info.get("armed")
+    P("AXI CTL wrong-DataID 0x7E armed: 0x23C readback = %s, bad=%s, AXI CRC counters unchanged=%s, disarmed=%s"
+      % ("0x%08x" % ar.value if ar is not None and ar.ok else (ar.why() if ar is not None else "n/a"), info.get("bad"), info.get("unchanged"), info.get("disarmed")))
+    for e in errs:
+        ok = False; P("  FAIL: " + e)
+    # (3) clean traffic must be exact and quiet
+    c0 = cnt()
+    bad = 0
+    for r in range(ROUNDS):
+        bad += traffic(r, 0xA1000000)
+        if not link_ok():
+            return verdict(False, "link degraded during clean round %d" % r)
+    c1 = cnt()
+    moved = {k: (c1[k] - c0[k]) & 0xFFFF for k in c0 if c1[k] != c0[k]}
+    P("AXI clean: %d rounds x %d words via die_a ahb_sub, mismatches=%d, AXI CRC counters moved=%s" % (ROUNDS, NW, bad, moved or "none"))
+    if bad or moved:
+        ok = False; P("  FAIL: clean AXI traffic must be byte-exact with quiet CRC counters")
+    # (4) W-node shots: C-INJ-LIVE (classify_board_shot) + C-COUNT-EXPECT (ShotLedger)
+    shots_ok = 0
+    ledger, w_start = ic.ShotLedger(), rd(APB["b"] + AXI_W_BASE + CRCCNT) & 0xFFFF
+    for k in range(args.n):
+        byte, bit = 4 + (k % 4), (k * 3) % 8
+        w0 = rd(APB["b"] + AXI_W_BASE + CRCCNT) & 0xFFFF
+        v = arm(p, AXI_W_DATAID, byte, bit)
+        if not v:
+            ok = False; P("SHOT %d: FAIL 0x23C %s" % (k, "not zero before arm" if v is None else "did not hold the armed value")); break
+        val = (0x5A000000 | (k << 8) | seed) & 0xFFFFFFFF
+        wr(SUB["a"] + 4 * (k % NW), val)
+        got = rd(SUB["a"] + 4 * (k % NW))
+        dis = disarm(p)
+        d = ((rd(APB["b"] + AXI_W_BASE + CRCCNT) & 0xFFFF) - w0) & 0xFFFF
+        ledger.add(None, d, "SHOT %d" % k)
+        cls = ic.classify_board_shot(d, got == val)
+        good = cls == "EFFECTIVE" and dis
+        shots_ok += good
+        P("SHOT %2d W byte=%d bit=%d: crc %d->%d (delta %d) data=%s disarmed=%s -> %s"
+          % (k, byte, bit, w0, (w0 + d) & 0xFFFF, d, "exact" if got == val else "BAD 0x%08x" % got, dis, "EXACT" if good else "FAIL(%s)" % cls))
+        if not link_ok():
+            ok = False; P("  FAIL: link degraded after shot %d" % k); break
+    for e in ledger.errors(total_delta=((rd(APB["b"] + AXI_W_BASE + CRCCNT) & 0xFFFF) - w_start) & 0xFFFF):
+        ok = False; P("  COUNT-EXPECT FAIL: " + e)
+    P("AXI_RESULT crc_on=%s clean_bad=%d clean_crc_moved=%d shots_exact=%d/%d" % (crc_on, bad, len(moved), shots_ok, args.n))
+    if shots_ok != args.n:
+        ok = False
+    return verdict(ok, "AXI nodes CRC on at reset; clean traffic exact and quiet; %d/%d W-node shots detected and replayed exactly" % (shots_ok, args.n),
+                   fail="AXI check failed (see FAIL lines)")
+
+
 def main():
     ap = argparse.ArgumentParser()
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -854,6 +946,9 @@ def main():
     c.add_argument("--dir", choices=("a2b", "b2a"), required=True)
     c.add_argument("--n", type=int, default=7)
     c.add_argument("--expect-fixed", action="store_true", dest="expect_fixed")
+    ax = sp.add_parser("axi")
+    ax.add_argument("--n", type=int, default=10)
+    ax.add_argument("--rounds", type=int, default=20)
     st = sp.add_parser("stream")
     st.add_argument("--dir", choices=("a2b", "b2a"), required=True)
     st.add_argument("--n", type=int, default=4)
@@ -865,6 +960,8 @@ def main():
     P("rev2hw %s start %s" % (a.cmd, time.strftime("%F %T")))
     if a.cmd == "crc":
         return {"ctl": cmd_crc_ctl, "sweep": cmd_crc_sweep, "stats": cmd_crc_stats}[a.mode](a)
+    if a.cmd == "axi":
+        return cmd_axi(a)
     if a.cmd == "stream":
         return cmd_stream(a)
     return {"regs": cmd_regs, "a7obs": cmd_a7obs, "a7window": cmd_a7window, "health": cmd_health, "errprobe": cmd_errprobe}[a.cmd](a)

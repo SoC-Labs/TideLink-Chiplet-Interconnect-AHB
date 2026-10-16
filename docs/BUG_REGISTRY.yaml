@@ -2786,7 +2786,7 @@ bugs:
     title: "CDC: raw I2C pad inputs reached the autoneg next-state and the I2C cores unsynchronised (R1); SWI_TRAINING_MODE crossed into the RX-clock calibrator through one flop (R2)"
     severity: medium
     area: cdc
-    status: fix_built            # structural fix; simulation cannot prove a metastability fix, only non-regression
+    status: sim_proven           # 2026-10-16: structural gate cdc_sync_structure green + 13 mutants red; SpyGlass re-run on main eb94efac: R1 36 -> 0, R2 0 (docs/CDC_EVIDENCE_TL051_TL055_2026-10-16.md). Simulation cannot prove a metastability fix.
     registered: 2026-09-23
     opened: 2026-09-23           # first SpyGlass CDC run on the compute die, cdc_verify_struct, mission mode
     summary: >
@@ -2823,10 +2823,18 @@ bugs:
       netlist_affecting: true
       compute_lineage: "53dfd180 on origin/fix/kr260-compute-timing-selectors (pushed by David 2026-09-23 for the compute re-synthesis). The first full gate ever on that lineage: 58 suites, 55 PASS, 3 XFAIL, 0 FAIL (td-bisect/simgate-53dfd18-compute.REPORT.md)."
     verification:
-      sim_test: "non-regression only (all PASS on 4df58bf, clean stamps; fc_adapter 34/34 + 7/7 too): calibrator_wrap, t30_autonomous_fc_handoff and t31_autonomous_training_exit (two dies, a real open-drain I2C bus, negotiation active), i1_selfarm_rolelock and i1_fixe_training_release (the R2 release event)"
+      sim_test: "cdc_sync_structure (sim_gate_cdc_sync_structure; scripts/ci/cdc_sync_structure.py with must-fail control scripts/ci/tests/test_cdc_sync_structure.py) -- asserts the 2-flop chain on i2c_scl_i/i2c_sda_i (apb_clk, raw pad read once, first stage feeds only the second, u_autoneg/u_i2c_slave/u_i2c_master resolve to the second stage) and on swi_training_hold_i in the calibrator. PLUS non-regression only (all PASS on 4df58bf, clean stamps; fc_adapter 34/34 + 7/7 too): calibrator_wrap, t30_autonomous_fc_handoff and t31_autonomous_training_exit (two dies, a real open-drain I2C bus, negotiation active), i1_selfarm_rolelock and i1_fixe_training_release (the R2 release event)"
       in_sim_gate: true
       hw_tested: false
-      cdc_rerun: "not yet -- rerun cdc_verify_struct on the new netlist and confirm R1/R2 classify as synchronised"
+      cdc_rerun: >
+        2026-10-16, main eb94efac, SpyGlass vT-2022.06-SP2 cdc_verify_struct on the compute
+        payload snapshot with main's three override files: R1 unsynchronised rows 0 (control with
+        the fixes reverted: 36), R2 0, no Ac_unsync/Ac_glitch03 row names an I2C pad or swreset.
+        docs/CDC_EVIDENCE_TL051_TL055_2026-10-16.md.
+      red_green: >
+        Structural gate: green on main; red on 13 in-memory mutants and on the real pre-fix files
+        (controller before 4df58bfd: R1 group red; calibrator before 4df58bfd: R2 group red).
+        CDC control: fixes reverted -> 36 R1 unsync rows, restored -> 0.
     related: [TL-047]
 
   - id: TL-052
@@ -3589,14 +3597,18 @@ bugs:
       netlist_affecting: true
       compute_lineage: "d00ae69 on compute/h30-h31 (parent 745f601); the compute RC rsyn9 pin."
     verification:
-      sim_test: null                # no functional test exists: this is a CDC-only proof by design (a glitch is not observable in zero-delay RTL sim)
-      in_sim_gate: false
+      sim_test: "cdc_sync_structure (sim_gate_cdc_sync_structure; scripts/ci/cdc_sync_structure.py with must-fail control scripts/ci/tests/test_cdc_sync_structure.py): u_calibrator.swreset is one identifier driven by exactly one apb_clk flop and no continuous assign; in the calibrator swreset_s1/s2 chain on clk, raw swreset read once, swreset_sync = swreset_s2. Structural, not behavioural: a glitch is not observable in zero-delay RTL sim."
+      in_sim_gate: true
       hw_tested: false
       hw_validated: false
       evidence: null
       vehicle: null
       red_green: >
-        CDC proof, not a sim red/green. SpyGlass cdc_verify_struct, base (rev-2
+        2026-10-16 structural gate: green on main eb94efac; red on 13 in-memory mutants and on the
+        real pre-fix files (pre-35341c12 controller: comb OR-merge on .swreset; calibrator: raw
+        swreset). SpyGlass re-run on main with the fix reverted -> 2 Ac_glitch03 rows on
+        u_calibrator.swreset_s1, restored -> 0 (docs/CDC_EVIDENCE_TL051_TL055_2026-10-16.md).
+        Earlier compute-lineage proof, kept: CDC proof, not a sim red/green. SpyGlass cdc_verify_struct, base (rev-2
         e5b9467f overrides) vs fixed: Ac_glitch03 56 -> 54 (the two
         u_calibrator.swreset_s1 'can glitch' rows are gone), Ac_sync01 count
         unchanged, Ac_conv01 102 -> 104 (the same intended pair as on compute), 0

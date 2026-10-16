@@ -30,7 +30,7 @@ VERILOG_SOURCES = $(CURDIR)/tb_top.sv $(CURDIR)/pad_skid.sv $(CURDIR)/err_inject
 TOPLEVEL = tb_top
 MODULE  ?= test_axi_datanode_recovery
 
-export PYTHONPATH := $(CURDIR):$(TIDELINK_HOME)/python:$(PYTHONPATH)
+export PYTHONPATH := $(CURDIR):$(TIDELINK_HOME)/python:$(TIDELINK_HOME)/cocotb/common:$(PYTHONPATH)
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
 
@@ -544,7 +544,7 @@ gaps: gaps_nodes gaps_backstop gaps_ecc
 SBCRC_TESTS := test_sideband_clean_control test_sideband_crc_replay \
 	test_sideband_crc_position_ab test_sideband_crc_position_ba test_sideband_hit_header_field \
 	test_sideband_two_hits_in_flight test_sideband_hit_on_replay \
-	test_sideband_hit_first_after_bringup test_axi_w_crc_replay_control
+	test_sideband_hit_first_after_bringup test_sideband_injector_controls test_axi_w_crc_replay_control
 .PHONY: sbcrc sbcrc_neg sbcrc_all sbcrc_neg_l9_replay sbcrc_neg_l9_pos sbcrc_neg_crcoff $(SBCRC_TESTS)
 $(SBCRC_TESTS):
 	$(MAKE) SIM_BUILD=sim_build_sbcrc MODULE=test_sideband_crc_replay TESTCASE=$@

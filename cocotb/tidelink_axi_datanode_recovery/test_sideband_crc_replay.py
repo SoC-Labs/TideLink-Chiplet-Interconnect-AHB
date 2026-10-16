@@ -23,6 +23,8 @@ Tests (each needs its own bring-up/sim -- run with TESTCASE=, see the Makefile `
   test_sideband_two_hits_in_flight   two corrupted packets inside one NACK window
   test_sideband_hit_on_replay        the REPLAY of a corrupted packet is itself corrupted
   test_sideband_hit_first_after_bringup  the very first sideband packet after bring-up is hit
+  test_sideband_injector_controls    the injector's own must-fail controls (injector_controls.py, shared with the
+                                     KR260 tool): alias refused, 0x23C holds, wrong-DataID inert, 0x003C alias dead
   test_axi_w_crc_replay_control      positive control: W (0x81) byte 5 via a peer write
 
 Negative controls (Makefile `sbcrc_neg_*`, must FAIL; wrapped as a gate suite):
@@ -37,6 +39,10 @@ import cocotb
 from cocotb.triggers import RisingEdge, ClockCycles
 
 from pair_v2_common import PairV2TB, run_bringup_full
+# Shared injector must-fail controls (ONE implementation, also run by the KR260 board tool): injector offset ==
+# RDL 0x23C, arm readback holds, wrong-DataID arm inert, a fired shot must move the counter, shots == counts.
+from injector_ctl_cocotb import (AsyncInjector, ControlError, ShotLedger, arm_for_gate,
+                                 run_wrong_id_control, shot_errors)
 from test_axi_datanode_gaps import (AHBSubMaster, _force_axi_crc, _slave_bram_peek,
                                     _release_all,
                                     APER_BASE, OFF_INJECT, OFF_SANITY, D_INJECT, D_SANITY)
@@ -100,6 +106,9 @@ class Ctx:
         self.tb, self.dir = tb, direction
         self.tx, self.rx = ("m", "s") if direction == "ab" else ("s", "m")
         self.seq = 0               # tag generator, so no two messages in a bring-up share a payload
+        self.inj = AsyncInjector(tb.apb(self.tx), tb.dut.hclk)     # raises ControlError on a non-RDL offset
+        self.ledger = ShotLedger()  # C-COUNT-EXPECT: every shot's counter movement
+        self.crc_base = None        # receiver CRC counter before the first shot (set where it is first read: no extra APB traffic)
 
     def tag(self):
         self.seq += 1
@@ -209,21 +218,29 @@ async def crc(ctx):
 
 
 async def arm_apb(ctx, did, byte, bit):
-    """rev2hw.arm: write 0, then the armed value (0->1 edge in the TX link clock)."""
-    apb = ctx.tb.apb(ctx.tx)
-    await apb.write(APB_ERRINJ, 0)
-    await ClockCycles(ctx.tb.dut.hclk, 400)
-    assert await apb.read(APB_ERRINJ) == 0, "0x23C does not read 0"
-    val = (1 << 24) | ((bit & 7) << 16) | ((byte & 0xFF) << 8) | (did & 0xFF)
-    await apb.write(APB_ERRINJ, val)
-    await ClockCycles(ctx.tb.dut.hclk, 400)
-    rb = await apb.read(APB_ERRINJ)
-    assert rb == val, f"0x23C readback 0x{rb:08x} != 0x{val:08x}"
+    """rev2hw.arm: write 0, then the armed value (0->1 edge in the TX link clock); 0x23C must read 0 before
+    and read back the armed value after (injector_controls C-REG-ADDR / C-REG-HOLD)."""
+    await ctx.inj.arm(did, byte, bit)
 
 
 async def disarm_apb(ctx):
-    await ctx.tb.apb(ctx.tx).write(APB_ERRINJ, 0)
-    await ClockCycles(ctx.tb.dut.hclk, 400)
+    await ctx.inj.disarm()
+
+
+async def wrong_id_control(ctx, drive):
+    """C-INJ-INERT: arm a DataID nobody uses while `drive()` (-> number of messages NOT delivered exactly)
+    runs; the receiver's CRC counter must not move and the data must be exact."""
+    errs = await run_wrong_id_control(ctx.inj, drive, lambda: crc(ctx))
+    assert not errs, "PRECONDITION: wrong-DataID injector control: " + "; ".join(errs)
+
+
+async def finish(ctx, results):
+    """_verdict() plus C-COUNT-EXPECT: the CRC counter moved exactly as much as the shots account for."""
+    total = ((await crc(ctx)) - ctx.crc_base) & 0xFFFF
+    errs = ctx.ledger.errors(total_delta=total)
+    if errs:
+        results = list(results) + [dict(name="count_expect", errors=errs)]
+    _verdict(results)
 
 
 def pi(ctx, name, v=None):
@@ -240,11 +257,9 @@ async def pi_open(ctx, tgt, tgt2=-1, rep=False, byte=BYTE, bit=BIT):
     pi(ctx, "pi_clr", 1); await ClockCycles(ctx.tb.dut.hclk, 50); pi(ctx, "pi_clr", 0)
     pi(ctx, "pi_did", SB_ID); pi(ctx, "pi_tgt", tgt); pi(ctx, "pi_tgt2", tgt2)
     pi(ctx, "pi_rep_en", 1 if rep else 0)
-    await ctx.tb.apb(ctx.tx).write(APB_ERRINJ, 0); await ClockCycles(ctx.tb.dut.hclk, 400)
+    await ctx.inj.clear()                       # write 0; 0x23C must read 0
     pi(ctx, "pi_en_" + ctx.tx, 1)
-    await ctx.tb.apb(ctx.tx).write(
-        APB_ERRINJ, (1 << 24) | ((bit & 7) << 16) | ((byte & 0xFF) << 8) | SB_ID)
-    await ClockCycles(ctx.tb.dut.hclk, 400)
+    await arm_for_gate(ctx.inj, SB_ID, byte, bit)   # armed value written and read back
 
 
 async def pi_close(ctx):
@@ -277,6 +292,8 @@ async def shot(ctx, name, msgs, tgt, tgt2=-1, rep=False, byte=BYTE, bit=BIT,
     tb = ctx.tb
     mon = Mon(tb, ctx.rx, ctx.tx); mon.start()
     c0 = await crc(ctx)
+    if ctx.crc_base is None:
+        ctx.crc_base = c0
     await pi_open(ctx, tgt, tgt2, rep, byte, bit)
     await send(ctx, msgs, gap)
     got = await collect(ctx, msgs)
@@ -293,8 +310,8 @@ async def shot(ctx, name, msgs, tgt, tgt2=-1, rep=False, byte=BYTE, bit=BIT,
     fresh = classify(fm, await collect(ctx, fm))["exact"]
     det = (c1 - c0) & 0xFFFF
     want_hits = 1 + (1 if tgt2 >= 0 else 0) + (1 if rep else 0)
-    want_crc = fired if expect_crc is None else expect_crc
-    errs = []
+    errs = shot_errors(fired, det, want_hits, expect_crc, npk)       # C-INJ-LIVE (injector_controls)
+    ctx.ledger.add(fired, det, name)                                   # C-COUNT-EXPECT
     if not cl["exact"]:
         for i, g in enumerate(got):
             hit = [j for j, m in enumerate(msgs) if list(m) == list(g)]
@@ -302,10 +319,6 @@ async def shot(ctx, name, msgs, tgt, tgt2=-1, rep=False, byte=BYTE, bit=BIT,
                         "STRAY words=" + ",".join(f"{w:08x}" for w in g)))
         for j, m in enumerate(msgs):
             tb.log.info(f"[sbcrc]   sent[{j}] words=" + ",".join(f"{w:08x}" for w in m))
-    if fired != want_hits:
-        errs.append(f"ERROR shot: injector fired {fired}x, wanted {want_hits} (tx pkts {npk}); vacuous")
-    if det != want_crc:
-        errs.append(f"ERROR detect: fired {fired} but CRC counter +{det} (wanted +{want_crc}); vacuous")
     if not cl["exact"]:
         errs.append(f"NOT EXACTLY-ONCE: lost={cl['lost']} dup={cl['dup']} stray={cl['stray']} "
                     f"delivered={len(got)}/{len(msgs)}")
@@ -377,6 +390,7 @@ async def test_sideband_crc_replay(dut):
     fresh = classify(fm, await collect(ctx, fm))["exact"]
     dut._log.info(f"[sbcrc] replay crc+{d} {cl} fresh={fresh} nack_req={mon.c(ctx.rx, 'send_nack_req')} "
                   f"l9b={mon.c(ctx.rx, 'socl_l9b_reanchor_now')} l9c={mon.c(ctx.rx, 'socl_l9c_backward')}")
+    ctx.ledger.add(None, d, "replay")                                  # C-COUNT-EXPECT (shot count unobservable here)
     assert d == 1, f"shot not detected (CRC counter +{d}): vacuous"
     assert cl["exact"], f"detected sideband CRC error was NOT replayed exactly once: {cl}"
     assert fresh, "link unhealthy after the shot"
@@ -394,7 +408,7 @@ async def _positions(dut, direction):
     res = []
     for nm, p in pos:
         res.append(await shot(ctx, f"{direction}:{nm}@{p}", stream_msgs(ctx), p))
-    _verdict(res)
+    await finish(ctx, res)
 
 
 @cocotb.test()
@@ -431,7 +445,7 @@ async def test_sideband_hit_header_field(dut):
         if (not ecc_on) and byte == 0 and not r["nack_req"]:
             r["errors"].append("ERROR drop: DataID hit with ECC bypassed caused no NACK (hit had no effect); vacuous")
         res.append(r)
-    _verdict(res)
+    await finish(ctx, res)
 
 
 @cocotb.test()
@@ -442,7 +456,7 @@ async def test_sideband_two_hits_in_flight(dut):
     res = []
     for t1, t2 in ((1, 2), (1, 3), (n // 2, n // 2 + 1)):
         res.append(await shot(ctx, f"two_hits@{t1},{t2}", stream_msgs(ctx), t1, tgt2=t2))
-    _verdict(res)
+    await finish(ctx, res)
 
 
 @cocotb.test()
@@ -453,7 +467,7 @@ async def test_sideband_hit_on_replay(dut):
     res = []
     for p in POSLIST or (1, n // 2, n - 2):
         res.append(await shot(ctx, f"hit_on_replay@{p}", stream_msgs(ctx), p, rep=True))
-    _verdict(res)
+    await finish(ctx, res)
 
 
 @cocotb.test()
@@ -463,7 +477,52 @@ async def test_sideband_hit_first_after_bringup(dut):
     ctx = await bringup(dut)
     msgs = stream_msgs(ctx)
     res = [await shot(ctx, "first_after_bringup@0", msgs, 0)]
-    _verdict(res)
+    await finish(ctx, res)
+
+
+@cocotb.test()
+async def test_sideband_injector_controls(dut):
+    """The injector's own must-fail controls (injector_controls.py, the SAME code the KR260 tool runs), in their
+    own bring-up so the nine invariant tests keep their exact traffic timing:
+      C-REG-ADDR   an injector driver pointed at the 0x003C alias is refused before any write
+      C-REG-HOLD   0x23C reads 0, holds the armed value (readback), reads 0 after the disarm
+      C-INJ-INERT  armed for a DataID nobody uses: a message is delivered exactly once, CRC +0, disarm clean
+      ALIAS-DEAD   writing the alias 0x003C (the historical host bug) does NOT arm anything: the same shot then
+                   leaves the CRC counter at +0 -- which is exactly why a shot with no counter movement is an ERROR"""
+    ctx = await bringup(dut)
+    # C-REG-ADDR
+    try:
+        AsyncInjector(ctx.tb.apb(ctx.tx), dut.hclk, offset=0x003C)
+        raise AssertionError("an injector pointed at the 0x003C alias was accepted")
+    except ControlError:
+        pass
+    # C-REG-HOLD (arm asserts zero-before and readback-equals-written; disarm must read 0)
+    r = await ctx.inj.arm(SB_ID, BYTE, BIT)
+    assert r.ok and r.value == ((1 << 24) | ((BIT & 7) << 16) | ((BYTE & 0xFF) << 8) | SB_ID)
+    await ctx.inj.disarm()
+    assert await ctx.inj.reads_zero(), "0x23C does not read 0 after the disarm"
+    # C-INJ-INERT
+    warm = [mkmsg(ctx.tag(), 2)]
+
+    async def _drive():
+        await send(ctx, warm)
+        return 0 if classify(warm, await collect(ctx, warm))["exact"] else 1
+    await wrong_id_control(ctx, _drive)
+    # ALIAS-DEAD: write the arm value to the alias, send, and require the counter to stay put
+    c0 = ctx.crc_base = await crc(ctx)
+    apb = ctx.tb.apb(ctx.tx)
+    await apb.write(0x003C, (1 << 24) | ((BIT & 7) << 16) | ((BYTE & 0xFF) << 8) | SB_ID)
+    await ClockCycles(dut.hclk, 400)
+    msgs = [mkmsg(ctx.tag(), 2)]
+    await send(ctx, msgs)
+    got = await collect(ctx, msgs)
+    d = ((await crc(ctx)) - c0) & 0xFFFF
+    dut._log.info(f"[sbcrc] alias-arm: crc+{d} exact={classify(msgs, got)['exact']} 0x23C reads 0x{await apb.read(APB_ERRINJ):08x}")
+    assert d == 0 and classify(msgs, got)["exact"], f"the 0x003C alias armed something (CRC +{d}): the sim map changed"
+    assert await ctx.inj.reads_zero(), "an alias write reached 0x23C"
+    ctx.ledger.add(0, d, "alias")
+    errs = ctx.ledger.errors(total_delta=((await crc(ctx)) - ctx.crc_base) & 0xFFFF)     # C-COUNT-EXPECT
+    assert not errs, "; ".join(errs)
 
 
 @cocotb.test()
@@ -476,10 +535,10 @@ async def test_axi_w_crc_replay_control(dut):
     ctx = Ctx(tb, "ab")
     master = AHBSubMaster(dut)
     _force_axi_crc(tb, True)
+    fcw = tb.top("s").u_chiplet_controller.u_wlink.axi2wl.wlink_axiwFC
     await master.write(APER_BASE + OFF_SANITY, D_SANITY)
     await ClockCycles(dut.hclk, 2000)
     assert _slave_bram_peek(dut, OFF_SANITY) == D_SANITY, "clean sanity write failed"
-    fcw = tb.top("s").u_chiplet_controller.u_wlink.axi2wl.wlink_axiwFC
     c0 = _s(fcw, "crc_errors") or 0
     await arm_apb(ctx, 0x81, BYTE, BIT)
     await master.write(APER_BASE + OFF_INJECT, D_INJECT, timeout=80000)

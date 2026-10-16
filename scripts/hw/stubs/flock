@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# STUB flock: logs argv, then runs the command (no real lock is taken)
+. "$(dirname "$0")/_log.sh"
+slog "flock $*"
+while [ $# -gt 0 ]; do case "$1" in -w|-E) shift 2 ;; -*) shift ;; *) break ;; esac; done
+shift   # the lock file
+exec "$@"

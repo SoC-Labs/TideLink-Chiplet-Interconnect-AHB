@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# STUB sshpass: logs argv, notes whether SSHPASS is exported (never its value), then runs the rest
+. "$(dirname "$0")/_log.sh"
+slog "sshpass $*   [SSHPASS_exported=$([ -n "${SSHPASS:-}" ] && echo yes || echo no)]"
+[ "$1" = "-e" ] || { echo "stub sshpass: only -e is accepted" >&2; exit 2; }
+shift; exec "$@"

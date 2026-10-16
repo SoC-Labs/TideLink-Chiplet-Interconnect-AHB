@@ -1264,7 +1264,7 @@ sim_gate_axi_datanode_gaps:
 
 # ── TL-059 (2026-10-14): sideband (0xA1, FCSM_6) CRC-replay acceptance ───────────
 # Every CRC-detected sideband packet must be delivered exactly once (invariant in
-# cocotb/tidelink_axi_datanode_recovery/test_sideband_crc_replay.py). Runs the nine positive
+# cocotb/tidelink_axi_datanode_recovery/test_sideband_crc_replay.py). Runs the ten positive
 # cases, the header-ECC-bypassed variant, and the FOUR MUST-FAIL arms (pre-fix RTL via
 # +define+SOCL_L9_ALWAYS x3, receiver disable_crc=1 x1) -- a green result is only meaningful
 # because the same bench goes red on those. 14 sims of ~1-3 min each (compile shared).
@@ -2749,6 +2749,31 @@ selfcheck_gates:
 	else echo "selfcheck_gates: FAILURES —$$red"; \
 	     echo "selfcheck_gates: a checker cannot produce its failing verdict"; fi; \
 	exit $$rc
+# ── host-script register addresses vs the register map (TL-059 evidence audit) ──
+# A KR260 error-injection tool wrote the UNMAPPED alias 0x003C instead of LINK_ERROR_INJECTION
+# (0x023C): the write was dropped, the CRC counter read 0, and "0 errors, all exact" looked like a
+# pass. scripts/ci/check_host_addrs.py extracts every register offset/address the host Python
+# (pynq_host/, fpga/hw_regression/, scripts/) uses and rejects those absent from the map (src/rdl +
+# the RTL-only tables of docs/REGISTER_MAP.md), the 0x003C alias, and a register name bound to the
+# wrong address. Seconds, no tools. Its own must-fail control (fixtures, map-dependence, stale
+# allowlist) is scripts/ci/tests/test_check_host_addrs.py, run by selfcheck_gates.
+#
+#   make check_host_addrs       lint the tree          (exit 1 on any finding, 2 = cannot evaluate)
+#   make check_host_addrs_list  print every extracted constant and its verdict
+#
+# KR260 regression tooling (pynq_host/hw_regress/, scripts/hw/): offline proof that it can fail --
+# board-tool selftest (simulated register models), injector library controls, hw_test.sh stub
+# rehearsals of every safety feature, and a check_markers must-fail. No board, no network, ~1 min.
+#
+#   make hw_tooling_selftest    prints HW_SELFTEST_RESULT=PASS|FAIL
+.PHONY: check_host_addrs check_host_addrs_list hw_tooling_selftest
+check_host_addrs:
+	@python3 $(TIDELINK_HOME)/scripts/ci/check_host_addrs.py
+check_host_addrs_list:
+	@python3 $(TIDELINK_HOME)/scripts/ci/check_host_addrs.py --list
+hw_tooling_selftest:
+	@bash $(TIDELINK_HOME)/scripts/hw/selftest_hw.sh
+
 # ── registry-driven regression harness (durable, "run for all bugs") ─────────
 .PHONY: sim_gate_registry_coverage sim_gate_regressions sim_gate_one
 
@@ -2760,7 +2785,7 @@ sim_gate_registry_coverage:
 
 # The single authoritative regression front-end: prove registry coverage, then run
 # the tip-stamped, fail-loud, exit-on-FAIL aggregate. Use THIS in CI, not bare sim_gate.
-sim_gate_regressions: selfcheck_gates sim_gate_registry_coverage sim_gate
+sim_gate_regressions: selfcheck_gates sim_gate_registry_coverage check_host_addrs hw_tooling_selftest sim_gate
 
 # ── controls for the checkers themselves ────────────────────────────────────
 # A checker whose own failure mode is never exercised is decoration. Every

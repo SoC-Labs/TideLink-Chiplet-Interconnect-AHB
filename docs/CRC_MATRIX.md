@@ -48,4 +48,4 @@ shipping default and must show the silent corruption; `ctl_ship_default` fails i
 | nightly | `make crc_matrix_nightly` (`CM_JOBS=4`) | 16 controls + ~220 | 4 | not run (estimate ~25 s/case) |
 Per case: ~20-25 s (about 8 s of VCS sim plus startup); compile ~25 s per build per worker.
 Full-gate launch line:
-`cd <worktree> && { set +u; source set_env.sh; } && CHIPLET_HOME=/home/dam1n19/SoCLabs/td-bisect/pinned-chiplet-home-1ef68f1 TIDECHART_HOME=/home/dam1n19/SoCLabs/td-bisect/ethchip-pinbump-2026-08-19/tidechart make sim_gate`
+`cd <worktree> && { set +u; source set_env.sh; } && CHIPLET_HOME=<pinned chiplet home> TIDECHART_HOME=<pinned tidechart home> make sim_gate`

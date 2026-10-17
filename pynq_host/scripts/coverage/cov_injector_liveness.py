@@ -8,8 +8,8 @@
 # trivially satisfies "die_a alive + die_b byte-exact".
 #
 # WHY NOT CRC-RISE (the trap this gate avoids, C1):
-#   AXI-data FCSM nodes default disable_crc=1 (WlinkGenericFCSM*.v:713), so an RX
-#   CRC counter does NOT rise even with a LIVE injector. do_errinject reads
+#   AXI-data FCSM nodes WERE disable_crc=1 at reset on bitstreams built before TL-018 (2026-10; now 0 = CRC ON),
+#   so on such a bitstream an RX CRC counter does NOT rise even with a LIVE injector. do_errinject reads
 #   fc_crc_of on the injecting die => structurally can never observe the flip.
 #
 # THE CRC-FREE METHOD (C1):

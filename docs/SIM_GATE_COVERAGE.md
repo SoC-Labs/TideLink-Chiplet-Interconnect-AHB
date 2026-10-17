@@ -655,9 +655,9 @@ report generator exits non-zero on that condition rather than printing a score.
   deliberately not instrumented — a design database with zero executed tests
   measures nothing and would dilute the merge with V1-only files.
 - Consequently the **ASIC-only sources they are the sole cover for are never
-  simulated at all**: the ASIC flist ships `deps/…/WlinkGenericFCSM*.v` and
-  `src/rtl/fifo/asic/tidelink_sram.sv`, while every simulating suite elaborates
-  the `src/rtl/local_overrides/` / `fifo/fpga/` twins instead. The report calls
+  simulated at all**: the ASIC flist ships `src/rtl/fifo/asic/tidelink_sram.sv`
+  (and, until TL-018/TL-019 in 2026-10, `deps/…/WlinkGenericFCSM*.v`), while every
+  simulating suite elaborates the `fifo/fpga/` twin instead. The report calls
   these out as **SHADOWED ASIC SOURCES**, because coverage of the substitute says
   nothing about the file that tapes out.
 
@@ -737,3 +737,20 @@ All four negative arms use the inverted-verdict wrapper (a pass is the error; a 
 cocotb verdict is COULD-NOT-EVALUATE). What it does NOT cover: multi-bit/aliased CRC errors, CRC
 errors on short (ACK/NACK/credit) packets, and the stream-start behaviour on silicon
 (`stream_start_anchor`, see TL-059 in `docs/BUG_REGISTRY.yaml`).
+
+---
+
+## 15. TL-018 / TL-019: the tapeout flist ships the hardened FC nodes, CRC ON at reset (2026-10)
+
+David's decision: `flists/tidelink_top_full_asic_v2.flist` (and the V1 `tidelink_top_full_asic.flist`) take
+`WlinkGenericFCSM{,_1.._4}` and `WlinkGenericFCReplayV2_7/_9` from `src/rtl/local_overrides/`, exactly like the FPGA v2
+flist, and those FC nodes reset `out_prepend_swi_disable_crc` to 0 (CRC ON). `+define+TIDELINK_FCSM_CRC_OFF_AT_RESET`
+restores the old CRC-off reset. Gate expectations that changed, each with its must-fail arm:
+
+| suite | new expectation | must-fail arm (proves the expectation can go red) |
+|---|---|---|
+| `flist_divergence` | the ASIC/FPGA divergence set is {i2c_master, tidelink_sram}; FC nodes + replay _7/_9 + ReplayAddrSync_18 are MUST-MATCH | mutated copies of the ASIC flist (FCSM_2 / Replay_9 / AddrSync_18 back on deps) must fail `--check` with "MUST-MATCH violated" |
+| `asic_fileset_identity` | BOTH flists: all 10 AXI FC node instances carry all 5 `socl_` markers and reset CRC ON | `ASIC_FLIST=1 ASIC_FCSM_DEPS=1` must fail with "FILE-SET IDENTITY MISMATCH" |
+| `asic_l7_starvation_backstop` | FPGA arm AND ASIC arm ESCAPE state 7 | `ASIC_FLIST=1 ASIC_FCSM_DEPS=1` arm must still WEDGE (the stimulus detects the missing backstop) |
+| `crc_matrix_quick` (+ new `crc_matrix_quick_asic`, `ASIC_FLIST=1`) | AXI cases run at the shipping default with NO APB write; `ctl_ship_default` expects 0 on all six nodes | `croff` build: `ctl_croff_define` (reset reads 1), `mut_croff_W_first` (no APB enable -> silent corruption); `ctl_detect_sense_*` write bit16=1 explicitly; `ctl_fileset_asicdeps` |
+| `axi_datanode_recovery`, `_gaps`, `n1_*`, `a2l_r1_probe` | `_force_axi_crc(on=True)` no longer forces anything (shipping default); `on=False` Force(1)s CRC off | `test_axi_b_crc_off_silent_payload`, `gaps_crc` CRC-off arm (explicit Force(1)) |

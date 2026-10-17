@@ -144,10 +144,13 @@ def _axi_node(tb, side, inst):
 
 
 def _force_axi_crc(tb, on):
+    # TL-018: CRC is ON at RESET in the shipping RTL (out_prepend_swi_disable_crc resets 0), so on=True must NOT
+    # force anything -- the test then runs the shipping default. on=False Force(1)s CRC OFF explicitly (the
+    # old FPGA reset value was 1 and Release() used to mean off; that is no longer true).
     for side in ("m", "s"):
         for inst in AXI_FC_NODES:
             try:    _axi_node(tb, side, inst).out_prepend_swi_disable_crc.value = \
-                        (Force(0) if on else Release())
+                        (Release() if on else Force(1))
             except Exception: pass
 
 

@@ -7,7 +7,7 @@
 #      Every safety feature has a rehearsal that must go red when the feature is removed:
 #        sudo pre-check before any POR, flock/config refusal, password never in argv, sudo password on stdin,
 #        sync after staging + verify_staged after a POR, por_one 3x retry, restore trap, EXPECT_FIXED/CRCSTATS/
-#        STREAM/BRINGUPS profiles, --unvetted (exit 6) and the removed ALLOW_UNVETTED_BUILD bypass.
+#        STREAM/BRINGUPS/AXICHECK profiles, --unvetted (exit 6) and the removed ALLOW_UNVETTED_BUILD bypass.
 #   4. check_markers.py must-fail: a tree whose FCSM_6 lacks the TL-059 gate reports MARKERS_RESULT=FAIL.
 #
 # Prints HW_SELFTEST_RESULT=PASS|FAIL and exits 0 only on PASS.  Run: make hw_tooling_selftest
@@ -46,6 +46,7 @@ check "basic: the whole run is re-executed under flock on the rig lock (flock -w
 check "basic: password never on any argv (stub log has no password text)" bash -c "! grep -q stub-not-a-password '$L'"
 check "basic: sudo password reached sudo on stdin line 1" grep -q 'stdin line 1 = a password' "$L"
 check "basic: sync after staging precedes the PL load" bash -c "s=\$(grep -n '>>> SYNC' '$L' | head -1 | cut -d: -f1); d=\$(grep -n '>>> PL LOAD' '$L' | head -1 | cut -d: -f1); [ -n \"\$s\" ] && [ -n \"\$d\" ] && [ \"\$s\" -lt \"\$d\" ]"
+check "basic: AXICHECK is off by default (no 14_axi_check.txt in the basic run, so no extra injection)" bash -c "[ ! -e '$R/14_axi_check.txt' ] && ! grep -q 'axi rc=' '$R/SUMMARY.tsv'"
 check "basic: both boards POR'd before the deploy and again at the end" bash -c "[ \$(grep -c '>>> POR kr260_01' '$L') -ge 3 ] && [ \$(grep -c '>>> POR kr260_02' '$L') -ge 3 ]"
 check "basic: a rehearsal that skipped vetting still says so (preflight FAIL line)" grep -q 'PREFLIGHT FAIL.*not vetted' "$R/00_preflight.txt"
 
@@ -57,6 +58,11 @@ check "fixed: stats mode stops after step 14 and restores" bash -c "grep -q 'res
 reh fixedlost 1 EXPECT_FIXED=1 CRCSTATS=1 STUB_STATS_LOST=1 --
 check "fixedlost: FAIL at crc_ctl, restore trap ran" bash -c "grep -q 'crc_ctl.*FAIL' '$R/SUMMARY.tsv' && [ -f '$R/99_restore.txt' ] && grep -q 'RESTORE: both boards POR' '$R/99_restore.txt'"
 check "fixedlost: hand-off message printed" grep -q 'HAND-OFF TO THE RIG OWNER' "$R/99_restore.txt"
+
+reh axi 0 AXICHECK=1 --
+check "axi: AXICHECK=1 ran rev2hw.py axi, kept 14_axi_check.txt with the AXI_RESULT line" bash -c "grep -q '^AXI_RESULT crc_on=True' '$R/14_axi_check.txt' && grep -q 'axi rc=0 AXI_RESULT' '$R/SUMMARY.tsv'"
+reh axifail 1 AXICHECK=1 STUB_AXI_FAIL=1 --
+check "axifail: a failing AXI check fails crc_ctl and the restore trap ran" bash -c "grep -q 'crc_ctl.*FAIL' '$R/SUMMARY.tsv' && [ -f '$R/99_restore.txt' ]"
 
 reh bringups 0 BRINGUPS=5 --
 check "bringups: 5/5" grep -q 'bring-ups 5/5 PASS' "$R/SUMMARY.tsv"

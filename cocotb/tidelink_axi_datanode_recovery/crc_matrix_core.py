@@ -244,7 +244,15 @@ class AxiAdapter:
         assert await self.tb.wait_cr_crack(), "no CR/CRACK"
         await ClockCycles(self.dut.hclk, 500)
         self.defaults = await read_crc_defaults(self.tb)
-        if crc_on:        # the shipping default on FCSM 0-4 is CRC OFF; injection is invisible without this
+        # TL-018: the shipping reset value on FCSM 0-4 is CRC ON (bit16=0) in FPGA and ASIC alike, so crc_on needs NO
+        # APB write (the matrix runs the shipping default; ctl_ship_default asserts the reset value).  The CRC-OFF
+        # control (ctl_detect_sense) writes bit16=1 explicitly, readback-checked.  CM_AXI_CRC_APB_ON=1 restores the old
+        # behaviour (write bit16=0) for a build with +define+TIDELINK_FCSM_CRC_OFF_AT_RESET.
+        if not crc_on:
+            for side in ("m", "s"):
+                for base in AXI_BASES:
+                    await apb_rmw_crc_disable(self.tb, side, base, True)
+        elif E("CM_AXI_CRC_APB_ON") == "1":
             for side in ("m", "s"):
                 for base in AXI_BASES:
                     await apb_rmw_crc_disable(self.tb, side, base, False)

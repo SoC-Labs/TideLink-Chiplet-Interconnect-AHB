@@ -67,7 +67,16 @@ line tagged, exit 6. `ALLOW_UNVETTED_BUILD` no longer exists and is refused.
 |---|---|---|
 | TL-059 fixed-image acceptance | `EXPECT_FIXED=1 CRCSTATS=1 STREAM=1` | per direction `STATS_RESULT=FIXED_PASS exact=N detected=N`, aggregate `replayed exactly once 2N/2N` and detected >= `CRCSTATS_MIN_DETECTED`; stream start `NO_STORM_OBSERVED` both directions; then restore (7 to 9 min) |
 | cold bring-ups | `BRINGUPS=37 STREAM=1` | `bring-ups 37/37 PASS`; a wedge (timeout, rc 2, lost ssh/POR, cycle > `BRINGUP_CYCLE_MAX`) aborts at once and restores (about 2 min 15 s per cycle) |
+| AXI-node CRC (TL-018/019 image) | `AXICHECK=1` (`AXICHECK_N=10` shots, `AXICHECK_ROUNDS=20`) | step 14 also runs `rev2hw.py axi` and keeps `14_axi_check.txt` with `VERDICT: PASS` and `AXI_RESULT crc_on=True clean_bad=0 clean_crc_moved=0 shots_exact=N/N`; see "AXICHECK" below |
 | statistics | `CRCSTATS=1` | measurement mode: P(lost given detected) with Wilson interval; not an acceptance |
+
+**AXICHECK** proves, on an image where the AXI FC nodes (AW/W/B/AR/R at APB 0x1000..0x1400, SM_CONTROL +0x14, CRC count +0x20)
+reset with the link CRC check ON: (1) all 10 AXI nodes on both dies read SM_CONTROL[16]=0 after reset; (2) a wrong-DataID arm
+(0x7E) is inert on the AXI path (C-INJ-INERT); (3) `AXICHECK_ROUNDS` x 64 peer writes through die_a `ahb_sub` read back exact
+and no AXI CRC counter moves; (4) `AXICHECK_N` single-bit shots on the W node (DataID 0x81, die_a TX) each raise die_b's W
+counter by exactly 1 with exact data (EFFECTIVE; INERT or a miscount fails), and total counter motion equals the shots
+(C-COUNT-EXPECT). Risk: it WRITES to `ahb_sub` and arms the injector; a hung `ahb_sub` hangs the PS and needs a POR of both
+boards (the exit trap does this). Not an acceptance of replay behaviour on the AXI nodes beyond the shots listed.
 
 Do not turn injection into a loop: shots stay bounded (`rev2hw` caps `crc stats` at 64, `stream` at 16).
 

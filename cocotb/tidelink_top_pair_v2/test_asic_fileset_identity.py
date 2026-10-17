@@ -2,38 +2,40 @@
 
 WHY THIS EXISTS
 ---------------
-`flists/tidelink_top_full_asic_v2.flist` (tapeout) and
-`flists/tidelink_fpga_v2.flist` (every cocotb suite until 2026-08-26) resolve
-eight modules to DIFFERENT files on disk.  Five are the AXI-path flow-control
-state machines WlinkGenericFCSM{,_1.._4}: the FPGA flist takes the SoC Labs
-recovery copies in src/rtl/local_overrides/, the ASIC flist takes the
-recovery-STRIPPED deps/ copies.
+`flists/tidelink_top_full_asic_v2.flist` (tapeout) and `flists/tidelink_fpga_v2.flist` (every cocotb suite until
+2026-08-26) used to resolve eight modules to DIFFERENT files on disk.  Five were the AXI-path flow-control state
+machines WlinkGenericFCSM{,_1.._4}: the FPGA flist took the SoC Labs recovery copies in src/rtl/local_overrides/, the
+ASIC flist the recovery-STRIPPED deps/ copies.
 
-A flist line is not evidence.  A VCS "Parsing design file" line is better but
-is still build-time text.  This test asks the ELABORATED DESIGN ITSELF, at
-simulation runtime, which variant is present -- so `make ASIC_FLIST=1` cannot
-silently fall back to the FPGA twin (stale simv, a `?=` losing to the
-environment, a flist edit) without turning this test red.
+TL-018/TL-019 (2026-10, David's decision): the tapeout flist now takes the SAME hardened local_overrides FC nodes as
+the FPGA flist, with link CRC ON at reset.  So the expectation is now the SAME on both arms: every AXI FC node carries
+all recovery markers AND resets out_prepend_swi_disable_crc to 0.  Only the SRAM wrapper still differs by flist.
+
+A flist line is not evidence, and a VCS "Parsing design file" line is build-time text.  This test asks the ELABORATED
+DESIGN ITSELF, at simulation runtime, which variant is present -- so `make ASIC_FLIST=1` cannot silently fall back
+to deps (stale simv, a `?=` losing to the environment, a flist edit) without turning this test red.
 
 MARKERS
 -------
 recovery-present (local_overrides):  socl_l7_wdog_force_clear, socl_l6_cr_emit_count,
-                                     socl_l7_crack_emit_count, socl_reack_idle_cnt
-recovery-absent  (deps, ASIC):       none of the above exist as handles
-SRAM: ASIC tidelink_sram instantiates rf_16k as `u_rf`;
-      FPGA tidelink_sram instantiates cmsdk_fpga_sram as `u_sram`.
+                                     socl_l7_crack_emit_count, socl_reack_idle_cnt, socl_l7_bringup_forgive
+recovery-absent  (deps):             none of the above exist as handles
+CRC: out_prepend_swi_disable_crc == 0 on all 10 nodes right after reset (CRC checking ON).
+SRAM: ASIC tidelink_sram instantiates rf_16k as `u_rf`; FPGA tidelink_sram cmsdk_fpga_sram as `u_sram`.
 
-Both arms carry a MUST-BE-PRESENT control (`state`, and the FC node itself),
-so "marker absent" can never be satisfied by a mistyped hierarchy path.
+Both arms carry a MUST-BE-PRESENT control (`state`, and the FC node itself), so "marker absent" can never be satisfied
+by a mistyped hierarchy path.
 
-RUN BOTH WAYS:
+RUN (positive, both flists) and the MUTANT (must FAIL -- the gate checks rc != 0 and the message):
     make ASIC_FLIST=1 EPOCH_PROFILE=zero MODULE=test_asic_fileset_identity
     make ASIC_FLIST=0 EPOCH_PROFILE=zero MODULE=test_asic_fileset_identity
-The expectation is taken from the ASIC_FLIST environment variable, so the two
-runs assert OPPOSITE things and a build that ignored the knob fails one of them.
+    make ASIC_FLIST=1 ASIC_FCSM_DEPS=1 EPOCH_PROFILE=zero MODULE=test_asic_fileset_identity   # expect FAIL
+The expectation of the SRAM test comes from ASIC_FLIST; the FC-node test always expects the hardened local file.
 """
 import os
 import cocotb
+
+from pair_v2_common import PairV2TB
 
 AXI_FC_NODES = [
     "wlink_axiawFC",   # WlinkGenericFCSM    (AW)
@@ -73,12 +75,13 @@ def _has(handle, attr):
 
 @cocotb.test()
 async def test_fcsm_fileset_identity(dut):
-    """Every AXI FC node must carry the recovery markers iff the FPGA flist was
-    compiled, and must lack ALL of them iff the ASIC (tapeout) flist was."""
-    asic = _expect_asic()
-    dut._log.info(f"ASIC_FLIST={os.environ.get('ASIC_FLIST', '0')} -> expecting "
-                  f"{'deps/ RECOVERY-STRIPPED' if asic else 'local_overrides RECOVERY'} FCSM 0-4")
+    """Every AXI FC node must carry ALL the recovery markers (local_overrides copy), on the ASIC and the FPGA flist
+    alike (TL-018/TL-019).  Also asserts the CRC-ON reset value (bit16 of SM_CONTROL = 0)."""
+    dut._log.info(f"ASIC_FLIST={os.environ.get('ASIC_FLIST', '0')} ASIC_FCSM_DEPS="
+                  f"{os.environ.get('ASIC_FCSM_DEPS', '0')} -> expecting local_overrides FCSM 0-4 on both flists")
 
+    tb = PairV2TB(dut)
+    await tb.reset()          # reset values are only defined after the POR (reg is X before it)
     bad = []
     for side in ("m", "s"):
         for inst in AXI_FC_NODES:
@@ -89,27 +92,23 @@ async def test_fcsm_fileset_identity(dut):
                 f"CONTROL FAILED: {side}.{inst}.state not found -- hierarchy path "
                 f"is wrong, so this test proves nothing. Fix the path.")
             for m in RECOVERY_MARKERS:
-                present = _has(node, m)
-                if asic and present:
-                    bad.append(f"{side}.{inst}.{m} PRESENT but ASIC flist was requested "
-                               f"(the deps/ copy has no socl_ signals) -> the FPGA twin "
-                               f"was compiled")
-                if (not asic) and (not present):
-                    bad.append(f"{side}.{inst}.{m} ABSENT but FPGA flist was requested "
-                               f"-> the deps/ copy was compiled")
+                if not _has(node, m):
+                    bad.append(f"{side}.{inst}.{m} ABSENT -- the recovery-stripped deps/ copy was compiled "
+                               f"(TL-019: the tapeout flist must take src/rtl/local_overrides/)")
+            # TL-018: CRC ON at reset.  Hierarchy-probed value; a missing handle is itself a failure.
+            if not _has(node, "out_prepend_swi_disable_crc"):
+                bad.append(f"{side}.{inst}.out_prepend_swi_disable_crc missing (control)")
+            else:
+                v = int(getattr(node, "out_prepend_swi_disable_crc").value)
+                if v != 0:
+                    bad.append(f"{side}.{inst}.out_prepend_swi_disable_crc={v} after reset (TL-018: must be 0, CRC ON)")
     assert not bad, "FILE-SET IDENTITY MISMATCH:\n  " + "\n  ".join(bad)
 
     n = len(AXI_FC_NODES) * 2
-    if asic:
-        dut._log.info(
-            f"PROVEN: all {n} AXI FC node instances lack all {len(RECOVERY_MARKERS)} "
-            f"recovery markers => deps/axi-chiplet-controller/logical/wlink/"
-            f"WlinkGenericFCSM{{,_1.._4}}.v (the files that tape out) are compiled.")
-    else:
-        dut._log.info(
-            f"PROVEN: all {n} AXI FC node instances carry all {len(RECOVERY_MARKERS)} "
-            f"recovery markers => src/rtl/local_overrides/WlinkGenericFCSM{{,_1.._4}}.v "
-            f"(the FPGA twins) are compiled -- this is what every other suite runs.")
+    dut._log.info(
+        f"PROVEN: all {n} AXI FC node instances carry all {len(RECOVERY_MARKERS)} recovery markers and reset "
+        f"CRC ON => src/rtl/local_overrides/WlinkGenericFCSM{{,_1.._4}}.v are compiled "
+        f"(ASIC_FLIST={os.environ.get('ASIC_FLIST', '0')}).")
 
 
 @cocotb.test()
@@ -137,3 +136,29 @@ async def test_sram_fileset_identity(dut):
     else:
         assert has_bram, "FPGA flist requested but the rf_16k (ASIC) wrapper compiled"
         dut._log.info("PROVEN: src/rtl/fifo/fpga/tidelink_sram.sv (cmsdk_fpga_sram) compiled.")
+
+
+@cocotb.test()
+async def test_addrsync18_fileset_identity(dut):
+    """TL-018 follow-on: the a2l ACK-pointer reset-skew fix (obs 0x2158) lives in
+    src/rtl/local_overrides/WlinkGenericFCReplayAddrSync_18.v (regs wrst_meta/wrst_sync, absent from deps/).
+    Both instances of the module (a2l node link_addr_to_app_clk, l2a l2a_fifo_addr_to_tx) must carry it on
+    BOTH flists.  Control: the instance's `raddr` register must exist, so a wrong path cannot pass vacuously."""
+    tb = PairV2TB(dut)
+    await tb.reset()
+    bad = []
+    for side in ("m", "s"):
+        top = dut.u_master if side == "m" else dut.u_slave
+        fc = top.u_chiplet_controller.u_wlink.tl2wl.wlink_tidelinktl
+        for scope, inst in (("a2l_fc_replay", "link_addr_to_app_clk"), (None, "l2a_fifo_addr_to_tx")):
+            parent = getattr(fc, scope) if scope else fc
+            node = getattr(parent, inst)
+            assert _has(node, "raddr"), (
+                f"CONTROL FAILED: {side}.{inst}.raddr not found -- hierarchy path is wrong, proves nothing.")
+            for m in ("wrst_meta", "wrst_sync"):
+                if not _has(node, m):
+                    bad.append(f"{side}.{inst}.{m} ABSENT -- the unfixed deps/ WlinkGenericFCReplayAddrSync_18 was "
+                               f"compiled (the tapeout flist must take src/rtl/local_overrides/)")
+    assert not bad, "FILE-SET IDENTITY MISMATCH:\n  " + "\n  ".join(bad)
+    dut._log.info("PROVEN: reset-skew-fixed WlinkGenericFCReplayAddrSync_18 (local_overrides) compiled on all "
+                  "4 instances (ASIC_FLIST=%s)." % os.environ.get("ASIC_FLIST", "0"))

@@ -30,15 +30,19 @@ ctl_counts_sb (3 shots = 3 counter increments), mutants: sideband `+define+SOCL_
 sideband first/mid must go non-EXACT), and (gate/nightly) pre-Fix-G AXI mutant
 (`socl_l7_reached_link_data` forced 0 after the clean precondition) on all five AXI nodes.
 
-## Shipping CRC default (exposure)
-FPGA/KR260 flist (`tidelink_fpga_v2.flist`): `WlinkGenericFCSM{,_1..4}` are the `src/rtl/local_overrides`
-copies, which reset `out_prepend_swi_disable_crc <= 1` (CRC checking OFF; SoC Labs "Bug-C"), and nothing in
-the shipping bring-up writes SM_CONTROL bit16. FCSM_6 (sideband) resets 0 (CRC on). ASIC flist
-(`tidelink_top_full_asic_v2.flist`): FCSM 0-4 are the `deps` copies, reset 0 (CRC on) but without the SoC Labs
-recovery FSM. Consequence: on the FPGA build a single-bit AXI-payload error is invisible (CRC +0, wrong data
-lands, no NACK) unless software sets bit16=0 in each AXI node's SM_CONTROL (0x1014/0x1114/0x1214/0x1314/0x1414).
-The matrix AXI cases write that bit over APB first (readback checked); `ctl_detect_sense_W` runs at the
-shipping default and must show the silent corruption; `ctl_ship_default` fails if the reset values change.
+## Shipping CRC default (TL-018, 2026-10)
+All six FC nodes (sideband FCSM_6 and the five AXI nodes `WlinkGenericFCSM{,_1..4}`) reset `disable_crc` to 0 =
+CRC checking ON, in the FPGA flist and the ASIC (tapeout) flist alike: the ASIC flist now takes the same
+`src/rtl/local_overrides` FC nodes as the FPGA one (David's decision, TL-018/TL-019). `+define+
+TIDELINK_FCSM_CRC_OFF_AT_RESET` restores the old CRC-off reset on the AXI nodes (negative control / FPGA fallback).
+The matrix AXI cases therefore run at the shipping default with NO APB write of SM_CONTROL bit16 (they used to write
+bit16=0 over APB first because the FPGA reset was 1). Controls that keep this honest:
+`ctl_ship_default` (all 6 nodes reset 0 after bring-up), `ctl_croff_define` (same check in the `croff` build must see 1
+on the AXI nodes: proves the check can fail and the define works), `ctl_detect_sense_W` (writes bit16=1 explicitly,
+shows silent corruption), mutant `mut_croff_W_first` (CRC-off-at-reset build, NO APB enable: the AXI W hit must go
+non-EXACT), and `ctl_fileset_local` / `ctl_fileset_asicdeps` (hierarchy probe that the hardened vs deps FC node
+compiled). `ASIC_FLIST=1 make crc_matrix_quick` (= `make sim_gate_crc_matrix_quick_asic`, suite `crc_matrix_quick_asic`)
+runs the quick tier on the tapeout flist.
 
 ## Targets and measured runtimes (VCS 2022.06, this host, see evidence dir)
 | tier | make target | cases | workers | wall |

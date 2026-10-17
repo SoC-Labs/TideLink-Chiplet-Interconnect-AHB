@@ -81,7 +81,7 @@ referred to exists **only** on that integ line — not on `main`, not here.
 | TL-015 | Integration pins never landed on `main` | high | deferred | n/a | n/a | n/a | **open — this is the top-line risk** |
 | TL-016 | SSH URLs in `.gitmodules` | med | fix_built | n/a | n/a | n/a | landed **integ only** |
 | TL-017 | `tl_data_mode_o` downstream lint break | fyi | wontfix | n/a | n/a | n/a | closed |
-| TL-018 | ASIC CRC-on vs FPGA CRC-off never co-run | med | root_caused | none | no | no | **open and understated** — see [CRC](#the-axi-channels-ship-with-crc-checking-off) |
+| TL-018 | ASIC CRC-on vs FPGA CRC-off never co-run | med | sim_proven | `crc_matrix_quick` (FPGA + ASIC flist) | yes | no | **fixed in sim; CRC-on default needs HW re-validation** — see [CRC](#the-axi-channels-ship-with-crc-checking-on-tl-018-resolved-2026-10) |
 | TL-019 | ASIC flist pins FCSM 0–4 to deps (no `socl_` recovery hooks) | high | root_caused | none | no | no | **open tapeout risk** |
 | TL-020 | ASIC flist hygiene (obs modules / dup / a2l landmine) | high | sim_proven | 3 elab suites | yes (all PASS) | n/a | **closed (sim)** on integ |
 | TL-021 | First-silicon obs gaps (Region D/F unreachable over I²C) | high | root_caused | none | no | no | open — honest, spec-ready |
@@ -124,29 +124,22 @@ hardware blockers and they interact: TL-009 blocks the HW validation of the
 TL-006 ECC fix. Both are honestly recorded. Neither has a fix that has survived
 a hardware A/B.
 
-### The AXI channels ship with CRC checking off
+### The AXI channels ship with CRC checking on (TL-018, resolved 2026-10)
 
-`out_prepend_swi_disable_crc` resets to `1'h1` (**checking OFF**) in
-`src/rtl/local_overrides/WlinkGenericFCSM{,_1,_2,_3,_4}.v` (line 700 on this
-branch, 713 on the integ copy) — the comment reads *"SoC Labs (Bug-C): CRC-off
-default at GPIO speed"* — and to `1'h0` (ON) in `WlinkGenericFCSM_6.v:1194` and
-in every `deps/` copy. On the **integ FPGA-V2 flist**
-(`flists/tidelink_fpga_v2.flist:300-304`) the five AXI nodes *are* those local
-overrides, so AW/W/B/AR/R come up at POR with no link CRC.
+Until 2026-10 `out_prepend_swi_disable_crc` reset to `1'h1` (**checking OFF**) in the FPGA overrides
+`src/rtl/local_overrides/WlinkGenericFCSM{,_1,_2,_3,_4}.v` (SoC Labs "Bug-C") while the `deps/` copies the ASIC
+flist used reset it to `1'h0` (ON): a single-bit AXI payload error was silently delivered on the FPGA vehicle and
+the combination "ASIC CRC-on + recovery FSM" had never been co-run. **Decision (David, 2026-10):** the ASIC build
+ships the hardened local overrides with the link CRC ON at reset. The overrides now reset
+`out_prepend_swi_disable_crc <= 1'h0` for FPGA and ASIC alike (one RTL);
+`+define+TIDELINK_FCSM_CRC_OFF_AT_RESET` restores the old reset (FPGA fallback / negative control only; a commented
+line in `flists/tidelink_fpga_v2.flist`). Software can still set `SM_CONTROL[16]=1` to turn checking off.
 
-The blocking `f14a_crc_catch` suite that declares this class closed runs only
-`MODULE=test_ei_lane7_repro` (`Makefile:1043`), which drives the FIFO_DATA path
-through FCSM_6 — the one node that resets CRC **on** — so it structurally cannot
-see the AXI exposure. The integ line's own test says the polarity out loud
-(`cocotb/tidelink_axi_datanode_recovery/test_axi_datanode_recovery.py:367-376`,
-a directory that does **not** exist on this branch): the same payload error with
-CRC off is *"silently accepted … the mis-delivered wrong-BID beat that hard-wedges
-the PS"*. No bring-up or deploy script in `pynq_host/` ever writes the enable.
-
-:::{note}
-The exposure is **FPGA-specific**: the ASIC-V2 flist and this branch source all
-five FCSMs from `deps/`, where CRC is on.
-:::
+What to know when bringing up the next FPGA bitstream: the AXI nodes now come up with CRC checking ON. The one
+earlier live-link run with CRC on (2026-06-14, Z2 pair) saturated `crc_errors` and parked the FCSM in SEND_NACK; the
+root cause was real corruption on a marginal eye (the CRC was right), and the node now carries the state-7 watchdog
+(TL-033) and the other recovery hooks. Hardware re-validation of the CRC-on default is still pending (see
+`docs/BUG_REGISTRY.yaml` TL-018).
 
 ### Five gates pass only in one engineer's working tree
 
@@ -230,7 +223,7 @@ credits — a head-of-line blocking risk on the FC RX path (#38).
 | Unconstrained ÷16 RX word clock — no clock tree synthesised for it | TL-028 | root_caused, unmitigated |
 | `credit_count` unconditional 13-bit decrement can wrap | TL-033 | open |
 | State-7 NACK watchdog permanently disarmed after the first CRC error, which makes the `nack_wedge_recovery` gate meaningful only for the first CRC error of a reset cycle | TL-035 | open, registry entry uncommitted |
-| AXI-channel CRC checking off at POR on the shipping FPGA vehicle | TL-018 | understated as a "config divergence" |
+| AXI-channel CRC default flipped to ON at POR (FPGA and ASIC); no hardware run with the new default yet | TL-018 | sim_proven, HW pending |
 
 Two further items sit in the registry as decisions rather than risks: F13 (PTP,
 TL-010) is `fix_built` with the two-board convergence half open, and the ECC

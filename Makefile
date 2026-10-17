@@ -322,6 +322,13 @@ GATE_STAMP_FILE := $(SIM_GATE_DIR)/.gate_stamp
 # no-op modes that GNU make exempts $(MAKE) lines from: -n (--dry-run),
 # -q (--question) and -t (--touch). REPRODUCED the -q hole 2026-09-11 in
 # cocotb/Makefile: one `make -p -q regression` overwrote 31 <env>/.result files.
+# MUST-FAIL ARM helper: run $(2) and require that it FAILS *and* that its log contains $(3) (so it failed for the
+# reason the arm exists, not because the build broke).  An arm that passes, or fails for another reason, fails the suite.
+# Used by the TL-018/TL-019 gates to prove each changed ASIC expectation can still go red.  Log: $(SIM_GATE_DIR)/mustfail_<label>.log
+define must_fail
+{ if ( $(2) ) > $(SIM_GATE_DIR)/mustfail_$(1).log 2>&1; then echo "MUST-FAIL arm $(1) unexpectedly PASSED - the instrument cannot detect the mutant"; false; elif grep -q -- '$(3)' $(SIM_GATE_DIR)/mustfail_$(1).log; then echo "MUST-FAIL arm $(1): failed as required ($(3))"; else echo "MUST-FAIL arm $(1) failed for the WRONG reason (log lacks: $(3))"; false; fi; }
+endef
+
 define sim_gate_run
 	@case "$${MAKEFLAGS%% *}" in *[nqt]*) \
 	  echo "[sim_gate] REFUSING to run under 'make -n' / '-q' / '-t' ($(1))."; \
@@ -360,7 +367,7 @@ endef
 	sim_gate_txgen_unit sim_gate_txgen_negctl sim_gate_v2_txgen sim_gate_txgen_ext_hijack \
 	sim_gate_nack_wedge sim_gate_nack_wedge_recovery sim_gate_nack_wedge_sustained \
 	sim_gate_axi_datanode_recovery sim_gate_axi_datanode_gaps sim_gate_sideband_crc_replay sim_gate_tl044_hol_write_age \
-	sim_gate_crc_matrix_quick sim_gate_crc_matrix_gate crc_matrix_nightly \
+	sim_gate_crc_matrix_quick sim_gate_crc_matrix_quick_asic sim_gate_crc_matrix_gate crc_matrix_nightly \
 	sim_gate_tl044_hol_prefix \
 	sim_gate_n1_read_backstop sim_gate_tl044_read_deadgate \
 	sim_gate_tl044_park_recipe sim_gate_xdie_exclusive \
@@ -369,7 +376,7 @@ endef
 	sim_gate_v2_mbox_writeprotect \
 	sim_gate_calibrator_wrap \
 	sim_gate_a2l_replay_cdc_1 sim_gate_a2l_replay_cdc_3 sim_gate_a2l_replay_cdc_5 \
-	sim_gate_a2l_replay_cdc_7 sim_gate_a2l_replay_cdc_9 \
+	sim_gate_a2l_replay_cdc_7 sim_gate_a2l_replay_cdc_9 sim_gate_a2l_replay_cdc_13 \
 	sim_gate_a2l_wready_tear sim_gate_a2l_replay_cdc_deps_mustfail \
 	sim_gate_v2_auto_anchor \
 	sim_gate_fc_adapter_arbiter \
@@ -744,6 +751,13 @@ sim_gate_a2l_replay_cdc_7:
 	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=7 \
 	    SIM_BUILD=sim_build_a2l_7 COCOTB_RESULTS_FILE=sim_build_a2l_7/res_a2l_7.xml)
 
+# NODE=13 (sideband a2l node, the bench default): includes the directed AddrSync_18 reset-gate test (TL-018 follow-on);
+# its mutant (USE_DEPS_ADDRSYNC=1) is a must-fail arm of a2l_replay_cdc_deps_mustfail.
+sim_gate_a2l_replay_cdc_13:
+	$(call sim_gate_run,a2l_replay_cdc_13,\
+	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=13 \
+	    SIM_BUILD=sim_build_a2l_13 COCOTB_RESULTS_FILE=sim_build_a2l_13/res_a2l_13.xml)
+
 sim_gate_a2l_replay_cdc_9:
 	$(call sim_gate_run,a2l_replay_cdc_9,\
 	  $(MAKE) -C cocotb/tidelink_a2l_replay_cdc NODE=9 \
@@ -844,10 +858,20 @@ sim_gate_a2l_replay_cdc_deps_mustfail:
 	      fi; \
 	    done; \
 	  done; \
-	  echo "a2l deps must-fail arms killed: $$ok/10"; \
+	  d=sim_build_deps_mf_addrsync18; x=$$d/res.xml; rm -rf $$d; \
+	  echo "=== MUST-FAIL arm: NODE=13 USE_DEPS_ADDRSYNC=1 [unfixed AddrSync_18 reset-skew gate]"; \
+	  if $(MAKE) NODE=13 USE_DEPS_ADDRSYNC=1 MODULE=test_a2l_replay_cdc TESTCASE=test_addrsync_reset_gate_directed \
+	       SIM_BUILD=$$d COCOTB_RESULTS_FILE=$$d/res.xml; then \
+	    echo "!!! MUTANT ESCAPED: directed AddrSync_18 test PASSED on the unfixed deps copy."; esc=1; \
+	  elif [ ! -s $$x ] || ! grep -q '<failure' $$x; then \
+	    echo "??? COULD-NOT-EVALUATE: AddrSync_18 arm failed WITHOUT a recorded cocotb failure."; nogo=1; \
+	  else \
+	    echo "    killed: directed AddrSync_18 test FAILS on unfixed deps [required]"; ok=$$((ok+1)); \
+	  fi; \
+	  echo "a2l deps must-fail arms killed: $$ok/11"; \
 	  if [ $$esc -ne 0 ]; then echo "FAIL: a must-fail arm PASSED"; exit 1; fi; \
 	  if [ $$nogo -ne 0 ]; then echo "FAIL: an arm could not be evaluated"; exit 1; fi; \
-	  if [ $$ok -ne 10 ]; then echo "FAIL: only $$ok/10 arms were graded"; exit 1; fi)
+	  if [ $$ok -ne 11 ]; then echo "FAIL: only $$ok/11 arms were graded"; exit 1; fi)
 
 # ---------------------------------------------------------------------------
 # Rescued from the link-survey line (analysis/link-survey-2026-08-01, folded
@@ -1289,6 +1313,13 @@ sim_gate_crc_matrix_quick:
 	$(call sim_gate_run,crc_matrix_quick,\
 	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_cm_* && \
 	  $(MAKE) -C cocotb/tidelink_axi_datanode_recovery crc_matrix_quick)
+
+# TL-018/TL-019: the same quick tier on the TAPEOUT flist (ASIC_FLIST=1: hardened FC nodes, CRC ON at reset, rf_16k).
+# Adds the ctl_fileset_asicdeps mutant (FCSM 0-4/replay back on deps) on top of the common controls.
+sim_gate_crc_matrix_quick_asic:
+	$(call sim_gate_run,crc_matrix_quick_asic,\
+	  rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_cm_* && \
+	  ASIC_FLIST=1 $(MAKE) -C cocotb/tidelink_axi_datanode_recovery crc_matrix_quick)
 
 sim_gate_crc_matrix_gate:
 	$(call sim_gate_run,crc_matrix_gate,\
@@ -2110,7 +2141,17 @@ sim_gate_dftelab:
 # Deterministic, no sim: the divergence set must not move without a decision.
 sim_gate_flist_divergence:
 	$(call sim_gate_run,flist_divergence,\
-	  python3 $(TIDELINK_HOME)/scripts/ci/flist_divergence.py --check)
+	  python3 $(TIDELINK_HOME)/scripts/ci/flist_divergence.py --check && \
+	  mkdir -p $(SIM_GATE_DIR) && \
+	  sed 's@src/rtl/local_overrides/WlinkGenericFCSM_2.v@deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCSM_2.v@' \
+	    $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist > $(SIM_GATE_DIR)/mutant_asic_fcsm2_deps.flist && \
+	  sed 's@src/rtl/local_overrides/WlinkGenericFCReplayV2_9.v@deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayV2_9.v@' \
+	    $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist > $(SIM_GATE_DIR)/mutant_asic_replay9_deps.flist && \
+	  sed 's@src/rtl/local_overrides/WlinkGenericFCReplayAddrSync_18.v@deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_18.v@' \
+	    $(TIDELINK_HOME)/flists/tidelink_top_full_asic_v2.flist > $(SIM_GATE_DIR)/mutant_asic_addrsync18_deps.flist && \
+	  $(call must_fail,flist_div_addrsync18,python3 $(TIDELINK_HOME)/scripts/ci/flist_divergence.py --check --asic-flist $(SIM_GATE_DIR)/mutant_asic_addrsync18_deps.flist,MUST-MATCH violated: WlinkGenericFCReplayAddrSync_18.v) && \
+	  $(call must_fail,flist_div_fcsm2,python3 $(TIDELINK_HOME)/scripts/ci/flist_divergence.py --check --asic-flist $(SIM_GATE_DIR)/mutant_asic_fcsm2_deps.flist,MUST-MATCH violated: WlinkGenericFCSM_2.v) && \
+	  $(call must_fail,flist_div_replay9,python3 $(TIDELINK_HOME)/scripts/ci/flist_divergence.py --check --asic-flist $(SIM_GATE_DIR)/mutant_asic_replay9_deps.flist,MUST-MATCH violated: WlinkGenericFCReplayV2_9.v))
 
 # WHICH FILE COMPILED — asserted from inside the running simulation, both ways.
 # ASIC_FLIST=1 must yield FCSM 0-4 with NO socl_ recovery markers and the rf_16k
@@ -2124,7 +2165,11 @@ sim_gate_asic_fileset_identity:
 	    MODULE=test_asic_fileset_identity && \
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=0 EPOCH_PROFILE=zero \
 	    COCOTB_RESULTS_FILE=sim_build_zero/res_ident.xml \
-	    MODULE=test_asic_fileset_identity)
+	    MODULE=test_asic_fileset_identity && \
+	  $(call must_fail,asic_identity_deps_mutant,$(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 ASIC_FCSM_DEPS=1 \
+	    EPOCH_PROFILE=zero MODULE=test_asic_fileset_identity,FILE-SET IDENTITY MISMATCH) && \
+	  $(call must_fail,asic_identity_addrsync_mutant,$(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 ASIC_ADDRSYNC_DEPS=1 \
+	    EPOCH_PROFILE=zero MODULE=test_asic_fileset_identity,FILE-SET IDENTITY MISMATCH))
 
 # THE GAP-CLOSER: bilateral link-up + M->S and S->M byte-exact delivery on the
 # tapeout file set. An elaboration-only pass is not coverage; this executes.
@@ -2141,16 +2186,19 @@ sim_gate_asic_fcsm_ratio:
 	  $(MAKE) -C cocotb/tidelink_fcsm_silicon_ratio ASIC_FLIST=1 control && \
 	  $(MAKE) -C cocotb/tidelink_fcsm_silicon_ratio ASIC_FLIST=1 fixed)
 
-# THE DIVERGENCE, EXECUTED. State-7 emit starvation: the FPGA copy escapes via
-# socl_l7_wdog_force_clear, the ASIC copy has no such term and stays wedged.
-# BOTH arms must behave as expected — the FPGA arm is the positive control, and
-# without it "the ASIC wedged" would not be attributable to the missing term.
+# STATE-7 EMIT STARVATION, EXECUTED (TL-019). Three arms: FPGA flist ESCAPES, ASIC (tapeout) flist now ESCAPES too
+# (hardened FCSM, socl_l7_wdog_force_clear), and the MUTANT arm (ASIC flist with FCSM 0-4 back on recovery-stripped
+# deps via ASIC_FCSM_DEPS=1) must still WEDGE -- the must-fail arm proving this stimulus can detect the missing
+# backstop, so "the ASIC escapes" is attributable to the hardened file.  The mutant arm is a PASSING test (it asserts
+# the wedge), not an inverted exit code.
 sim_gate_asic_l7_starvation:
 	$(call sim_gate_run,asic_l7_starvation_backstop,\
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=0 L7_WDOG_THRESHOLD=256 \
 	    EPOCH_PROFILE=zero COCOTB_RESULTS_FILE=sim_build_zero_wdog256/res_l7.xml \
 	    MODULE=test_asic_l7_starvation_backstop && \
 	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 L7_WDOG_THRESHOLD=256 \
+	    EPOCH_PROFILE=zero MODULE=test_asic_l7_starvation_backstop && \
+	  $(MAKE) -C cocotb/tidelink_top_pair_v2 ASIC_FLIST=1 ASIC_FCSM_DEPS=1 L7_WDOG_THRESHOLD=256 \
 	    EPOCH_PROFILE=zero MODULE=test_asic_l7_starvation_backstop)
 # --- WLINK TX POWER-STATE unit bench (added 2026-08-26, coverage-driven) -----
 # WlinkTxPstateCtrl was at FSM 0.00% -- 1 of 3 states, 0 of 4 transitions -- in
@@ -2218,7 +2266,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	eth_relay_m0 eth_relay_m1 eth_regs_shape_a errinj_regressions \
 	fifo_rx_twin2_tree force_recal_w1p f14a_crc_catch \
 	txgen_unit txgen_negctl v2_txgen txgen_ext_hijack nack_wedge_recovery axinode_obs \
-	axi_datanode_recovery axi_datanode_gaps sideband_crc_replay crc_matrix_quick tl044_hol_write_age n1_read_backstop \
+	axi_datanode_recovery axi_datanode_gaps sideband_crc_replay crc_matrix_quick crc_matrix_quick_asic tl044_hol_write_age n1_read_backstop \
 	tl044_read_deadgate tl044_park_recipe xdie_exclusive \
 	i1_selfarm_rolelock i1_fixe_training_release v2_isolated_write_dataloss \
 	v2_mbox_writeprotect \
@@ -2226,7 +2274,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	addr_translator \
 	wlink_tx_pstate \
 	calibrator_wrap a2l_replay_cdc_1 a2l_replay_cdc_3 a2l_replay_cdc_5 \
-	a2l_replay_cdc_7 a2l_replay_cdc_9 \
+	a2l_replay_cdc_7 a2l_replay_cdc_9 a2l_replay_cdc_13 \
 	a2l_wready_tear a2l_replay_cdc_deps_mustfail \
 	tl044_hol_prefix_mustfail \
 	v2_auto_anchor \
@@ -2250,7 +2298,7 @@ SIM_GATE_QUICK_SUITES := t30_autonomous_fc_handoff v2_pair_data \
 	v2_autonomous_sync_detect v2_winscan_fsm v2_perf_ctrl v2_reduced_lane \
 	v2_truncated_pkt_credit v2_truncated_pkt_aperture_offset \
 	fifo_rx_phantom_pop v1_elab asic_v1_elab asic_v2_elab \
-	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por crc_matrix_quick
+	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por crc_matrix_quick crc_matrix_quick_asic
 
 # GATE-INTEGRITY: the cocotb Makefiles only track tb_top.sv/pad_skid.sv as
 # compile deps — RTL/flist edits do NOT retrigger a VCS compile, so a cached
@@ -2344,6 +2392,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_sideband_crc_replay
 	@# CRC matrix QUICK tier (controls first; node x position x direction; sideband mutant arm).
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_crc_matrix_quick
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_crc_matrix_quick_asic
 	@# N1 (TAPEOUT BLOCKER, fix @e008c58): coincident stuck-read/stuck-write
 	@# regression — the write backstop must no longer permanently mask the
 	@# read backstop's AHB ERROR.
@@ -2413,6 +2462,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_5
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_7
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_9
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_replay_cdc_13
 	@# TL-027 w_inc continuous-resend CDC-tearing regression (all 5 data-plane nodes).
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_a2l_wready_tear
 	@# ... and the RED halves of both a2l A/Bs, which no gate ran until 2026-09-11.
@@ -2494,6 +2544,7 @@ sim_gate_quick: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_c
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asicelab
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asicelab_v2
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_crc_matrix_quick
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_crc_matrix_quick_asic
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_summary SIM_GATE_SUITES="$(SIM_GATE_QUICK_SUITES)"
 
 sim_gate_summary:

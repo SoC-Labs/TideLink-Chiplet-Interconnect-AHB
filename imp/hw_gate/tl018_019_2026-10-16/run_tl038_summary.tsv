@@ -1,0 +1,16 @@
+step	name	verdict	seconds	detail
+00	lock_check	PASS	6	flock held: <host>/board.lock; sudo pre-check OK on <board>
+01	por_both	PASS	101	kr260_01 + kr260_02 POR'd and back (ping + ssh), CmaTotal ok; PL EMPTY on both until step 04
+02	bit2bin	PASS	0	bin md5 06039c20 (<host>/tidelink.bin)
+03	stage	PASS	5	staged bin (md5 06039c20), pynq_host scripts, rev2hw tools; md5 equal on the board; synced to SD
+04	deploy	PASS	1	PL loaded (fpga0 operating), fpgautil rc 0
+05	afi_a7obs	PASS	1	AFI+canaries PASS; A7 NOT TESTABLE on this image (AUTO_ANCHOR_EN=0 in kr260-pair-onchip; beacon FSM absent). Steps 18-21 skipped. A7 HW evidence stays the compute KR260 run.
+06	autonomy	PASS	1	autonomy proven, zero host writes
+07	smoke	PASS	1	plumbing smoke PASS (no --unlock)
+08	regs	PASS	1	new registers read OK: 0x23C==0 on both dies, sideband DataID 0xA1, sideband CRC check ON
+09	soak5000	PASS	6	5000/5000 good, 0 bad, 0 stalls
+10	smoke1	PASS	1	smoke1 byte-exact
+11	b19_dip	PASS	1	dip 0x27F00 then restore 0x27F07: swi_enable held mid-dip (0x27f01), restored, OBS_FC_CREDIT unchanged
+12	postdip_soak5000	PASS	7	5000/5000 good, 0 bad, 0 stalls
+13	postdip_smoke1	PASS	1	smoke1 byte-exact
+14	crc_ctl	PASS	5	quiet counters + wrong-DataID arm inert + 0x23C holds its value, both directions (b2a clean traffic proven before any injection); tl038 rc=0 TL038_RESULT shots=8 ok=True

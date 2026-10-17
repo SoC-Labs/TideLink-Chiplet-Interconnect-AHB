@@ -19,9 +19,8 @@ include $(TIDELINK_HOME)/mk/site.mk
 #           added src/rtl/local_overrides/WlinkGenericFCReplayV2_{7,9}.v, the DUT
 #           selection below therefore resolves both to the OVERRIDE, and
 #           sim_gate_a2l_replay_cdc_7 / _9 are blocking, passing suites.
-#           What is still true, and is a different thing: the TAPEOUT flist
-#           (flists/tidelink_top_full_asic_v2.flist) still sources _7/_9 from
-#           deps/. Re-pointing it is an open ASIC-recovery decision.
+#           TL-019 (2026-10): the TAPEOUT flist (flists/tidelink_top_full_asic_v2.flist)
+#           now sources _7/_9 from the same overrides (flist_divergence.py enforces it).
 NODE ?= 13
 ifeq ($(NODE),7)
   TB_FILE   := tb_top_7.sv
@@ -128,7 +127,17 @@ $(shell mkdir -p $(DUT_SRC_GEN_DIR); \
 	  printf '%s\n' "$$_new" > $(DUT_SRC_F))
 
 COMPILE_ARGS += -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb
-COMPILE_ARGS += -f $(TIDELINK_HOME)/flists/$(A2L_FLIST)
+# TL-018 follow-on MUTANT (NODE=13 only): USE_DEPS_ADDRSYNC=1 swaps the WlinkGenericFCReplayAddrSync_18 line of the
+# flist for the UNFIXED deps/ copy (pre-reset-skew-fix = what the tapeout flist carried before).  The DUT node itself
+# stays the override, so test_adversarial_addrsync_reset_skew must go RED on it and green without it.
+USE_DEPS_ADDRSYNC ?= 0
+ifeq ($(USE_DEPS_ADDRSYNC),1)
+A2L_FLIST_PATH := $(DUT_SRC_GEN_DIR)/addrsync_deps_$(A2L_FLIST)
+$(shell sed 's@$${TIDELINK_HOME}/src/rtl/local_overrides/WlinkGenericFCReplayAddrSync_18.v@$${TIDELINK_HOME}/deps/axi-chiplet-controller/logical/wlink/WlinkGenericFCReplayAddrSync_18.v@' $(TIDELINK_HOME)/flists/$(A2L_FLIST) > $(A2L_FLIST_PATH))
+else
+A2L_FLIST_PATH := $(TIDELINK_HOME)/flists/$(A2L_FLIST)
+endif
+COMPILE_ARGS += -f $(A2L_FLIST_PATH)
 SIM_ARGS     += +vcs+dumpvars+waves.vcd
 
 # --- Build-staleness guard: recompile on flist-sourced RTL edits. VERILOG_SOURCES

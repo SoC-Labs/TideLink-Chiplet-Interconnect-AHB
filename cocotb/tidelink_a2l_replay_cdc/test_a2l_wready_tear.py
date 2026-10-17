@@ -13,7 +13,7 @@ explained *entirely* by the window guard.  The other half of TL-027 —
 — was never exercised, because an idle single-clock sim never tears.  The
 override files say so in their own header ("Idle single-clock sim never tears ->
 silicon is the verifier for the w_inc half").  That gap applied to EVERY node,
-including _1/_3/_5 which ship in the ASIC today.  This file closes it.
+including _1/_3/_5 (and, since TL-019, _7/_9) which ship in the ASIC.  This file closes it.
 
 THE MECHANISM (RTL-verified, deps/axi-chiplet-controller/logical/wlink/)
 =======================================================================

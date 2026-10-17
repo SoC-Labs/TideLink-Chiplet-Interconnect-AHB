@@ -33,6 +33,8 @@
 # FIXED-IMAGE ACCEPTANCE (TL-059 design E; see RUNBOOK.md section 5), all env knobs, defaults keep the old behaviour:
 #   EXPECT_FIXED=1  crc stats runs with --expect-fixed: PASS only if every detected shot was replayed exactly once (0 lost/stray/dup);
 #                   with CRCSTATS=1 also requires the two directions together to be >= CRCSTATS_MIN_DETECTED (default 2*CRCSTATS_N) detected and all exact.
+#   AXICHECK=1      inside step 14 (crc_ctl) also run `rev2hw.py axi` (TL-018/019 image): AXI nodes reset with CRC on, wrong-DataID control inert,
+#                   clean ahb_sub traffic exact + quiet AXI counters, AXICHECK_N W-node (DataID 0x81) shots each CRC +1 and exact; copies the log to 14_axi_check.txt.
 #   STREAM=1        right after step 06 autonomy (the first sideband traffic after link-up) run `rev2hw.py stream` b2a then a2b (STREAM_N starts of STREAM_LEN words).
 #   BRINGUPS=N      replaces steps 04-21 by N x [POR both -> deploy -> AFI -> autonomy -> (stream) -> smoke -> health], reports k/N (step 23); steps 00-03 and 22 still run.
 #                   BRINGUP_CYCLE_MAX (900 s) bounds one cycle; a wedge (timeout, ssh/POR lost) aborts at once and the exit trap restores; BRINGUP_STOP_ON_FAIL=1 stops at the first soft failure.
@@ -103,6 +105,7 @@ CRCSTATS=${CRCSTATS:-0}                       # 1: after step 14 run `crc stats`
 CRCSTATS_N=${CRCSTATS_N:-30}                   # single shots per direction (rev2hw caps at 64)
 EXPECT_FIXED=${EXPECT_FIXED:-0}                # 1: acceptance semantics for a TL-059 fixed image (crc stats --expect-fixed)
 CRCSTATS_MIN_DETECTED=${CRCSTATS_MIN_DETECTED:-$((2 * CRCSTATS_N))}   # EXPECT_FIXED aggregate: detected shots needed over both directions
+AXICHECK=${AXICHECK:-0}; AXICHECK_N=${AXICHECK_N:-10}; AXICHECK_ROUNDS=${AXICHECK_ROUNDS:-20}   # 1: step 14 also runs rev2hw.py axi (TL-018/019 AXI-node CRC)
 STREAM=${STREAM:-0}; STREAM_N=${STREAM_N:-4}; STREAM_LEN=${STREAM_LEN:-28}   # stream-start observation (rev2hw.py stream)
 BRINGUPS=${BRINGUPS:-0}; BRINGUP_CYCLE_MAX=${BRINGUP_CYCLE_MAX:-900}; BRINGUP_STOP_ON_FAIL=${BRINGUP_STOP_ON_FAIL:-0}
 RUN_PART2=${RUN_PART2:-1}                      # 0 skips the second POR + A7 window cycle (steps 18-21)
@@ -112,7 +115,7 @@ SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLeve
           -o ControlMaster=auto -o "ControlPath=/tmp/kr260-mux-%C" -o ControlPersist=120)   # the boards' sshd resets rapid reconnects
 nap() { [ "$NAP" = 1 ] && sleep "$1"; return 0; }
 
-for v in CRCSTATS_N CRCSTATS_MIN_DETECTED STREAM_N STREAM_LEN BRINGUPS BRINGUP_CYCLE_MAX; do
+for v in CRCSTATS_N CRCSTATS_MIN_DETECTED AXICHECK_N AXICHECK_ROUNDS STREAM_N STREAM_LEN BRINGUPS BRINGUP_CYCLE_MAX; do
   case "${!v}" in ''|*[!0-9]*) echo "REFUSED: $v must be a non-negative integer (got '${!v}')"; exit 2 ;; esac
 done
 [ "$BRINGUPS" -le 60 ] || { echo "REFUSED: BRINGUPS=$BRINGUPS > 60 (bounded)"; exit 2; }
@@ -453,6 +456,12 @@ step_crc_ctl() {
       { [ "$sx" = "$sdt" ] && [ "$sdt" -ge "$CRCSTATS_MIN_DETECTED" ]; } || rcs=1
     fi
     [ "$rcs" = 0 ] || { fail "$DETAIL"; return 1; }
+  fi
+  if [ "${AXICHECK:-0}" = 1 ]; then   # TL-018/019: AXI nodes CRC on at reset, clean traffic + W-node shots (bounded; rev2hw caps nothing here, N is small)
+    capsudo 900 "python3 rev2hw/rev2hw.py axi --n $AXICHECK_N --rounds $AXICHECK_ROUNDS"; local arc=$CAPRC
+    [ "$DRY" = 1 ] || cp "$CAPF" "$RES/14_axi_check.txt"
+    DETAIL="$DETAIL; axi rc=$arc $(grep -o 'AXI_RESULT.*' "$CAPF" 2>/dev/null | tail -1)"
+    if [ "$DRY" != 1 ]; then { [ "$arc" = 0 ] && has '^VERDICT: PASS'; } || { fail "$DETAIL"; return 1; }; fi
   fi
 }
 step_crc_a2b() {

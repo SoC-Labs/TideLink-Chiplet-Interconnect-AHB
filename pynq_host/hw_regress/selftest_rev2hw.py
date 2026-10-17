@@ -29,12 +29,14 @@ class Model:
         self.k = dict(inj_works=True, inj_holds=True, crc_on=True, silent_corrupt=False, beacon="a7", mem_drop=None,
                       beacon_done=False, link_up=True, wrong_id_hits=False, status_stuck=False, replay="ok",
                       stream="ok", avail_delay_polls=0, fifo_flood=False, regf_fault_after_tx=False,
-                      slave_ro=False, phantom_crc_armed=False, crc_dead=False, gap_noise=False)
+                      slave_ro=False, phantom_crc_armed=False, crc_dead=False, gap_noise=False,
+                      axi_crc_off=False, axi_mismatch=False, axi_shot_nocount=False, axi_shot_bad=False, axi_noise=False)
         self.k.update(k)
         self.r = {}
         self.txbuf = {"a": [], "b": []}
         self.q = {"a": [], "b": []}          # RX queues
         self.crc = {"a": 0, "b": 0}
+        self.axi_crc = {}              # (die, node base) -> AXI FC node CRC error count
         self.armed = {"a": False, "b": False}
         self.prev_enable = {"a": 0, "b": 0}
         self.beacon_run = {"a": not self.k["beacon_done"], "b": not self.k["beacon_done"]}
@@ -62,6 +64,8 @@ class Model:
             if o == 0x21F4:
                 run, done = self.beacon_run[d], self.beacon_done[d]
                 return (1 << 23) | (1 << 20) | (1 << 19) | (int(run) << 18) | (int(done) << 17) | (1 << 16) | 0x100
+            if 0x1000 <= o < 0x1500 and o & 0xFF == 0x14: return 0x10708 if self.k["axi_crc_off"] else 0
+            if 0x1000 <= o < 0x1500 and o & 0xFF == 0x20: return self.axi_crc.get((d, o & 0xFF00), 0)
             if o == 0x1704: return 0xA1
             if o == 0x1714: return 0 if self.k["crc_on"] else 0x10708
             if o == 0x1720: return 0 if self.k["crc_dead"] else self.crc[d]
@@ -146,7 +150,15 @@ class Model:
                 return
         if SUB_A <= a < SUB_A + 0x1000:
             if self.k["mem_drop"] == (a - SUB_A) // 4: pass                                   # a word lost
-            else: self.sub[a] = v
+            else: self.sub[a] = v ^ (1 if self.k["axi_mismatch"] and a == SUB_A + 8 else 0)    # axi_mismatch: one word stored wrong (clean mismatch)
+            arm = self.armed["a"]
+            if self.k["axi_noise"]: self.axi_crc[("b", 0x1100)] = self.axi_crc.get(("b", 0x1100), 0) + 1   # AXI counter moves outside any shot
+            if arm and arm[0] == 0x81:                                                        # W node shot on die_a TX -> die_b RX
+                self.armed["a"] = False
+                if True:
+                    if self.k["axi_shot_bad"]: self.sub[a] = v ^ 1                             # corrupted data delivered
+                    if not self.k["axi_shot_nocount"] and self.k["inj_works"]:
+                        self.axi_crc[("b", 0x1100)] = self.axi_crc.get(("b", 0x1100), 0) + 1
             if self.k["beacon"] == "a7":
                 for dd in "ab": self.beacon_run[dd] = False; self.beacon_done[dd] = True      # A7: AXI traffic stops the beacon
             return
@@ -226,6 +238,17 @@ CASES = [
     ("a7window: a word lost through the window",   dict(mem_drop=5), "cmd_a7window", dict(), 1),
     ("a7window: beacon already done",              dict(beacon_done=True), "cmd_a7window", dict(), 4),
     ("a7window: link down",                        dict(link_up=False), "cmd_a7window", dict(), 1),
+    ("axi healthy (CRC on, exact, quiet, shots +1)", {}, "cmd_axi", dict(n=10, rounds=3), 0, "AXI_RESULT crc_on=True clean_bad=0 clean_crc_moved=0 shots_exact=10/10"),
+    ("axi: AXI node resets with CRC OFF",          dict(axi_crc_off=True), "cmd_axi", dict(n=10, rounds=3), 1, "resets with CRC OFF"),
+    ("axi: clean mismatch (one word wrong)",       dict(axi_mismatch=True), "cmd_axi", dict(n=10, rounds=3), 1, "must be byte-exact"),
+    ("axi: shot without CRC +1 (counter dead/shot eaten)", dict(axi_shot_nocount=True), "cmd_axi", dict(n=10, rounds=3), 1, "FAIL(INERT)"),
+    ("axi: shot with bad data delivered",          dict(axi_shot_bad=True), "cmd_axi", dict(n=10, rounds=3), 1, "FAIL(FAIL)"),
+    ("axi: AXI counter moves outside a shot",      dict(axi_noise=True), "cmd_axi", dict(n=10, rounds=3), 1, "must be byte-exact"),
+    ("axi: injector register does not hold",       dict(inj_holds=False), "cmd_axi", dict(n=10, rounds=3), 1, ""),
+    ("axi: injector never reaches TX -> no pass",  dict(inj_works=False), "cmd_axi", dict(n=10, rounds=3), 1, ""),
+    ("axi: link down",                             dict(link_up=False), "cmd_axi", dict(n=10, rounds=3), 1, ""),
+    ("axi: 0x003C alias refused",                  {}, "cmd_axi", dict(n=10, rounds=3), 1, "HARNESS_BROKEN", dict(ERRINJ=0x003C)),
+    ("axi b: slave-die n/a, a2b only; die_b unlock untouched", dict(slave_ro=True), "cmd_axi", dict(n=10, rounds=3), 0, "", {}, lambda m: m.unlock_log == []),
     ("regs healthy",                               {}, "cmd_regs", dict(), 0),
     ("regs: sideband CRC check OFF",               dict(crc_on=False), "cmd_regs", dict(), 1),
     # --- shared injector controls (injector_controls.py): each one must be able to FAIL ---------------

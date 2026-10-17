@@ -62,6 +62,10 @@ case "$cmd" in
     for n in $(grep -o 'soak [0-9]*' <<<"$c" | cut -d' ' -f2); do echo "SOAK: sent=$n drained=$n good=$n bad=0 stalls=0"; done
     [[ "$c" == *smoke1* ]] && echo "SMOKE1 PASS"
     for d in $(grep -o 'crc ctl --dir [a-z0-9]*' <<<"$c" | awk '{print $4}'); do echo "VERDICT: PASS"; done
+    if [[ "$c" == *"rev2hw.py axi"* ]]; then
+      if [ "${STUB_AXI_FAIL:-0}" = 1 ]; then echo "AXI_RESULT crc_on=False clean_bad=0 clean_crc_moved=0 shots_exact=0/10 [STUB canned]"; echo "VERDICT: FAIL AXI check failed (stub)"; exit 1; fi
+      echo "AXI_RESULT crc_on=True clean_bad=0 clean_crc_moved=0 shots_exact=10/10 [STUB canned]"; echo "VERDICT: PASS AXI nodes CRC on at reset (stub)"
+    fi
     for d in $(grep -o 'crc stats --dir [a-z0-9]*' <<<"$c" | awk '{print $4}'); do
       echo "CRC-STATS SUMMARY dir=$d"
       if [[ "$c" == *"--expect-fixed"* ]]; then

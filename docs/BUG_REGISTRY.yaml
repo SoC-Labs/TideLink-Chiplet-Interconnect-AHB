@@ -14,7 +14,7 @@ schema_version: 2                # 2 (2026-09-11): hardware claims now carry
                                  # machine-enforced by scripts/ci/registry_coverage.py
 generated: 2026-08-06
 last_truth_pass: 2026-09-11      # see campaign.truth_pass_2026_09_11
-updated: 2026-10-14              # 2026-10-14: TL-059 added (sideband CRC replay, sim_proven); 2026-10-12: TL-036 compute-line HW evidence added, TL-058 bench repaired (sim_proven); earlier 10-10: TL-054..TL-058 added, TL-036/TL-038 amended; NOT a truth pass
+updated: 2026-10-16              # 2026-10-16: TL-019 follow-on (ASIC takes AddrSync_18 reset-skew fix); TL-018/TL-019 -> sim_proven (ASIC takes hardened FC overrides, CRC ON at reset); 2026-10-14: TL-059 added (sideband CRC replay, sim_proven); 2026-10-12: TL-036 compute-line HW evidence added, TL-058 bench repaired (sim_proven); earlier 10-10: TL-054..TL-058 added, TL-036/TL-038 amended; NOT a truth pass
 maintainer: autonomous overnight campaign (Claude Opus 4.8)
 approver: David Mapstone <david@mapstone.me>
 
@@ -90,7 +90,7 @@ campaign:
   signed_off_date: null
   open_rank1_critical: 1     # TL-001 (peer-write data-drop / calibrator sweep)
   open_functional_high: 1    # TL-006 REOPENED 2026-08-07 — ECC fix NOT wired into the shipping ASIC flist (bypass ships)
-  open_tapeout_high: 4       # TL-010 (F13 PTP), TL-011 (F19 PHY BIST), TL-019 (ASIC FCSM strip), TL-021 (bring-up obs)
+  open_tapeout_high: 3       # TL-010 (F13 PTP), TL-011 (F19 PHY BIST), TL-021 (bring-up obs); TL-019 sim_proven 2026-10 (HW/LEC pending)
   consolidation:
     branch: integ/tidelink-consolidated-2026-08-07   # ecef57c = main 18491ef ⊂ integ 1107151 ⊂ tl001 2c249ec + docs
     roadmap: docs/SIGNOFF_ROADMAP_2026_08_07.md
@@ -1055,39 +1055,51 @@ bugs:
   # See also TL-006 (ECC — the highest-severity instance, tracked there, REOPENED).
   # ===========================================================================
   - id: TL-018
-    title: ASIC FCSM CRC resets ON while FPGA resets OFF — combination never co-run
+    title: AXI FC nodes reset link CRC OFF on FPGA but ON on ASIC (deps) - now ON everywhere
     severity: medium
     area: rtl/wlink
-    status: root_caused   # decision, SW-recoverable
+    status: hw_proven    # 2026-10-16: KR260 onchip image of 4038de9c boots all 10 AXI nodes CRC-on (SM_CONTROL 0x708), clean traffic quiet, 10/10 W-node shots replayed exact
     summary: >
-      deps FCSM (ASIC) WlinkGenericFCSM.v:636 resets out_prepend_swi_disable_crc<=1'h0
-      (CRC checking ON); local_override (FPGA) :713 resets <=1'h1 (OFF). ASIC-V2 flist
-      pulls deps (:270), FPGA-V2 pulls local (:292). Polarity confirmed :195-196 (~mask).
-      The ASIC error-handling config (CRC-on + ECC-off pre-TL-006-A3 + no watchdog) has
-      never been co-simulated. Runtime-overridable via CTRL bit[16].
-    fix: {approach: "decide the ASIC CRC reset value deliberately + record it in the FCSM/flist header; co-sim the shipping config", files: [src/rtl/local_overrides/WlinkGenericFCSM.v], commit: null, branch: null, netlist_affecting: true}
-    decision_needed: "David: ratify ASIC CRC reset value (on vs off). SW-recoverable either way."
-    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
-    signoff: {claude_verdict: "decision — SW-recoverable; pair the co-sim with TL-006 A3", evidence: ["FCSM :636 vs :713", "asic_v2.flist:270"], approved: false}
-    related: [TL-006]
+      The FPGA local_override WlinkGenericFCSM{,_1.._4} reset out_prepend_swi_disable_crc <= 1 (CRC checking OFF,
+      SoC Labs "Bug-C") while the deps copies the ASIC flist used reset 0 (ON); the combination "ASIC error-handling
+      config = CRC on + recovery FSM" was never co-simulated and a single-bit AXI payload error was silently
+      delivered on the FPGA vehicle unless SW wrote SM_CONTROL[16]=0. DECISION (David, 2026-10): the ASIC build ships
+      the hardened local overrides with link CRC ON at reset. FIX: the five overrides now reset the bit to 0 for FPGA
+      and ASIC alike (one RTL); +define+TIDELINK_FCSM_CRC_OFF_AT_RESET restores the old reset (FPGA fallback / negative
+      control, never defined by a shipping flist). Assumptions of CRC-off-at-reset updated: cocotb _force_axi_crc helpers
+      (on=True no longer forces; on=False Force(1)s), crc_matrix AXI adapter (no APB enable write), host-script and doc
+      comments. Sideband FCSM_6 already reset 0.
+    fix: {approach: "override reset value 0 + TIDELINK_FCSM_CRC_OFF_AT_RESET define; gates + crc_matrix_quick on both flists", files: [src/rtl/local_overrides/WlinkGenericFCSM.v, src/rtl/local_overrides/WlinkGenericFCSM_1.v, src/rtl/local_overrides/WlinkGenericFCSM_2.v, src/rtl/local_overrides/WlinkGenericFCSM_3.v, src/rtl/local_overrides/WlinkGenericFCSM_4.v], commit: d884e623, branch: fix/tl018-019-asic-fc-overrides, netlist_affecting: true}
+    decision_needed: null
+    decision_recorded: "David 2026-10: ASIC ships link CRC ON at reset with the hardened FC-node overrides (TL-018/TL-019)."
+    verification: {sim_test: "crc_matrix_quick (FPGA flist) + crc_matrix_quick_asic (ASIC_FLIST=1): ctl_ship_default, ctl_croff_define, mut_croff_W_first; axi_datanode_recovery/gaps; nack_wedge_recovery; sideband_crc_replay", in_sim_gate: true, hw_tested: true, hw_validated: true, vehicle: onchip, evidence: [imp/hw_gate/tl018_019_2026-10-16/README.md, imp/hw_gate/tl018_019_2026-10-16/axi_check.txt, imp/hw_gate/tl018_019_2026-10-16/run_axicheck_summary.tsv, imp/hw_gate/tl018_019_2026-10-16/markers_built.txt], hw_test: "scripts/hw/hw_test.sh AXICHECK=1 (rev2hw.py axi): all 10 AXI nodes CRC on at reset, wrong-DataID arm inert, 20x64-word clean traffic exact with AXI CRC counters unmoved, 10 W-node payload shots each +1 CRC and replayed exact; plus 5000-word soaks, B19 dip, sideband 60/60, stream start no storm"}
+    signoff: {claude_verdict: "hw_proven on the FPGA vehicle (same RTL as ASIC, asic_fileset_identity); netlist-affecting - LEC/STA on the ASIC re-synthesis still required", evidence: ["cocotb/tidelink_axi_datanode_recovery crc_matrix", "docs/CRC_MATRIX.md", "imp/hw_gate/tl018_019_2026-10-16/"], approved: false}
+    related: [TL-006, TL-019]
 
   - id: TL-019
-    title: ASIC flist pins AXI-node FCSM 0-4 to deps (no socl_ recovery hooks)
+    title: ASIC flist pinned AXI-node FCSM 0-4 (and replay _7/_9) to deps (no socl_ recovery hooks) - now local overrides
     severity: high
     area: build/flist
-    status: root_caused   # decision (real counter-argument)
+    status: sim_proven   # David's decision 2026-10; netlist-affecting, LEC/timing/area pending
     summary: >
-      tidelink_top_full_asic_v2.flist:270-275 pull FCSM 0-5 from deps (only FCSM_6 local);
-      FPGA-V2 :292-296 pull FCSM 0-4 from local_overrides. grep -c socl_: deps=0 each,
-      local=66 each -> the ASIC AXI data nodes ship WITHOUT the socl_ recovery hooks
-      (F-1/F-2/Fix-K class). The ASIC flist's last touch 6e3b25d "hold(tapeout): keep
-      ASIC FCSM 0-4 on deps pending silicon ILA (I1 FPGA-only)"; that hold basis EXPIRED
-      when I1 was resolved on silicon (07-31), but was never propagated to the flist.
-    fix: {approach: "re-point ASIC-V2 FCSM 0-4 deps->local_override OR refresh the hold comment with a meetable gate", files: [flists/tidelink_top_full_asic_v2.flist], commit: null, branch: null, netlist_affecting: true}
-    decision_needed: "David: re-point (adds a NOVEL state-2 min-CRACK-emit blocking gate that stalled bring-up at 32 and 8 per I1_FCSM_BRINGUP_REGRESSION) vs refresh hold. Re-decide with I1-resolved in hand."
-    verification: {sim_test: none, in_sim_gate: false, hw_tested: false}
-    signoff: {claude_verdict: "high-severity DECISION — the local FCSM carries a novel blocking gate; not a clean re-point", evidence: ["asic_v2.flist:270-275", "socl_ 0 vs 66", "6e3b25d hold-commit"], approved: false}
-    related: [TL-004, TL-005, TL-009]
+      flists/tidelink_top_full_asic_v2.flist pulled WlinkGenericFCSM 0-4 and WlinkGenericFCReplayV2_7/_9 from deps
+      (no socl_ recovery hooks; the ASIC arm was measured wedging in state 7, asicsim 2026-08-26) while
+      tidelink_fpga_v2.flist took src/rtl/local_overrides (about 72 socl_ references per node). The 2026-07-29 hold's
+      basis (a silicon ILA of the I1 fix) was met 2026-07-31 but never propagated. DECISION (David, 2026-10): re-point.
+      FIX: the V2 and V1 ASIC flists now take FCSM 0-4 + replay _7/_9 from local_overrides, identical to the FPGA v2
+      flist; FCSM_5 (no override exists) stays deps, FCSM_6 was already local. scripts/ci/flist_divergence.py --check
+      now fails (MUST-MATCH) if any of these diverge again. FOLLOW-ON (2026-10-16, David approved): both ASIC flists
+      also take src/rtl/local_overrides/WlinkGenericFCReplayAddrSync_18.v (the a2l ACK-pointer reset-skew fix for the
+      silicon false-FULL, obs 0x2158; shared by the a2l node link_addr_to_app_clk and the sideband l2a sync), now in
+      MUST_MATCH. Proof: directed force test test_addrsync_reset_gate_directed (FAILS on the unfixed deps copy; the
+      random-skew sim tests are green on it too, an idealised-sim limit) + asic_fileset_identity AddrSync arm +
+      must-fail mutants. Still FPGA-only and NOT covered by this decision: i2c_master, SRAM wrapper.
+    fix: {approach: "re-point ASIC V2/V1 flists to local_override FC nodes + replay _7/_9; update gates (identity, l7 starvation, flist_divergence) with must-fail arms", files: [flists/tidelink_top_full_asic_v2.flist, flists/tidelink_top_full_asic.flist, scripts/ci/flist_divergence.py], commit: d884e623, branch: fix/tl018-019-asic-fc-overrides, netlist_affecting: true, followon: "AddrSync_18 re-point on branch fix/tl018-addrsync18"}
+    decision_needed: null
+    decision_recorded: "David 2026-10: ASIC takes the hardened local FC-node overrides (supersedes the 2026-07-29 hold, ratified 2026-08-20)."
+    verification: {sim_test: "asic_fileset_identity (both flists + deps mutant must fail), asic_l7_starvation_backstop (both flists ESCAPE + deps mutant WEDGES), flist_divergence (+2 mutant flists), asic_v2_pair_data, asic_fcsm_silicon_ratio, a2l_replay_cdc_* (incl. directed AddrSync_18 reset-gate test + USE_DEPS_ADDRSYNC mutant), elab gates", in_sim_gate: true, hw_tested: false, hw_note: "2026-10-16: the KR260 image (FPGA flist) runs the identical node RTL and passed (imp/hw_gate/tl018_019_2026-10-16/); the ASIC flist itself has no hardware vehicle before silicon"}
+    signoff: {claude_verdict: "sim_proven; ASIC area/timing/LEC for ~5x72 socl_ hooks not yet measured; no ASIC-line HW", evidence: ["asic_l7_starvation_backstop 3 arms", "asic_fileset_identity mutant arm"], approved: false}
+    related: [TL-004, TL-005, TL-009, TL-018]
 
   - id: TL-020
     title: ASIC flist hygiene — obs modules missing (BREAKS asic elab gate) + dup sync_detect + undefined PTP FIFO cell

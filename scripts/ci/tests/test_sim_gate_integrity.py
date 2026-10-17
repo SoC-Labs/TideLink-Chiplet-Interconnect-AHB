@@ -36,7 +36,7 @@ def mutate(text, kind):
     if kind == "invoked_not_scored":
         # Remove two suites from the SCORED list while leaving them invoked.
         # This is the literal B6 defect as it stood on rev2/consolidated.
-        out = text.replace("\ta2l_replay_cdc_7 a2l_replay_cdc_9 \\\n", "")
+        out = text.replace("\ta2l_replay_cdc_7 a2l_replay_cdc_9 a2l_replay_cdc_13 \\\n", "")
         assert out != text, "could not remove a2l_replay_cdc_7/_9 from the scored list"
         return out
     if kind == "scored_not_invoked":

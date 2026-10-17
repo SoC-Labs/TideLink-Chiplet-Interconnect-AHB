@@ -55,8 +55,9 @@ non-event into a green.
 
 HOW THE CONDITION IS INDUCED
 ----------------------------
-The five AXI nodes ship with CRC checking DISABLED
-(out_prepend_swi_disable_crc reset 1). Clearing FC_SM_CONTROL[16] on a node
+The five AXI nodes shipped with CRC checking DISABLED
+(out_prepend_swi_disable_crc reset 1) until TL-018 (2026-10); newer builds reset it to 0 (CRC ON), where this
+arm is already armed and the clear below is a no-op. On an old bitstream, clearing FC_SM_CONTROL[16] on a node
 arms the NACK/replay path. The ONE time an enabled CRC ran on a live link
 (2026-06-14, Z2 pair) it saturated crc_errors and parked the FCSM in
 SEND_NACK - the 2026-07-21 root cause concluded that was the CRC correctly

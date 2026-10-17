@@ -1,7 +1,7 @@
 """CRC-injection matrix (VERIFICATION.md 2.2/2.3): one parameterised case per sim, env-driven.
 
   CM_KIND    shot (default) | ctl_live | ctl_inert | ctl_readback | ctl_detect_sense | ctl_counts
-             | ctl_ship_default
+             | ctl_ship_default | ctl_fileset | ctl_croff_silent
   CM_NODE    sb | AW | W | B | AR | R
   CM_DIR     ab | ba                    (AXI nodes: ab only -- the slave die's ahb_sub is tied off)
   CM_POS     first | second | mid | second_to_last | last
@@ -65,10 +65,12 @@ async def _case(dut):
 
     if kind == "ctl_ship_default":
         # Confirms the SHIPPING disable_crc reset value per node (SM_CONTROL bit16) straight after
-        # bring-up: FCSM_6 (sideband) = 0 (CRC checked); FCSM 0-4 (AXI) = 1 (CRC NOT checked) in the FPGA
-        # flist (local overrides).  ASIC flist uses the deps copies (reset 0): CM_EXPECT_AXI_DEFAULT=0.
+        # bring-up.  TL-018: CRC is ON at reset (bit16 = 0) on the sideband node AND on FCSM 0-4 (AXI), in the FPGA
+        # and the ASIC flist alike: CM_EXPECT_AXI_DEFAULT=0 (default).  The `croff` build (+define+
+        # TIDELINK_FCSM_CRC_OFF_AT_RESET) runs this same check with CM_EXPECT_AXI_DEFAULT=1 -- the control that
+        # proves the check can fail and the define really restores the old reset.
         await ad.setup()
-        exp_axi = int(E("CM_EXPECT_AXI_DEFAULT", "1"))
+        exp_axi = int(E("CM_EXPECT_AXI_DEFAULT", "0"))
         bad = []
         table = {}
         for (side, base), v in ad.defaults.items():
@@ -79,6 +81,32 @@ async def _case(dut):
         cls = "ERROR" if bad else "EXACT"
         rec = C.emit(dut, name, cls, dict(node="all", disable_crc_reset=table, bad=bad), cls == "EXACT", "EXACT")
         assert not bad, f"shipping disable_crc default changed: {bad}"
+        return rec
+
+    if kind == "ctl_fileset":
+        # Which FC-node file compiled (hierarchy-probed at runtime): CM_EXPECT_FILESET=local -> every AXI node
+        # carries the socl_ recovery markers; =deps -> none does (the asicdeps MUTANT, proves the probe can fail).
+        await ad.setup()
+        want = E("CM_EXPECT_FILESET", "local")
+        bad, ctl = [], 0
+        for side in ("m", "s"):
+            for inst in C.AXI_FC_NODES:
+                node = C._axi_node(ad.tb, side, inst)
+                try:
+                    node.state; ctl += 1                       # must-be-present control: the path is right
+                except AttributeError:
+                    bad.append((side, inst, "state-missing"))
+                    continue
+                for mk in ("socl_l6_cr_emit_count", "socl_l7_crack_emit_count", "socl_l7_wdog_force_clear"):
+                    try:
+                        getattr(node, mk); has = True
+                    except AttributeError:
+                        has = False
+                    if has != (want == "local"):
+                        bad.append((side, inst, mk, "present" if has else "absent"))
+        cls = "ERROR" if bad or ctl != 10 else "EXACT"
+        rec = C.emit(dut, name, cls, dict(node="all", want=want, bad=bad, ctl=ctl), cls == "EXACT", "EXACT")
+        assert not bad and ctl == 10, f"FC-node fileset != {want}: {bad} (ctl {ctl}/10)"
         return rec
 
     crc_on = kind != "ctl_detect_sense"
@@ -118,7 +146,8 @@ async def _case(dut):
         assert ok, f"wrong-DataID arm not inert: {cls} {d}"
         return rec
 
-    if kind == "ctl_detect_sense":
+    if kind in ("ctl_detect_sense", "ctl_croff_silent"):
+        # ctl_croff_silent: CRC-off-at-RESET build (croff), NO APB write -> the same silent corruption must appear.
         cls, d, _ = await C.run_shot(ad, size=size, pos=pos, gap=gap, byte=byte, bit=bit,
                                      expect_fired=1, expect_crc=0)
         ok = cls in ("STRAY", "LOST")       # corrupted word silently delivered, counter +0: CRC-on matters

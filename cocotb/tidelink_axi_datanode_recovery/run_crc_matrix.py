@@ -32,13 +32,18 @@ BUILD_ARGS = {
     "zero": ["EPOCH_PROFILE=zero"],
     "silicon": ["EPOCH_PROFILE=silicon"],
     "l9": ["EPOCH_PROFILE=zero", "EXTRA_DEFINES=+define+SOCL_L9_ALWAYS"],
+    # TL-018 mutants: croff = AXI FC nodes reset CRC OFF (the pre-2026-10 FPGA reset), asicdeps = tapeout flist with
+    # FCSM 0-4 / replay _7,_9 re-pointed back to the recovery-stripped deps copies (needs ASIC_FLIST=1).
+    "croff": ["EPOCH_PROFILE=zero", "EXTRA_DEFINES=+define+TIDELINK_FCSM_CRC_OFF_AT_RESET"],
+    "asicdeps": ["EPOCH_PROFILE=zero", "ASIC_FLIST=1", "ASIC_FCSM_DEPS=1"],
 }
+ASIC = os.environ.get("ASIC_FLIST", "0") == "1"     # tapeout flist build (sim_build_cm_*_asic_*)
 RESULT_RE = re.compile(r"\[cm\] RESULT (\{.*\})")
 
 
 def run_case(case, worker, outdir, timeout):
     build = case["build"]
-    sb = f"sim_build_cm_{build}_w{worker}"
+    sb = f"sim_build_cm_{build}{'_asic' if ASIC else ''}_w{worker}"
     flist = os.path.join(HERE, f"tidelink_fpga_v2_fcsm_local_w{worker}.flist")
     log = os.path.join(outdir, case["name"] + ".log")
     env = dict(os.environ)
@@ -87,7 +92,7 @@ def run_batch(cases, jobs, outdir, timeout, keep=()):
     for b in {c["build"] for c in cases}:
         for w in range(jobs):
             if (b, w) not in keep:      # a cached simv would silently test stale RTL
-                shutil.rmtree(os.path.join(HERE, f"sim_build_cm_{b}_w{w}"), ignore_errors=True)
+                shutil.rmtree(os.path.join(HERE, f"sim_build_cm_{b}{'_asic' if ASIC else ''}_w{w}"), ignore_errors=True)
     queue = list(cases)
     results = {}
 
@@ -127,7 +132,7 @@ def main():
     ctl = [c for c in cases if c["group"] in ("control", "mutant")]
     mat = [c for c in cases if c["group"] == "matrix"]
     t0 = time.time()
-    print(f"[crc_matrix] tier={a.tier} controls={len(ctl)} matrix={len(mat)} jobs={a.jobs} out={outdir}", flush=True)
+    print(f"[crc_matrix] tier={a.tier} flist={'ASIC(tapeout)' if ASIC else 'FPGA'} controls={len(ctl)} matrix={len(mat)} jobs={a.jobs} out={outdir}", flush=True)
     results = run_batch(ctl, a.jobs, outdir, a.timeout)
     broken = [r for r in results if not r["ok"]]
     if broken:
@@ -140,7 +145,7 @@ def main():
     # ------ summary
     total = time.time() - t0
     lines = []
-    lines.append(f"CRC matrix tier={a.tier}  wall={total:.0f}s  jobs={a.jobs}")
+    lines.append(f"CRC matrix tier={a.tier} flist={'ASIC' if ASIC else 'FPGA'}  wall={total:.0f}s  jobs={a.jobs}")
     lines.append(f"{'case':<50} {'group':<8} {'build':<8} {'class':<6} {'expect':<10} {'secs':>6}  ok")
     for r in results:
         lines.append(f"{r['name']:<50} {r['group']:<8} {r['build']:<8} {r['cls']:<6} {r['expect']:<10} {r['secs']:>6}  "

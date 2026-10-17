@@ -1,0 +1,25 @@
+rev2hw axi start 2026-10-16 20:27:25
+AXI die_a AW SM_CONTROL=0x00000708 crc_check=on
+AXI die_a W  SM_CONTROL=0x00000708 crc_check=on
+AXI die_a B  SM_CONTROL=0x00000708 crc_check=on
+AXI die_a AR SM_CONTROL=0x00000708 crc_check=on
+AXI die_a R  SM_CONTROL=0x00000708 crc_check=on
+AXI die_b AW SM_CONTROL=0x00000708 crc_check=on
+AXI die_b W  SM_CONTROL=0x00000708 crc_check=on
+AXI die_b B  SM_CONTROL=0x00000708 crc_check=on
+AXI die_b AR SM_CONTROL=0x00000708 crc_check=on
+AXI die_b R  SM_CONTROL=0x00000708 crc_check=on
+AXI CTL wrong-DataID 0x7E armed: 0x23C readback = 0x0100057e, bad=0, AXI CRC counters unchanged=True, disarmed=True
+AXI clean: 20 rounds x 64 words via die_a ahb_sub, mismatches=0, AXI CRC counters moved=none
+SHOT  0 W byte=4 bit=0: crc 0->1 (delta 1) data=exact disarmed=True -> EXACT
+SHOT  1 W byte=5 bit=3: crc 1->2 (delta 1) data=exact disarmed=True -> EXACT
+SHOT  2 W byte=6 bit=6: crc 2->3 (delta 1) data=exact disarmed=True -> EXACT
+SHOT  3 W byte=7 bit=1: crc 3->4 (delta 1) data=exact disarmed=True -> EXACT
+SHOT  4 W byte=4 bit=4: crc 4->5 (delta 1) data=exact disarmed=True -> EXACT
+SHOT  5 W byte=5 bit=7: crc 5->6 (delta 1) data=exact disarmed=True -> EXACT
+SHOT  6 W byte=6 bit=2: crc 6->7 (delta 1) data=exact disarmed=True -> EXACT
+SHOT  7 W byte=7 bit=5: crc 7->8 (delta 1) data=exact disarmed=True -> EXACT
+SHOT  8 W byte=4 bit=0: crc 8->9 (delta 1) data=exact disarmed=True -> EXACT
+SHOT  9 W byte=5 bit=3: crc 9->10 (delta 1) data=exact disarmed=True -> EXACT
+AXI_RESULT crc_on=True clean_bad=0 clean_crc_moved=0 shots_exact=10/10
+VERDICT: PASS AXI nodes CRC on at reset; clean traffic exact and quiet; 10/10 W-node shots detected and replayed exactly

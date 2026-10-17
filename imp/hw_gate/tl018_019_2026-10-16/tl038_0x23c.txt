@@ -1,0 +1,29 @@
+rev2hw tl038 start 2026-10-16 20:37:45
+CTL B payload byte 4: die_a B crc 0->1, data exact
+CTL PASS: injector reaches B packets (payload shot detected and replayed)
+SHOT 0: arm 0x01000182 (B node, header byte 1 bit 0); write 0x38005c78 via die_a ahb_sub ...
+SHOT 0: write completed (no PS hang)
+SHOT 0: readback exact, B crc a 1->1 b 0->0, link_ok=True, 8 follow-up writes bad=0 -> OK
+SHOT 1: arm 0x01010182 (B node, header byte 1 bit 1); write 0x38005c78 via die_a ahb_sub ...
+SHOT 1: write completed (no PS hang)
+SHOT 1: readback exact, B crc a 1->1 b 0->0, link_ok=True, 8 follow-up writes bad=0 -> OK
+SHOT 2: arm 0x01020182 (B node, header byte 1 bit 2); write 0x38007c78 via die_a ahb_sub ...
+SHOT 2: write completed (no PS hang)
+SHOT 2: readback exact, B crc a 1->1 b 0->0, link_ok=True, 8 follow-up writes bad=0 -> OK
+SHOT 3: arm 0x01030182 (B node, header byte 1 bit 3); write 0x38007c78 via die_a ahb_sub ...
+SHOT 3: write completed (no PS hang)
+SHOT 3: readback exact, B crc a 1->1 b 0->0, link_ok=True, 8 follow-up writes bad=0 -> OK
+SHOT 4: arm 0x01040182 (B node, header byte 1 bit 4); write 0x38005c78 via die_a ahb_sub ...
+SHOT 4: write completed (no PS hang)
+SHOT 4: readback exact, B crc a 1->1 b 0->0, link_ok=True, 8 follow-up writes bad=0 -> OK
+SHOT 5: arm 0x01050182 (B node, header byte 1 bit 5); write 0x38005c78 via die_a ahb_sub ...
+SHOT 5: write completed (no PS hang)
+SHOT 5: readback exact, B crc a 1->1 b 0->0, link_ok=True, 8 follow-up writes bad=0 -> OK
+SHOT 6: arm 0x01060182 (B node, header byte 1 bit 6); write 0x38007c78 via die_a ahb_sub ...
+SHOT 6: write completed (no PS hang)
+SHOT 6: readback exact, B crc a 1->1 b 0->0, link_ok=True, 8 follow-up writes bad=0 -> OK
+SHOT 7: arm 0x01070182 (B node, header byte 1 bit 7); write 0x38007c78 via die_a ahb_sub ...
+SHOT 7: write completed (no PS hang)
+SHOT 7: readback exact, B crc a 1->1 b 0->0, link_ok=True, 8 follow-up writes bad=0 -> OK
+TL038_RESULT shots=8 ok=True
+VERDICT: PASS TL-038 at 0x23C: 8 header-byte-1 B-node shots, no wedge, data exact, link healthy

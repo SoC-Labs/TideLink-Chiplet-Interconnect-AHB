@@ -7,3 +7,5 @@ novas*
 verdiLog/
 ucli.key
 tidelink_fpga_v2_prefixfc.flist
+tidelink_asic_v2_fcsmdeps.flist
+tidelink_asic_v2_addrsyncdeps.flist

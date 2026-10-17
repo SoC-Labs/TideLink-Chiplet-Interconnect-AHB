@@ -123,9 +123,9 @@ FCSM_LIVE = (4, 5, 6)
 # Bases are in the Wlink bank, so they are reachable through this same backdoor
 # (the map span already covers 0x0000-0x3FFF).
 #
-# WHY THIS IS HERE. The five AXI nodes ship with checking DISABLED — the FPGA
-# flist pulls src/rtl/local_overrides/WlinkGenericFCSM{,_1..4}.v, whose reset
-# value is `out_prepend_swi_disable_crc <= 1'h1` (:747 / :725). With that bit
+# WHY THIS IS HERE. Until 2026-10 the five AXI nodes shipped with checking DISABLED — the FPGA
+# flist pulled src/rtl/local_overrides/WlinkGenericFCSM{,_1..4}.v, whose reset
+# value was `out_prepend_swi_disable_crc <= 1'h1`. With that bit
 # set, `crc_corrupt` is forced 0, so a bit-flip anywhere in a packet's app
 # payload — peer WRITE DATA, read data, address, BID/BRESP — is accepted
 # silently: no counter moves, no NACK is sent, nothing is replayed, and the AHB
@@ -134,7 +134,12 @@ FCSM_LIVE = (4, 5, 6)
 #   test_crc_on_detects_write_data_corruption -> detected, NACK'd, byte-exact
 # (cocotb/tidelink_axi_datanode_recovery, `make gaps_crc`).
 #
-# The `report` default below only READS. It is deliberately not `on`: enabling
+# TL-018 (2026-10, David's decision): the overrides now reset CRC ON (`<= 1'h0`) in the FPGA AND the ASIC
+# build (+define+TIDELINK_FCSM_CRC_OFF_AT_RESET restores the old reset for a bitstream that needs it). On a
+# bitstream built before that change the nodes still come up OFF, and `report` below shows which you have;
+# this script stays valid for both. `on` is therefore normally a no-op on new bitstreams.
+#
+# The `report` default below only READS. Historically it was deliberately not `on`: enabling
 # checking arms the NACK/replay path, and the ONE time an enabled CRC has run on
 # a live link (2026-06-14, Z2 pair) it saturated crc_errors and parked the FCSM
 # in SEND_NACK — which the 2026-07-21 root-cause concluded was the CRC correctly

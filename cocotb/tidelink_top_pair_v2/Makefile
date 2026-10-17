@@ -150,6 +150,31 @@ $(warning [ASIC_FLIST=1] MEM_PATH/rf_16k.v not found -- falling back to \
 endif
 endif
 V2_FLIST  ?= $(TIDELINK_HOME)/flists/tidelink_fpga_v2.flist
+# TL-018/TL-019 MUTANT (requires ASIC_FLIST=1): ASIC_FCSM_DEPS=1 re-points the AXI FC nodes WlinkGenericFCSM{,_1.._4}
+# and the replay nodes WlinkGenericFCReplayV2_7/_9 back to the recovery-stripped deps/ copies = the PRE-fix tapeout file
+# set.  Gates use it to prove the ASIC-arm expectations (identity, state-7 escape) can still go red.  Generated, git-ignored.
+ASIC_FCSM_DEPS ?= 0
+export ASIC_FCSM_DEPS
+ifeq ($(ASIC_FCSM_DEPS),1)
+ifneq ($(ASIC_FLIST),1)
+$(error ASIC_FCSM_DEPS=1 is the mutant of the ASIC flist: set ASIC_FLIST=1)
+endif
+GEN_FCSMDEPS_FLIST := $(CURDIR)/tidelink_asic_v2_fcsmdeps.flist
+$(shell sed -E 's@src/rtl/local_overrides/(WlinkGenericFCSM(_[1-4])?|WlinkGenericFCReplayV2_[79])\.v@deps/axi-chiplet-controller/logical/wlink/\1.v@' $(V2_FLIST) > $(GEN_FCSMDEPS_FLIST))
+V2_FLIST := $(GEN_FCSMDEPS_FLIST)
+endif
+# TL-018 follow-on MUTANT (requires ASIC_FLIST=1): ASIC_ADDRSYNC_DEPS=1 re-points ONLY WlinkGenericFCReplayAddrSync_18
+# (a2l ACK-pointer reset-skew fix, obs 0x2158) back to the unfixed deps/ copy = the pre-fix tapeout file set.
+ASIC_ADDRSYNC_DEPS ?= 0
+export ASIC_ADDRSYNC_DEPS
+ifeq ($(ASIC_ADDRSYNC_DEPS),1)
+ifneq ($(ASIC_FLIST),1)
+$(error ASIC_ADDRSYNC_DEPS=1 is the mutant of the ASIC flist: set ASIC_FLIST=1)
+endif
+GEN_ADDRSYNCDEPS_FLIST := $(CURDIR)/tidelink_asic_v2_addrsyncdeps.flist
+$(shell sed -E 's@src/rtl/local_overrides/(WlinkGenericFCReplayAddrSync_18)\.v@deps/axi-chiplet-controller/logical/wlink/\1.v@' $(V2_FLIST) > $(GEN_ADDRSYNCDEPS_FLIST))
+V2_FLIST := $(GEN_ADDRSYNCDEPS_FLIST)
+endif
 PREFIX_FC ?= 0
 ifeq ($(PREFIX_FC),1)
 GEN_V2_FLIST := $(CURDIR)/tidelink_fpga_v2_prefixfc.flist
@@ -330,7 +355,7 @@ COMPILE_ARGS += $(EXTRA_DEFINES)
 #   (negctl) share one sim_build for a given EPOCH_PROFILE, so running deliver then
 #   negctl silently re-runs the beacon-ON binary -> the negctl delivers and reports
 #   a FALSE non-vacuity failure. Add AUTO_ANCHOR to the key so the two get separate dirs.
-SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)$(if $(filter 1,$(HONEST_STRAPS)),_honest,)$(if $(filter 1,$(AUTO_ANCHOR)),_autoanchor,)$(if $(filter 1,$(ASIC_FLIST)),_asic,)$(if $(RF16K_V),$(if $(filter 1,$(ASIC_FLIST)),$(if $(filter 1,$(RF16K_UD)),_rfud,_rfreal),),)$(if $(L7_WDOG_THRESHOLD),_wdog$(L7_WDOG_THRESHOLD),)
+SIM_BUILD := sim_build_$(EPOCH_PROFILE)$(if $(filter 1,$(EPOCH_ANCHOR_DIS)),_noanchor,)$(if $(filter 1,$(EPOCH_ANCHOR)),_anchor,)$(if $(filter 1,$(EYE_FAULT)),_eye,)$(if $(filter 1,$(PREFIX_FC)),_prefixfc,)$(if $(filter-out 1,$(BYPASS_AUTONEG)),_auto,)$(if $(filter 1,$(HONEST_STRAPS)),_honest,)$(if $(filter 1,$(AUTO_ANCHOR)),_autoanchor,)$(if $(filter 1,$(ASIC_FLIST)),_asic$(if $(filter 1,$(ASIC_FCSM_DEPS)),_fcsmdeps,)$(if $(filter 1,$(ASIC_ADDRSYNC_DEPS)),_addrsyncdeps,),)$(if $(RF16K_V),$(if $(filter 1,$(ASIC_FLIST)),$(if $(filter 1,$(RF16K_UD)),_rfud,_rfreal),),)$(if $(L7_WDOG_THRESHOLD),_wdog$(L7_WDOG_THRESHOLD),)
 
 # The results file lives in the build dir this bench ACTUALLY uses. SIM_BUILD
 # gains _rfreal/_rfud when MEM_PATH has the real rf_16k model, so a caller that

@@ -2161,6 +2161,19 @@ sim_gate_ema_tie_check:
 	$(call sim_gate_run,ema_tie_check,\
 	  python3 $(TIDELINK_HOME)/scripts/ci/ema_tie_check.py --check)
 
+# TL-051 (R1 I2C pad 2-flop sync) + TL-055 (H30 calibrator swreset: one apb_clk flop
+# -> swreset_s1/s2 in link_clk). A metastability/glitch fix is invisible to zero-delay
+# RTL sim, so this asserts the flop STRUCTURE in the RTL (clocked-block NBAs and the
+# signal each port resolves to, not wire-name greps). Deterministic, no sim.
+# Must-fail control (13 mutants, each fix reverted): scripts/ci/tests/test_cdc_sync_structure.py,
+# run by selfcheck_gates. Also: make cdc_sync_structure.
+.PHONY: cdc_sync_structure
+cdc_sync_structure:
+	@python3 $(TIDELINK_HOME)/scripts/ci/cdc_sync_structure.py --check
+sim_gate_cdc_sync_structure:
+	$(call sim_gate_run,cdc_sync_structure,\
+	  python3 $(TIDELINK_HOME)/scripts/ci/cdc_sync_structure.py --check)
+
 # WHICH FILE COMPILED — asserted from inside the running simulation, both ways.
 # ASIC_FLIST=1 must yield FCSM 0-4 with NO socl_ recovery markers and the rf_16k
 # SRAM; ASIC_FLIST=0 must yield all 5 markers and cmsdk_fpga_sram. Two runs
@@ -2266,7 +2279,7 @@ SIM_GATE_ALL_SUITES   := t31_autonomous_training_exit t32_die_a_first_zombie_ret
 	v2_winscan_fsm v2_perf_ctrl v2_reduced_lane epoch_silicon epoch_anchor_plumb v2_stream_start_anchor \
 	v2_pair_sustained v2_truncated_pkt_credit v2_truncated_pkt_aperture_offset v2_xhb_lostresp_pipe \
 	fifo_rx_phantom_pop fifo_rx_randinit v1_elab asic_v1_elab asic_v2_elab dft_wrapper_elab \
-	flist_divergence ema_tie_check asic_fileset_identity asic_v2_pair_data asic_fcsm_silicon_ratio \
+	flist_divergence ema_tie_check cdc_sync_structure asic_fileset_identity asic_v2_pair_data asic_fcsm_silicon_ratio \
 	asic_l7_starvation_backstop \
 	apb_fc_cfg_preempt fch_apb_watchdog zeropoke_por retire_en_plumb \
 	v2_lane_mask_oddlane v2_lane_mask_position v2_lane_mask_negctl \
@@ -2497,6 +2510,7 @@ sim_gate: sim_gate_integrity sim_gate_env_check selfcheck_gates sim_gate_clean_b
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_dftelab
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_flist_divergence
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_ema_tie_check
+	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_cdc_sync_structure
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asic_fileset_identity
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asic_v2_pair_data
 	@$(MAKE) --no-print-directory SIM_GATE_NONFATAL=1 sim_gate_asic_fcsm_ratio

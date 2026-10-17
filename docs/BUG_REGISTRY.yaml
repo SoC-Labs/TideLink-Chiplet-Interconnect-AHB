@@ -1702,7 +1702,7 @@ bugs:
     title: "State-7 NACK watchdog dead after first CRC error (sticky socl_l7_real_crc_seen pins wdog_cnt=0)"
     severity: high
     area: rtl/fcsm-recovery
-    status: root_caused
+    status: sim_proven            # 2026-10-16: AXI-plane (FCSM 0-4) red/green by test_tl035_axi_real_crc; NOT hardware-proven (see verification.hw_evidence: fix present, AW-inject wedge still occurs)
     summary: >
       Surfaced by DEV_MESSAGE_A2L_SELFLATCH_SILICON_2026_08_09 (eth-chiplet integrator) as a real secondary
       defect distinct from the TL-027 a2l self-latch. After the FIRST real CRC error the FCSM latches
@@ -1746,7 +1746,17 @@ bugs:
         socl_l7_real_crc_seen — so the gated `nack_wedge_recovery` suite PASSING
         does NOT validate TL-035. Confirms the registry's original "does NOT
         reproduce in any sim". COVERAGE GAP remains open.
-      in_sim_gate: false
+      sim_test_2026_10_16: >
+        RESOLVED 2026-10-16: cocotb/tidelink_top_pair/test_tl035_axi_real_crc.py
+        (5 tests, one per AXI node: W/AW/B/AR/R = WlinkGenericFCSM_1/base/_2/_3/_4).
+        Per node: link CRC enabled explicitly (out_prepend_swi_disable_crc forced 0),
+        a real crcCorruptSeen pulse latches socl_l7_real_crc_seen, then the
+        stuck-SEND_NACK wedge is injected as in test_l7_wedge_repro; the state-7
+        watchdog must fire. Runs in sim_gate_nack_wedge_recovery. Must-fail control:
+        +define+TL033_LEGACY_WDOG (sticky term restored) -> watchdog never fires,
+        wdog_cnt max 0. The 'NONE that exercises this defect' text above is the
+        ORIGINAL gap this closes. Sim only: does not address the hw_evidence below.
+      in_sim_gate: true
       hw_tested: true      # 2026-08-13, first attributable A/B on the KR260 pair
       hw_evidence: >
         Arm B = .tl033 (source d317c98...-dirty, Part-A + Part-B, verified

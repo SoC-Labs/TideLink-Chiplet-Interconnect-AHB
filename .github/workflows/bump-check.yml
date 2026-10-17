@@ -1,0 +1,139 @@
+#-----------------------------------------------------------------------------
+# bump-check.yml — BLOCK a submodule-pointer move that has no passing bump check.
+# Copyright 2026, SoC Labs (www.soclabs.org)
+#-----------------------------------------------------------------------------
+# Release-manager decision 3 (2026-10-16): hooks WARN locally
+# (scripts/hooks/pre-push), CI BLOCKS, and the release manager's own bump gate
+# is the authority. This is the CI half.
+#
+# WHAT IT DOES. Lists every gitlink (mode 160000) the PR or push changes. None:
+# green in seconds, nothing else runs. Any: each move needs a PASS, and the
+# job fails until it has one. "Could not ask" is a FAIL, not a pass.
+#
+# WHERE THE PASS COMES FROM.
+#   bump-check        (hosted, every event; the one to make REQUIRED)
+#       asks the release manager: GET $NANOSOC_RM_URL/api/v1/bump-check
+#       (repo variable NANOSOC_RM_URL, secret NANOSOC_RM_TOKEN). Until the
+#       release manager is reachable from GitHub's runners, every gitlink move
+#       stays red here: run the bump check there, then re-run this job.
+#   bump-check-local  (self-hosted, `push` only, opt-in)
+#       runs the affected t1/t2 capabilities from .nanosoc/capabilities.yaml
+#       (deps/* moves re-run lint-fast) on a lab runner with the tools. Enabled by setting repo variable
+#       BUMP_CHECK_RUNNER to that runner's label. NOT on pull_request: this repo
+#       is public, and running a contributor's branch on a lab host with the
+#       Arm IP trees and licence servers mounted is how a self-hosted runner is
+#       lost. A green here does not turn the hosted job
+#       green; it is evidence to take to the release manager.
+#
+# NO `paths:` FILTER: a gitlink move can arrive in any commit, and the job is
+# seconds long when nothing moved.
+#-----------------------------------------------------------------------------
+name: bump-check
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bump-check:
+    name: submodule-bump-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: bump-check-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout (history, no submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Range under test
+        id: range
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tip="$(git rev-parse HEAD)"
+          if [ "$EVENT" = pull_request ]; then
+            # The fork point, not the base branch's tip: a two-dot diff against the tip would show every gitlink
+            # the base branch moved since the PR forked as a reverse move of this PR.
+            tip="$PR_HEAD"; base="$(git merge-base "$PR_BASE" "$PR_HEAD")"
+          elif [ -n "${BEFORE:-}" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
+               && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            base="$BEFORE"
+          else
+            # A new branch: only its own commits (those no other branch of this repo holds), never every move
+            # since the default branch.
+            first="$(git rev-list --reverse "$tip" --not --exclude="refs/remotes/origin/${REF_NAME}" --remotes=origin | head -1)"
+            if [ -z "$first" ]; then base="$tip"
+            else base="$(git rev-parse --verify --quiet "${first}^" || echo "$first")"; fi
+          fi
+          echo "range=${base}..${tip}" >> "$GITHUB_OUTPUT"
+          echo "base=${base}" >> "$GITHUB_OUTPUT"
+          echo "checking ${base}..${tip}"
+
+      - name: PyYAML (reads .nanosoc/capabilities.yaml)
+        run: python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
+
+      - name: Bump gate (the BASE commit's copy of the script)
+        env:
+          NANOSOC_RM_URL: ${{ vars.NANOSOC_RM_URL }}
+          NANOSOC_RM_TOKEN: ${{ secrets.NANOSOC_RM_TOKEN }}
+          BASE: ${{ steps.range.outputs.base }}
+        run: |
+          set -euo pipefail
+          # A PR must not be able to edit the gate that judges it: run the script as the base commit has it. Only
+          # the PR that first adds the script runs its own copy (there is no older one to run).
+          script="$RUNNER_TEMP/bump_check.py"
+          git show "${BASE}:scripts/ci/bump_check.py" > "$script" 2>/dev/null || cp scripts/ci/bump_check.py "$script"
+          python3 "$script" --mode block --range "${{ steps.range.outputs.range }}"
+
+      - name: Bump-check self-test
+        run: python3 scripts/ci/test_bump_check.py
+
+  bump-check-local:
+    name: submodule-bump-local-run
+    if: github.event_name == 'push' && vars.BUMP_CHECK_RUNNER != ''
+    runs-on: ${{ vars.BUMP_CHECK_RUNNER }}
+    timeout-minutes: 120
+    steps:
+      - name: Checkout (history, no submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Submodules (all public, HTTPS)
+        run: git submodule update --init --recursive
+
+      - name: Run the affected capabilities
+        env:
+          BEFORE: ${{ github.event.before }}
+          REF_NAME: ${{ github.ref_name }}
+          NANOSOC_RM_URL: ${{ vars.NANOSOC_RM_URL }}
+          NANOSOC_RM_TOKEN: ${{ secrets.NANOSOC_RM_TOKEN }}
+          TIDELINK_PHY_V2: "1"
+        run: |
+          set -euo pipefail
+          tip="$(git rev-parse HEAD)"
+          if [ -n "${BEFORE:-}" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
+             && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then base="$BEFORE"
+          else
+            first="$(git rev-list --reverse "$tip" --not --exclude="refs/remotes/origin/${REF_NAME}" --remotes=origin | head -1)"
+            if [ -z "$first" ]; then base="$tip"
+            else base="$(git rev-parse --verify --quiet "${first}^" || echo "$first")"; fi
+          fi
+          python3 scripts/ci/bump_check.py --mode block --run-local --range "${base}..${tip}"
+

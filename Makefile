@@ -3228,3 +3228,39 @@ site-check-selftest:
 ## covered is not: the scope is tracked build files only, never docs.
 site-check-scope:
 	@$(CURDIR)/scripts/ci/site_check.sh --list-scope
+
+# =============================================================================
+# Submodule-bump checks (nanoSoC release manager, decision 3, 2026-10-16)
+# =============================================================================
+# A change that moves a gitlink (deps/*) needs a passing bump check: the hook
+# WARNS, CI (.github/workflows/bump-check.yml) BLOCKS, the release manager's
+# bump gate decides. What each move re-runs is `affected_by` in
+# .nanosoc/capabilities.yaml. scripts/ci/bump_check.py is a copy of the one in
+# nanosoc-ethernet-chiplet; keep the two identical.
+.PHONY: bump-hook bump-check bump-check-selftest
+BUMP_BASE ?= origin/main
+RUN_LOCAL ?= 0
+
+## Install the WARN-only pre-push hook (scripts/hooks/pre-push). Installs
+## nothing when a pre-push hook already exists; prints how to chain it.
+bump-hook:
+	@dst="$$(git rev-parse --git-path hooks)/pre-push"; \
+	if [ -e "$$dst" ]; then \
+	  echo "make bump-hook: $$dst already exists; not replacing it." >&2; \
+	  echo '  Chain it: "$$(git rev-parse --show-toplevel)/scripts/hooks/pre-push" "$$1" (same stdin)' >&2; \
+	  exit 0; \
+	fi; \
+	mkdir -p "$$(dirname "$$dst")" && \
+	ln -s "$(CURDIR)/scripts/hooks/pre-push" "$$dst" && \
+	echo "installed $$dst -> scripts/hooks/pre-push (warn-only)"
+
+## The CI bump gate, locally, over BUMP_BASE..HEAD. RUN_LOCAL=1 runs the
+## affected t1/t2 capabilities here when the release manager has no PASS.
+bump-check:
+	python3 $(CURDIR)/scripts/ci/bump_check.py --mode block \
+	  --range "$$(git merge-base $(BUMP_BASE) HEAD)..HEAD" \
+	  $(if $(filter 1,$(RUN_LOCAL)),--run-local)
+
+## Unit tests for scripts/ci/bump_check.py and the hook (stdlib only).
+bump-check-selftest:
+	python3 $(CURDIR)/scripts/ci/test_bump_check.py

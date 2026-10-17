@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# -----------------------------------------------------------------------------
+# scripts/hooks/pre-push — WARN when a push moves a submodule pointer that has
+# no passing bump check. Never blocks (release-manager decision 3): CI's
+# bump-check job and the release manager's bump gate are where a move is
+# blocked. This only tells you sooner.
+#
+# Install (only if you have no pre-push hook of your own):
+#     make bump-hook
+# Chain it from an existing pre-push hook (e.g. the toolkit's vendor guard):
+#     "$(git rev-parse --show-toplevel)/scripts/hooks/pre-push" "$@" < <stdin copy>
+#
+# Ask the release manager by setting, once per clone:
+#     git config nanosoc.rmUrl https://<host>:<port>
+# and NANOSOC_RM_TOKEN in your environment if the server wants one. Without it
+# the hook prints the command that runs the check instead.
+#
+# Copyright 2026, SoC Labs (www.soclabs.org)
+# -----------------------------------------------------------------------------
+remote="${1:-origin}"
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+script="${top}/scripts/ci/bump_check.py"
+if [ ! -r "${script}" ] || ! command -v python3 >/dev/null 2>&1; then
+    echo "bump-check: skipped (python3 or ${script} missing) — not checked" >&2
+    exit 0
+fi
+python3 "${script}" --mode warn --pre-push "${remote}" >&2 || true
+exit 0

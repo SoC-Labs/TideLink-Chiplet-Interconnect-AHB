@@ -1,0 +1,108 @@
+# TideLink sim gate on the lab's self-hosted runner (VCS + site.env live there).
+# Setup, labels, env vars and the required-status-check recipe: docs/CI_RUNNER.md.
+#
+#   pull_request -> `quick`  : static checks + FC CRC-contract SVA + make sim_gate_quick
+#   schedule     -> `nightly`: static checks + full make sim_gate + SVA full (+ formal if the runner opts in)
+#
+# There are deliberately NO path filters: a required check that is skipped by paths-ignore
+# never reports and blocks the PR forever.
+name: sim-gate
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 1 * * *'        # 01:17 UTC nightly
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'quick | full'
+        required: false
+        default: quick
+
+permissions:
+  contents: read
+
+# one run per PR / ref; a newer push to the same PR cancels the older run.
+# Nightly and manual runs are never cancelled.  The runner itself serialises jobs (one runner, one job).
+concurrency:
+  group: sim-gate-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  quick:
+    name: sim_gate_quick
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode != 'full')
+    runs-on: [self-hosted, linux, vcs]
+    timeout-minutes: 120
+    env:
+      GATE_OUT: ${{ github.workspace }}/imp/ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Run quick gate
+        run: ci/sim_gate_ci.sh quick
+      - name: Upload gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-gate-quick-${{ github.run_id }}
+          path: |
+            imp/ci/GATE_EXIT
+            imp/ci/summary.txt
+            imp/ci/*.log
+            imp/ci/sim_gate/*.status
+            imp/ci/sim_gate/*.log
+            imp/ci/fc_sva/summary.txt
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Fail the job on GATE_EXIT != 0
+        if: always()
+        run: |
+          if [ ! -f imp/ci/GATE_EXIT ]; then echo "::error::no GATE_EXIT file: the CI driver did not run"; exit 1; fi
+          GATE_EXIT=$(cat imp/ci/GATE_EXIT)
+          echo "GATE_EXIT=${GATE_EXIT}"
+          [ "${GATE_EXIT}" = "0" ] || { echo "::error::sim gate failed (GATE_EXIT=${GATE_EXIT}); see summary.txt in the artifact"; exit 1; }
+
+  nightly:
+    name: sim_gate_full
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full')
+    runs-on: [self-hosted, linux, vcs]
+    timeout-minutes: 360
+    env:
+      GATE_OUT: ${{ github.workspace }}/imp/ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          submodules: recursive
+          fetch-depth: 0
+      - name: Run full gate
+        run: ci/sim_gate_ci.sh full
+      - name: Upload gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-gate-full-${{ github.run_id }}
+          path: |
+            imp/ci/GATE_EXIT
+            imp/ci/summary.txt
+            imp/ci/*.log
+            imp/ci/sim_gate/*.status
+            imp/ci/sim_gate/*.log
+            imp/ci/fc_sva/summary.txt
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Fail the job on GATE_EXIT != 0
+        if: always()
+        run: |
+          if [ ! -f imp/ci/GATE_EXIT ]; then echo "::error::no GATE_EXIT file: the CI driver did not run"; exit 1; fi
+          GATE_EXIT=$(cat imp/ci/GATE_EXIT)
+          echo "GATE_EXIT=${GATE_EXIT}"
+          [ "${GATE_EXIT}" = "0" ] || { echo "::error::nightly sim gate failed (GATE_EXIT=${GATE_EXIT}); see summary.txt in the artifact"; exit 1; }

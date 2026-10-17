@@ -1330,6 +1330,19 @@ crc_matrix_nightly:
 	rm -rf cocotb/tidelink_axi_datanode_recovery/sim_build_cm_*
 	$(MAKE) -C cocotb/tidelink_axi_datanode_recovery crc_matrix_nightly
 
+# ── FC-node CRC-replay contract SVA (verification-closure P1, 2026-10-16) ──────────
+# verif/sva/fc_crc_contract_sva.sv bound into every WlinkGenericFCSM* (+define+TL_FC_SVA,
+# cocotb Makefile TL_FC_SVA=1) and run inside the existing pair benches.  MAIN arm must stay
+# clean; the MUST-FAIL arm (+define+SOCL_L9_ALWAYS) must trip C1/C2c, else the checker is hollow.
+#   make fc_sva        2 sideband_crc_replay cases + must-fail arm      (~3 min, one sim at a time)
+#   make fc_sva_full   4 cases + crc_matrix_quick (SVA on) + must-fail  (~10 min)
+# Results: imp/fc_sva/summary.txt (+ per-case logs).  Not part of the sim_gate aggregate yet.
+.PHONY: fc_sva fc_sva_full
+fc_sva:
+	verif/sva/run_fc_sva.sh quick
+fc_sva_full:
+	verif/sva/run_fc_sva.sh full
+
 # ── TL-042 instance 1 (2026-08-23) — the ahb_sub write backstop STARVES ──────
 # Both existing ahb_sub backstops are AGGREGATE-PROGRESS timers: sub_osr_ctr_r
 # re-zeroes on `sub_axi_progress = sub_r_done | sub_b_done` (any channel, any

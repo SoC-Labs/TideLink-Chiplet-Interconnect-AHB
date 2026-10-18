@@ -49,7 +49,7 @@ Without the pinned `CHIPLET_HOME` and `TIDECHART_HOME` the TideChart pair suites
 
 Owner and next step for every entry are in the registry (`truth_pass_2026_10` blocks); the summary with
 counts is [REGISTRY_STATUS_2026-10.md](REGISTRY_STATUS_2026-10.md). Registry on 2026-10-18: 0 open,
-2 root_caused, 1 fix_built, 30 sim_proven, 2 hw_proven, 15 deferred (each with an owner), 8 closed.
+2 root_caused, 0 fix_built, 31 sim_proven, 2 hw_proven, 15 deferred (each with an owner), 8 closed.
 
 **For the next spin (in priority order):**
 

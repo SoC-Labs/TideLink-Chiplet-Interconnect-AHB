@@ -13,8 +13,8 @@ schema_version: 2                # 2 (2026-09-11): hardware claims now carry
                                  # verification.evidence + verification.vehicle,
                                  # machine-enforced by scripts/ci/registry_coverage.py
 generated: 2026-08-06
-last_truth_pass: 2026-09-11      # see campaign.truth_pass_2026_09_11
-updated: 2026-10-16              # 2026-10-16: TL-019 follow-on (ASIC takes AddrSync_18 reset-skew fix); TL-018/TL-019 -> sim_proven (ASIC takes hardened FC overrides, CRC ON at reset); 2026-10-14: TL-059 added (sideband CRC replay, sim_proven); 2026-10-12: TL-036 compute-line HW evidence added, TL-058 bench repaired (sim_proven); earlier 10-10: TL-054..TL-058 added, TL-036/TL-038 amended; NOT a truth pass
+last_truth_pass: 2026-10-16      # see per-entry truth_pass_2026_10 blocks and docs/REGISTRY_STATUS_2026-10.md
+updated: 2026-10-17              # 2026-10-17: truth pass rebased onto main after PRs #17 (TL-057 gate), #18 (TL-051/055 gate), #20 (TL-018/019). 2026-10-16: registry truth pass (docs/REGISTRY_STATUS_2026-10.md); TL-019 follow-on (AddrSync_18); TL-018/TL-019 ASIC hardened FC overrides, CRC ON at reset. Earlier: 2026-10-14 TL-059 added.
 maintainer: autonomous overnight campaign (Claude Opus 4.8)
 approver: David Mapstone <david@mapstone.me>
 
@@ -215,6 +215,13 @@ bugs:
     severity: rank1_critical
     area: phy/calibrator
     status: root_caused
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: root_caused
+      owner: "David"
+      reason: "FIX 1 (e5bd29c) is on main; the framing-quality drop on genuine S_DONE bring-ups was never shown cured on the eth-pair. Later KR260 work (A7 beacon fix, H30/H31, TL-054) hardened bring-up but did not re-measure this drop."
+      next_step: "Run the n=20 eth-pair delivery campaign on current main with the repo HW tooling (scripts/hw/RUNBOOK.md); close if delivery is 20/20 byte-exact, else keep root_caused."
     summary: >
       die_a->die_b cross-die AXI writes cross their ADDRESS but die_b SRAM reads
       0 — the write payload is lost. Per-POR "lottery": some bring-ups land the
@@ -378,6 +385,11 @@ bugs:
     severity: high
     area: rtl/tidelink_top
     status: sim_proven          # DEMOTED from hw_proven 2026-09-11 — see hw_claim_demoted_2026_09_11
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: sim_proven
+      note: "Any \"errinject survived\" narrative in this entry used the 0x003C alias (no injection) and carries no HW weight; hw_validated stays false and sim evidence is unchanged."
     summary: >
       Under a bid-mismatch the XHB500 hazard-list never freed the EWR write,
       hard-wedging the write path. Fix K muxes s_axi_bid to sub_wr_awid_r when a
@@ -455,6 +467,11 @@ bugs:
     severity: high
     area: rtl/tidelink_top
     status: sim_proven   # DEMOTED from hw_proven 2026-09-11 — see hw_claim_demoted_2026_09_11. FIXED + GATED (blocking).
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: sim_proven
+      note: "Any \"errinject survived\" narrative in this entry used the 0x003C alias (no injection) and carries no HW weight; hw_validated stays false and sim evidence is unchanged."
     summary: >
       2026-08-02 review CRITICAL: the backstop drove ERROR upstream of XHB500 and
       abandoned s_axi tracking -> XHB500 waits forever for a B that never arrives
@@ -564,6 +581,11 @@ bugs:
     severity: high
     area: rtl/wlink
     status: sim_proven
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: sim_proven
+      note: "Byte-0/byte-1 header-ECC corrections are sim-proven only. Earlier errinject HW narratives used the 0x003C alias (no injection); see TL-038 for the open byte-1 HW check."
     summary: >
       A bypassed WlinkEccSyndrome mis-routed single-bit header flips; decode
       `corrupted` defaulted 1 for syndrome==0 (clean). The _T gate is the fix.
@@ -638,6 +660,11 @@ bugs:
     severity: high
     area: rtl/tidelink_top
     status: sim_proven          # DEMOTED from hw_proven 2026-09-11 — see hw_claim_demoted_2026_09_11
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: sim_proven
+      note: "Any \"errinject survived\" narrative in this entry used the 0x003C alias (no injection) and carries no HW weight; hw_validated stays false and sim evidence is unchanged."
     summary: >
       synth-B response returned SLVERR which failed to restore a stuck XHB500
       write; emitting OKAY restores it so die_a survives errinject B byte0.
@@ -726,6 +753,13 @@ bugs:
     severity: high
     area: rtl/write-path   # REFRAMED from phy/physical
     status: root_caused    # localized; exact leaked resource needs PS-PL ILA
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: root_caused
+      owner: "David"
+      reason: "Per-write leak is localized (0x21F8 write-stall cascade) but not cured; FIX D is necessary-not-sufficient. Consequence (PS hard-hang) is now bounded by TL-037 firewall + TL-042 inst.1 watchdog (both sim_proven, gated)."
+      next_step: "Re-run the sustained cross-die write soak on main with TL-037 in the image; either record the wedge as bounded (downgrade severity) or root-cause the residual leak."
     summary: >
       die_a's PS goes UNREACHABLE (silent hang) after ~10-20 cross-die writes.
       2026-08-07 exhaustive HW characterization REFRAMES this from "marginal eye":
@@ -843,7 +877,14 @@ bugs:
     title: F13 (PTP) tapeout risk — HIGH residual (mailbox-RO bug + convergence gap)
     severity: high
     area: ptp
-    status: fix_built   # RTL-bug half fixed on integ; convergence half open
+    status: sim_proven   # truth pass 2026-10-16: was fix_built
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: fix_built
+      owner: "David"
+      reason: "The named RTL bug (APB-writable PTP timestamp mailbox) is fixed on main (a0a224c) and gated by suite v2_mbox_writeprotect. The convergence half is tracked separately: TL-048 (servo convergence, sim_proven, gated) and TL-049 (frequency direction, deferred)."
+      next_step: "Two-board PTP convergence on the eth-pair is still unproven on HW; owner David, folds into TL-049 decision."
     summary: >
       tidelink_ptp.sv + tidelink_ptp_servo.sv ship (asic_v2 flist :67,:69). Fused
       risk: (1) CONFIRMED RTL BUG — cross-die PTP timestamp mailbox not RO from
@@ -873,6 +914,13 @@ bugs:
     severity: high
     area: phy/bist
     status: deferred   # verification/DFT-integration gap, not an RTL bug
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: deferred
+      owner: "David"
+      reason: "On-silicon PHY BIST still unwired: no Makefile/gate reference to phy_bist or prbs on main; the deps suite was 1/11 green in the consolidated env."
+      next_step: "Triage the phy_bist link-up cascade, wire the passing suite into the gate, and take a first-silicon go/no-go."
     summary: >
       On-silicon PHY-BIST instrumentation gap. BIST RTL EXISTS
       (deps/tidelink-phy/rtl/tidelink_phy_bist_core.sv, _prbs.sv PRBS-15,
@@ -919,7 +967,14 @@ bugs:
     title: "_generate_xhb500 reports success on failed generation (pipefail)"
     severity: high
     area: build/set_env
-    status: fix_built   # LANDED + pushed + consumed by eth-chiplet pin 1107151
+    status: closed   # truth pass 2026-10-16: was fix_built
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: fix_built
+      owner: "TideLink"
+      reason: "Fix 5be494b is on main: set_env.sh uses PIPESTATUS[0] for the generator status (set_env.sh:117-119). Registry text saying \"NOT on main\" was stale."
+      next_step: "none"
     summary: >
       $? after a pipeline reads sed's status not the generator's; partial
       logical/ tree left behind makes the next run skip. Reported as highest-value
@@ -941,7 +996,14 @@ bugs:
     title: V1 flist tidelink_fpga.flist no longer elaborates (missing obs modules)
     severity: medium
     area: build/flist
-    status: fix_built   # pending_agent:3
+    status: sim_proven   # truth pass 2026-10-16: was fix_built
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: fix_built
+      owner: "TideLink"
+      reason: "5be494b is on main; flists/tidelink_fpga.flist now lists the obs modules (4 references) and suite v1_elab (sim_gate_v1elab) is in SIM_GATE_ALL_SUITES, so V1 is a supported, gated config."
+      next_step: "none"
     summary: >
       Wlink.v instantiates tidelink_fcemit_obs + tidelink_winscan_obs, listed
       only in the V2 flist. Reportedly fixed by adding both .sv to V1 flist.
@@ -953,7 +1015,7 @@ bugs:
       branch: integ/axirec-on-chiplet
       netlist_affecting: false
     decision_needed: "Keep V1 flist (elaborate-fix already landed) or retire it (loud comment/removal)? Coupled to TL-014."
-    verification: {sim_test: n/a}
+    verification: {sim_test: sim_gate_v1elab, in_sim_gate: true, hw_tested: false}
     signoff: {claude_verdict: "elaborate-fix LANDED+pushed; retire-or-keep is a David decision", evidence: [commit:5be494b, "tidelink_fpga.flist:293-294"], approved: false}
 
   # ---------------------------------------------------------------------------
@@ -962,6 +1024,13 @@ bugs:
     severity: low
     area: build/gitmodules
     status: deferred
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: deferred
+      owner: "David"
+      reason: "deps/tidelink-gpio-phy and deps/tidelink-phy still both exist on main, same upstream URL; gpio-phy is referenced only by the V1 lane-checker flist. V1 is gated (TL-013), so removal needs a decision."
+      next_step: "Decide: repoint V1 to deps/tidelink-phy and drop gpio-phy, or keep both. Low severity."
     summary: >
       deps/tidelink-gpio-phy (6ee8418) and deps/tidelink-phy (5c76e76) point at
       the same upstream, 97 commits apart. gpio-phy reachable only from V1 flist.
@@ -1023,7 +1092,14 @@ bugs:
     title: SSH URLs in .gitmodules unusable from sandboxed CI (want HTTPS)
     severity: medium
     area: build/gitmodules
-    status: fix_built   # pending_agent:3
+    status: closed   # truth pass 2026-10-16: was fix_built
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: fix_built
+      owner: "TideLink"
+      reason: "All three .gitmodules URLs are HTTPS on main; 5be494b is an ancestor of main. Registry text saying \"NOT on main\" was stale."
+      next_step: "none"
     summary: >
       git@github.com: URLs break under bubblewrap sandbox (getpwuid fails). All
       three repos are public; HTTPS works everywhere. Reportedly fixed in 5be494b.
@@ -1151,7 +1227,14 @@ bugs:
     title: First-silicon debuggability gaps (APB region-hit / i2c_slv_reset / ext_stall_err_q)
     severity: high
     area: rtl/obs
-    status: root_caused   # bring-up observability
+    status: deferred   # truth pass 2026-10-16: was root_caused
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: root_caused
+      owner: "David"
+      reason: "Sub-item (2) i2c_slv_reset override landed (default-off i2c_slv_dbg_force_reg, bit-identical by default). Sub-item (1) region D/F reach from I2C sideband (4-site read-mux change) and (3) ext_stall_err_q mapping are NOT landed; netlist-affecting, spec ready."
+      next_step: "David signs to land docs/TL021_FIRST_SILICON_OBS_SPEC.md sub-items (1) and (3); needs rebuild + APB-read sim per spec. Only relevant for a first-silicon re-spin."
     summary: >
       (1) axi_chiplet_controller.sv:595-599 slv_apb_ctrl_hit admits only regions 4/8/C ->
       Regions D and F (the 0x21A0-A8 RX-framer stickies + the 0x21F8 wedge witness) are
@@ -1202,7 +1285,14 @@ bugs:
     title: Mailbox slot-select from async rptr — ICG runt-pulse hazard (ASIC-only)
     severity: low
     area: rtl/wlink
-    status: open   # gate-level, unverified in sim
+    status: deferred   # truth pass 2026-10-16: was open
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: open
+      owner: "eth"
+      reason: "ASIC-only gate-level hazard; the RTL asymmetry is real but the runt-pulse claim needs the post-PnR netlist, which lives in the ASIC repos, not here. Not provable in this repo."
+      next_step: "ASIC team greps the pnr netlist for the CKLNQD1 enable fed from raw rptr; if confirmed, register a fix (sync rptr for slot-select), else wontfix."
     summary: >
       WavMultibitSync_18.v: w_ready uses the SYNCHRONISED rptr, but r_data slot-select
       (rptr ? mem_1 : mem_0) and write-enable (~rptr/rptr) use the RAW cross-domain rptr.
@@ -1220,7 +1310,14 @@ bugs:
     title: Calibrator/obs work (FIX 1/FIX 2/obs) regresses 14 blocking sim_gate suites
     severity: rank1_critical
     area: phy/calibrator
-    status: root_caused
+    status: deferred   # truth pass 2026-10-16: was root_caused
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: root_caused
+      owner: "David"
+      reason: "Ratified 2026-08-08: threshold 6 kept, the two regressions are tolerated under docs/WAIVER_TL024_FIX2_MASK_STAGGER.md. v2_mask_hs_regress is a gated XFAIL sentinel in SIM_GATE_SENTINELS; t33_arm_stagger_episode_bind is tracked-standalone (3.5 h, not per-run) and is not a gated suite. Known-live defect under waiver, same contract as TL-029."
+      next_step: "David re-confirms or retires the waiver; run make sim_gate_t33 in a nightly (long job, David launches)."
     summary: >
       Re-running the FULL `make sim_gate` on the consolidated tip (2c249ec = the
       eth-chiplet's current pin) — which the HW-only campaign NEVER did (stale-simv /
@@ -1322,7 +1419,14 @@ bugs:
     title: Pre-existing tc_pair elab break — tidechart_controller ".device_strap" undefined port
     severity: medium
     area: build/tidechart-integration
-    status: root_caused   # pre-existing (fails on 1107151 too), deferred
+    status: closed   # truth pass 2026-10-16: was root_caused
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: root_caused
+      owner: "TideLink"
+      reason: "The tc_pair bench elaboration break is resolved: tb_tc_pair.sv connects .device_strap (restored 4433f65, ancestor of main) and tc_pair_smoke + tc_pair_election_datamode are in SIM_GATE_ALL_SUITES. Project record: main gate 84 PASS / 3 XFAIL / 0 FAIL at a652c73e. Not re-simulated by this pass."
+      next_step: "none (a future gate red re-opens it)"
     summary: >
       sim_gate tc_pair_smoke + tc_pair_election_datamode FAIL "Error-[UPIMI-E] Undefined
       port device_strap in module tidechart_controller". PRE-EXISTING (FAIL on 1107151
@@ -1476,7 +1580,14 @@ bugs:
     title: Unconstrained D2D RX word clock (missing create_generated_clock / no CTS)
     severity: high
     area: fpga/sdc
-    status: root_caused
+    status: deferred   # truth pass 2026-10-16: was root_caused
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: root_caused
+      owner: "eth"
+      reason: "ASIC SDC already has the 8 create_generated_clock D2D_RX_WORD_CLK (eth chiplet repo, 2026-08-08). FPGA XDC lacks it; FPGA leverage low. Constraint lives outside this repo."
+      next_step: "Add the RX word generated clock to the FPGA XDC and compare routed timing + HW eye A/B; otherwise record as ASIC-only done."
     summary: >
       The /16 recovered D2D RX word clock has no create_generated_clock constraint
       and thus no CTS clock tree. Flagged in HW_RESULTS_FRAMING_WEDGE as plausibly
@@ -1507,7 +1618,14 @@ bugs:
     title: EPOCH shipping-default corrector — XFAIL sentinel unregistered + flipped XCHG
     severity: medium
     area: rtl/phy
-    status: open   # XCHG needs investigating
+    status: deferred   # truth pass 2026-10-16: was open
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: open
+      owner: "David"
+      reason: "Decision, not a defect fix: ship EPOCH_ANCHOR_EN on or off (RTL default is 0). Sentinel xfail_epoch_shipping_corrector is in SIM_GATE_SENTINELS and reads XFAIL on main (gate 3 XFAIL), so the 08-09 XCHG is superseded. stream_start_28w red on a default bench is the EPOCH_ANCHOR=0 bench; the TL-059 work added suite v2_stream_start_anchor with the anchor on."
+      next_step: "David decides the shipping default; flipping it needs the sentinel re-baselined."
     summary: >
       xfail_epoch_shipping_corrector is the other live XFAIL sentinel, also previously
       unregistered. Guards the beacon-starvation corrector weakness in the shipping
@@ -1545,7 +1663,14 @@ bugs:
     title: "Bring-up eye-qualification metric (SW-readable per-lane BER/eye margin) to turn the framing lottery into bounded retry"
     severity: medium
     area: phy/obs
-    status: open
+    status: deferred   # truth pass 2026-10-16: was open
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: open
+      owner: "TideLink"
+      reason: "Feature request (SW-readable per-lane BER/eye margin), netlist + register-map affecting, not started. Levers 1/2 of the originating handover are TL-027 (closed) and TL-028."
+      next_step: "Scope as a rev-2 enhancement if the first-silicon bring-up flow needs it; David gates."
     summary: >
       The eye-gated reliability handover (2026-08-08) is a RE-FRAME of TL-001 (drop) + TL-009
       (wedge), NOT a new bug; its two cures already exist as TL-027 (a2l CDC self-heal port,
@@ -1684,7 +1809,14 @@ bugs:
     title: "TideChart register-map defects (F-6): force_root unconsumed, TC_CTRL[3] mis-wired, sim/silicon dual-root divergence"
     severity: medium
     area: rtl/tidechart
-    status: open
+    status: deferred   # truth pass 2026-10-16: was open
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: open
+      owner: "TideLink (tidechart repo)"
+      reason: "Defects are in the tidechart repo (force_root unconsumed, TC_CTRL[3] mis-wired); not fixable from this tree. The dual-root repro is still owed. tc_pair_election_datamode is in the gate but does not reproduce the silicon dual-root."
+      next_step: "Tidechart owner implements or removes force_root, corrects the TC_CTRL[3] map, and adds a dual-root test."
     summary: >
       MIGRATED from VERIFICATION_REVIEW_AXI_DATANODE_PUSHBACK_2026_08_02 / HANDOVER_AXI_DATANODE_2026_08_03
       (unregistered; distinct from TL-025 device_strap elab break). (1) force_root (TC_CTRL[2]) is NEVER
@@ -1703,6 +1835,13 @@ bugs:
     severity: high
     area: rtl/fcsm-recovery
     status: sim_proven            # 2026-10-16: AXI-plane (FCSM 0-4) red/green by test_tl035_axi_real_crc; NOT hardware-proven (see verification.hw_evidence: fix present, AW-inject wedge still occurs)
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: root_caused
+      owner: "TideLink"
+      reason: "Defect is fixed in the shipping local FCSMs on main: the state-7 watchdog counter now clears on auto_tx_out_advance progress, not on the sticky socl_l7_real_crc_seen (WlinkGenericFCSM_3.v:1040; TL033_LEGACY_WDOG restores the old behaviour). The gated test (test_tl036_real_crc, suite nack_wedge_recovery) exercises FCSM_6 only, so FCSM 0-4 carry the fix without a test of their own. The ASIC flist still pulls FCSM 0-4 from deps without it (TL-019). Not the AW-inject wedge fix (see verdict)."
+      next_step_done_2026_10_17: "DONE via PR #19 (test_tl035_axi_real_crc in nack_wedge_recovery, 5/5 green, 5/5 red on TL033_LEGACY_WDOG). Was: Add an FCSM_0..4 variant of test_tl036_real_crc to nack_wedge_recovery (not trivial: needs an AXI-node pair bench); TL-019 decides the ASIC side."
     summary: >
       Surfaced by DEV_MESSAGE_A2L_SELFLATCH_SILICON_2026_08_09 (eth-chiplet integrator) as a real secondary
       defect distinct from the TL-027 a2l self-latch. After the FIRST real CRC error the FCSM latches
@@ -2074,7 +2213,22 @@ bugs:
     title: "errinject --node B --inj-byte 1 (word_count) still HARD-WEDGES the board on silicon"
     severity: high
     area: rtl/wlink
-    status: open
+    status: closed     # 2026-10-17: re-run at the real injector 0x23C on KR260 onchip (4038de9c): liveness control + 8/8 header-byte-1 B shots, no wedge, data exact
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: open
+      owner: "David"
+      reason: "Hardware evidence invalid (0x003C alias). Neither the CRC-injection matrix (PR #11, sim: payload CRC across nodes/positions) nor the HW tooling (PR #10) injects into header byte 1 on silicon; test_ecc_corrects_b_byte1_wordcount remains the sim evidence. Needs a board."
+      next_step_done_2026_10_17: "On a KR260 pair at main: kr260_eth_xfer.py errinject --node B --inj-byte 1 at 0x2E03_023C, read Region F; PASS = link healthy and data exact. David runs."
+      closed_by: >
+        2026-10-16 KR260 onchip run of 4038de9c (scripts/hw tooling, rev2hw tl038). Control first: a B-node
+        PAYLOAD shot moved die_a B CRC 0->1 and the data replayed exact, proving the injector reaches B packets.
+        Then 8 shots on header byte 1 (word_count), bits 0-7: every write completed (no PS hang), readback exact,
+        link healthy, 8 follow-up writes clean each. The August "hard wedge" was never an injection (0x003C alias).
+        Limit: onchip image (both dies on one KR260), not eth-chiplet silicon; header-byte-1 shots did not move the
+        B CRC counter (header ECC corrects/absorbs them), consistent with test_ecc_corrects_b_byte1_wordcount.
+        Evidence: imp/hw_gate/tl018_019_2026-10-16/tl038_0x23c.txt, imp/hw_gate/tl018_019_2026-10-16/run_tl038_summary.tsv
     summary: >
       TL-006's header-ECC restore corrects byte-1 (word_count) IN SIM
       (test_ecc_corrects_b_byte1_wordcount, gated), but on silicon a byte-1
@@ -2134,7 +2288,14 @@ bugs:
     title: ILA/obs plane is mis-scoped — no probe observes the AXI data nodes
     severity: medium
     area: verif/obs
-    status: root_caused
+    status: deferred   # truth pass 2026-10-16: was root_caused
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: root_caused
+      owner: "TideLink"
+      reason: "Instrument defect in the 08-12 ILA probe set (eth/compute bitstream projects). AXI data-node observability since added in RTL (Region F obs, suite axinode_obs) but the ILA probe list is outside this repo."
+      next_step: "Next ILA insertion uses probes from Region F / the AXI node FCSMs; close when a probe set that sees the data nodes is committed."
     summary: >
       The 2026-08-12 die_a ILA probe set (22 probes, tidelink_design_wrapper.ltx)
       observes ONLY the sideband FC node and the AHB control adapter, never the
@@ -2171,7 +2332,14 @@ bugs:
     title: dbg_a2l_wedged trigger cannot fire for the observed wedge class
     severity: medium
     area: verif/obs
-    status: root_caused
+    status: deferred   # truth pass 2026-10-16: was root_caused
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: root_caused
+      owner: "TideLink"
+      reason: "Instrument defect unchanged on main: dbg_a2l_stall_cnt_q clears whenever sync_obs_a2l_app_rdy_1 is high (axi_chiplet_controller.sv ~2176), which is exactly the wedged state. Low consequence, no ASIC function."
+      next_step: "Rework the trigger to key on a signal the wedge does not suppress (e.g. Region F wedge witness) when next touching the ILA; netlist-affecting for FPGA debug only."
     summary: >
       The ILA's designed trigger is inert for exactly the failure it was built to
       catch. axi_chiplet_controller.sv: `else if (sync_obs_a2l_app_rdy_1) begin
@@ -2268,7 +2436,14 @@ bugs:
     title: "CLASS: backstops that arm/clear on an intermediate signal the wedge itself suppresses"
     severity: high
     area: rtl/tidelink_top
-    status: open   # merge_correction_2026_08_13: additions said root_caused; the candidate fix was BUILT, DEPLOYED and REJECTED ON HARDWARE, so this is OPEN with no viable fix. See rejected_candidate_2026_08_13.
+    status: deferred   # truth pass 2026-10-16: was open
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: open
+      owner: "David"
+      reason: "Class entry. Instance 1 is fixed (sim_proven, suite tl044_hol_write_age, rev2/tl042-backstop landed); instances 2 and 3 have no fix in the tree; the instance-3 candidate was rejected on HW. Class lesson stands; no single fix closes it. The 2026-08 errinject \"survived/wedged\" narratives rest on the 0x003C alias and carry no evidential weight."
+      next_step: "HW validation per docs/HW_VALIDATION_PLAN_TL042_V2.md (David, board). Close the class entry once instances 2/3 are fixed or accepted."
     summary: >
       Three separate recovery backstops on the die_a outbound write path each
       fail the same way, and the shared shape matters more than any one of them:
@@ -2706,7 +2881,14 @@ bugs:
     title: "cross-die exclusive access silently succeeded — no mutual exclusion AND no failure indication"
     severity: high
     area: xhb500-integration
-    status: root_caused          # the DEFECT is measured on rev2/integration; the FIX is on an unmerged side branch
+    status: deferred   # truth pass 2026-10-16: was root_caused
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: root_caused
+      owner: "David"
+      reason: "Gate suite xdie_exclusive on main asserts the DEFECT (two initiators both commit), so it is green while the bug exists. Refusal fix 35c75ae0 (REFUSE exclusives, ahb_sub_hexcl port) exists only on an off-repo branch, is not an ancestor of main, and is netlist-affecting."
+      next_step: "David decides: port 35c75ae0 and its refusal tests to main (then flip the suite and move to sim_proven), or accept exclusives as unsupported and document it."
     registered: 2026-09-11
     provenance: >
       Entry content reused from an unmerged registry commit in the off-repo
@@ -2797,6 +2979,13 @@ bugs:
     severity: medium
     area: cdc
     status: sim_proven           # 2026-10-16: structural gate cdc_sync_structure green + 13 mutants red; SpyGlass re-run on main eb94efac: R1 36 -> 0, R2 0 (docs/CDC_EVIDENCE_TL051_TL055_2026-10-16.md). Simulation cannot prove a metastability fix.
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: fix_built
+      owner: "TideLink"
+      reason: "Fix on main (4df58bfd: 2-flop sync on I2C pad inputs, swi_training_hold_s1). Verified by non-regression and CDC triage only; there is no sim that fails without it. Not a sim_proven claim."
+      next_step: "DONE 2026-10-16 (PR #18): SpyGlass re-run on main + cdc_sync_structure gate with 13 must-fail mutants; now sim_proven."
     registered: 2026-09-23
     opened: 2026-09-23           # first SpyGlass CDC run on the compute die, cdc_verify_struct, mission mode
     summary: >
@@ -3179,7 +3368,14 @@ bugs:
     title: "PTP servo frequency loop cannot slow the clock and barely steers: the PHC takes an unsigned fraction over a software integer increment, and default gains round the correction to ~0 for sub-ms offsets"
     severity: high
     area: ptp
-    status: root_caused
+    status: deferred   # truth pass 2026-10-16: was root_caused
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: root_caused
+      owner: "David"
+      reason: "Design decision: phc_clock_core takes an unsigned fraction, so the servo can only speed the clock up. Fix needs a signed adjustment in the PHC (ptp-hardware-clock-ahb repo), not this tree. No test."
+      next_step: "David decides: signed freq adjustment in PHC (netlist-affecting) or accept and document the one-sided servo."
     registered: 2026-09-23
     opened: 2026-09-22            # noted as an "additional finding" by the review re-derivation agent's closed-loop bench
     summary: >
@@ -3585,7 +3781,14 @@ bugs:
     title: "H30: calibrator swreset is a combinational merge of four apb_clk flops sampled by the link_clk_rx 2FF (glitch -> spurious S_CANCEL re-sweep)"
     severity: medium
     area: cdc/calibrator
-    status: sim_proven
+    status: sim_proven  # 2026-10-17: gate cdc_sync_structure merged (#18) with must-fail mutants; truth pass had demoted it to fix_built for lack of a gate
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: sim_proven
+      owner: "TideLink"
+      reason: "Fix on main (35341c12). Registry said sim_proven but its own verdict states no sim fails without the fix: proof is a SpyGlass CDC delta (Ac_glitch03 56 -> 54) whose evidence lives outside the repo. Demoted to the honest state; the ungated-fix warning is accurate and cannot be closed by adding a sim suite."
+      next_step_done_2026_10_17: "DONE via PR #18 (sim_gate_cdc_sync_structure). Was: Retain the SpyGlass comparison log in the repo, or add a structural check (single flop feeding u_calibrator.swreset) to the gate; the latter needs a Makefile edit, not made here."
     registered: 2026-10-10
     opened: 2026-10-01            # compute SpyGlass triage, handoff-tidelink-h30-h31-20261001/PATCHSET.md
     summary: >
@@ -3705,7 +3908,14 @@ bugs:
     title: "FIFO SRAM macros: EMA tied 3'b000 (the macro warns it does not match its default 010), and macro choice hardcoded to rf_16k regardless of address width"
     severity: medium
     area: rtl/fifo
-    status: sim_proven
+    status: sim_proven  # 2026-10-17: gate ema_tie_check merged (#17) with must-fail mutants; truth pass had demoted it to fix_built for lack of a gate
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: sim_proven
+      owner: "TideLink"
+      reason: "Fix on main (3a51d6c0, EMA 3'b010 at both macros, verified in tidelink_sram.sv). The only check (tb_ema.sv against rf_08k/rf_16k models, with negative control) is in scratch and not in the repo. Demoted from sim_proven. eth rc4 ships EMA=000 (erratum M1)."
+      next_step_done_2026_10_17: "DONE via PR #17 (sim_gate_ema_tie_check). Was: Commit tb_ema.sv plus a make target and add it to SIM_GATE_ALL_SUITES (Makefile edit, not made here); cheaper interim: a grep gate for .EMA(3'b010)."
     registered: 2026-10-10
     opened: 2026-09-28            # SRAM-by-AW (compute af3a5d67); EMA found 2026-10-03
     summary: >
@@ -3774,7 +3984,14 @@ bugs:
     title: "Stale pre-deploy bench: cocotb/debug/wlink_pair does not compile on rev-2, and the root Makefile sim-repro targets point at a directory that does not exist"
     severity: low
     area: verif/infra
-    status: sim_proven            # 2026-10-12: repaired by d04cb867 (on main); bench runs on V1 and V2 with a proven must-fail control. Not a hardware item.
+    status: closed   # truth pass 2026-10-16: was sim_proven
+    truth_pass_2026_10:
+      reviewed: 2026-10-16
+      against: main eb94efac
+      status_before: sim_proven
+      owner: "TideLink"
+      reason: "Repaired on main by d04cb867 and verified (bench runs, must-fail control goes red). It is a manual pre-deploy bench (make sim-wlink-pair), deliberately outside sim_gate; nothing left to fix."
+      next_step: "Optional: add sim-wlink-pair to the gate (Makefile edit; not made here)."
     registered: 2026-10-10
     opened: 2026-10-10            # found while porting A7 (rev2-port-a7-evidence)
     summary: >

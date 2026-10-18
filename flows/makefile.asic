@@ -5,7 +5,10 @@
 # The actual work delegates into syn/asic/fusion-compiler (PnR + GDSII)
 # and imp/ASIC (chip-top drop staging).
 
-TIDELINK_HOME ?= $(realpath $(dir $(lastword $(MAKEFILE_LIST)))/..)
+# Captured immediately (:=): $(MAKEFILE_LIST) grows with later includes, so a
+# lazy ?= RHS would read whichever file was included last (see mk/site.mk).
+_ASIC_FLOWS_MK_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
+TIDELINK_HOME ?= $(realpath $(_ASIC_FLOWS_MK_DIR)..)
 
 ASIC_MODULE ?= tidelink_top_full
 

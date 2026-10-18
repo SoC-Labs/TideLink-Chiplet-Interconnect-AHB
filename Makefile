@@ -1,3 +1,12 @@
+# Repo root, captured IMMEDIATELY while this file is still the last entry in
+# $(MAKEFILE_LIST). A lazy `?= $(... lastword $(MAKEFILE_LIST) ...)` (as
+# flows/makefile.asic had) is expanded at first USE, after every include, and
+# resolved to scripts/ (scripts/coverage/coverage.mk is included last).
+# An exported TIDELINK_HOME (set_env.sh) still wins.
+ifndef TIDELINK_HOME
+TIDELINK_HOME := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+endif
+
 .PHONY: clean_all clean_uvm clean_cocotb clean_xprop clean_lint clean_syn \
         sim_robust sim_synth_mode xdc_lint xdc_lint_selftest \
         synth_lint_selftest robust_all sim-repro sim-repro-skid3 sim-wlink-pair \

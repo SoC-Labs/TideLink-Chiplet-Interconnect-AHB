@@ -4,7 +4,7 @@ Read this first. It says what state TideLink is in, where everything lives, and 
 The rules for changing anything are in [CONTRIBUTING.md](../CONTRIBUTING.md). The live bug list is
 [BUG_REGISTRY.yaml](BUG_REGISTRY.yaml) (rendered: [bug_registry.html](bug_registry.html)).
 
-As of: 2026-10-20. Owner: David Mapstone (SoC Labs).
+As of: 2026-10-18. Owner: David Mapstone (SoC Labs).
 
 ## 1. State in one paragraph
 
@@ -37,7 +37,7 @@ as current; where they disagree with the registry, the registry wins.
 
 | Check | Command | Time |
 |---|---|---|
-| Full regression, the authority for landing | `make sim_gate_regressions` (env: CONTRIBUTING §6, pinned `CHIPLET_HOME` + `TIDECHART_HOME`) | ~2 h |
+| Full regression, the authority for landing | `make sim_gate_regressions` (env: CONTRIBUTING §6, pinned `CHIPLET_HOME` + `TIDECHART_HOME`); last full run 2026-10-16: 92 PASS, 3 XFAIL sentinels, 0 FAIL | ~2 h |
 | Registry and checker self-tests | `make selfcheck_gates sim_gate_registry_coverage` | <1 min |
 | HW tooling offline rehearsal | `make hw_tooling_selftest` | ~1 min |
 | KR260 onchip run | `scripts/hw/build.sh` then `scripts/hw/hw_test.sh` (RUNBOOK) | build 45-90 min, run ~10 min |
@@ -47,20 +47,28 @@ Without the pinned `CHIPLET_HOME` and `TIDECHART_HOME` the TideChart pair suites
 
 ## 4. What is open
 
-Owner and next step for every entry are in the registry (`truth_pass_2026_10` blocks); the summary is
-[REGISTRY_STATUS_2026-10.md](REGISTRY_STATUS_2026-10.md). The ones that matter for the next spin:
+Owner and next step for every entry are in the registry (`truth_pass_2026_10` blocks); the summary with
+counts is [REGISTRY_STATUS_2026-10.md](REGISTRY_STATUS_2026-10.md). Registry on 2026-10-18: 0 open,
+2 root_caused, 1 fix_built, 30 sim_proven, 2 hw_proven, 15 deferred (each with an owner), 8 closed.
+
+**For the next spin (in priority order):**
 
 1. **ASIC re-synthesis collateral for TL-018/TL-019.** The ASIC flists now take the hardened FC-node overrides
-   with CRC on at reset. Area, timing and LEC for the added recovery logic (about 250 flops) are not measured.
-   Needs: synthesis, LEC against `main`, STA. Waiver W1 covers the gap until then.
+   with CRC on at reset (PR #20). Area, timing and LEC for the added recovery logic (about 250 flops) are not
+   measured. Needs: synthesis, LEC against `main`, STA. Waiver W1 covers the gap until then.
 2. **ASIC flow tool consistency** (PR #14): one `ASIC_PHY` knob so Formality, PrimeTime, Calibre and RTLA read
-   the flist Fusion Compiler synthesised.
-3. **Verification P1** (PR #16): CRC-replay contract SVA on every FC node, VC Formal proof, CI workflow. The
-   self-hosted runner still has to be registered (CI_RUNNER.md).
-4. **Board campaigns**: TL-001 (n=20 eth-pair delivery), TL-009 (sustained cross-die write soak with TL-037), TL-042.
-5. **Decisions waiting on David**: TL-014, TL-021, TL-024 and TL-029 (waivers), TL-030, TL-045, TL-049.
+   the flist Fusion Compiler synthesised. Land it before item 1.
+3. **Verification P1** (PR #16): CRC-replay contract SVA on every FC node, VC Formal proof, CI workflow. CI
+   does nothing until the self-hosted runner is registered ([CI_RUNNER.md](CI_RUNNER.md)).
+4. **Board campaigns:** TL-001 (n=20 eth-pair delivery), TL-009 (sustained cross-die write soak with TL-037),
+   TL-042, TL-011. Recipe: [scripts/hw/RUNBOOK.md](../scripts/hw/RUNBOOK.md).
+5. **Decisions waiting on David:** TL-014, TL-021, TL-024 and TL-029 (waivers), TL-030, TL-045, TL-049.
 
 Not TideLink's to fix: TL-023 and TL-028 (eth ASIC repos), TL-034 (tidechart repo).
+
+**Recently closed, for context:** TL-059 sideband CRC replay (hw_proven, PR #8); TL-018 CRC on at reset
+(hw_proven, PR #20); TL-057, TL-051 and TL-055 now gated (PRs #17, #18); TL-035 AXI-node watchdog test (PR #19);
+TL-038 closed after the 0x23C re-run found no wedge (the August evidence used the unmapped 0x003C alias).
 
 ## 5. Silicon errata (shipped dies)
 

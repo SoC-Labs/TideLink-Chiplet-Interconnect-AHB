@@ -37,10 +37,25 @@ TOP_tidelink_fc_adapter = tidelink_fc_adapter
 export TOP := $(or $(TOP_$(MODULE)),$(MODULE))
 
 # ── File lists ───────────────────────────────────────────────────────────
-# Use ASIC-specific flist if it exists (swaps FPGA SRAM for compiled macro),
-# otherwise fall back to the default flist.
-ASIC_FLIST_PATH := $(TIDELINK_HOME)/flists/$(MODULE)_asic.flist
-export FLIST := $(if $(wildcard $(ASIC_FLIST_PATH)),$(ASIC_FLIST_PATH),$(TIDELINK_HOME)/flists/$(MODULE).flist)
+# ONE knob for every ASIC tool (fusion-compiler, formality, primetime, calibre,
+# rtl-architect): ASIC_PHY selects the PHY composition of the chip-build flist.
+#   ASIC_PHY=_v2 (DEFAULT, tapeout) -> $(MODULE)_asic_v2.flist (shared tidelink-phy,
+#                                      +define+TIDELINK_PHY_V2)
+#   ASIC_PHY=    (empty, legacy V1)  -> $(MODULE)_asic.flist
+# The tool Makefiles must NOT re-pin FLIST themselves: LEC/STA/DRC have to read the
+# RTL that synthesis read. scripts/ci/asic_flist_consistency.py enforces this.
+# A requested composition that has no flist is an error, never a silent V1 fallback.
+ASIC_PHY ?= _v2
+ASIC_FLIST_PATH := $(TIDELINK_HOME)/flists/$(MODULE)_asic$(ASIC_PHY).flist
+ifneq ($(wildcard $(ASIC_FLIST_PATH)),)
+export FLIST := $(ASIC_FLIST_PATH)
+else ifneq ($(wildcard $(TIDELINK_HOME)/flists/$(MODULE)_asic.flist),)
+$(error ASIC_PHY='$(ASIC_PHY)': no $(ASIC_FLIST_PATH); pass ASIC_PHY= for the V1 flist)
+else
+# No ASIC flist for this MODULE at all: plain flist (swap-free cuts only).
+export FLIST := $(TIDELINK_HOME)/flists/$(MODULE).flist
+endif
+export ASIC_PHY
 export ASIC_FLIST := $(TIDELINK_HOME)/flists/tidelink_asic.flist
 
 # ── Cell libraries — 12-track standard cells, 9-layer stack ────────────────

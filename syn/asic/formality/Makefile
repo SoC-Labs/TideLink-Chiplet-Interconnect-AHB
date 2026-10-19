@@ -13,10 +13,7 @@ MODULE ?= tidelink_top_full
 
 include $(dir $(lastword $(MAKEFILE_LIST)))/../common.mk
 
-# Force the ASIC flist regardless of common.mk's wildcard fallback —
-# Formality must compare what FC actually saw.
-override FLIST := $(TIDELINK_HOME)/flists/$(MODULE)_asic.flist
-export FLIST
+# FLIST comes from common.mk (ASIC_PHY knob, default _v2); do not re-pin it here.
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 export FM_DIR     = $(TIDELINK_HOME)/syn/asic/formality
@@ -161,7 +158,7 @@ clean:
 help:
 	@echo "TideLink — Formality LEC"
 	@echo ""
-	@echo "Compares the RTL described by $(MODULE)_asic.flist (reference)"
+	@echo "Compares the RTL described by $(FLIST) (reference)"
 	@echo "against the post-layout netlist FC dropped at"
 	@echo "  $(NETLIST)"
 	@echo ""

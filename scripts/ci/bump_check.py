@@ -11,10 +11,25 @@
 #                  capabilities that move affects, and the verdict the release
 #                  manager holds for it. ALWAYS exits 0: a hook is bypassed by
 #                  --no-verify anyway, so it is an early warning, not a gate.
-#   --mode block   CI. Exits 1 unless every moved gitlink has a PASS — from the
-#                  release manager, or (--run-local, on a host with the tools)
-#                  from running the affected capabilities here. No verdict is
-#                  a FAIL: "could not ask" is not "passed".
+#   --mode block   CI. Exits 1 unless every moved gitlink LANDS: a PASS or a
+#                  WARN from the release manager, or (--run-local, on a host
+#                  with the tools) a PASS from running the affected
+#                  capabilities here. FAIL, UNVERIFIED and no verdict block:
+#                  "could not ask" is not "passed". A release-manager FAIL
+#                  is never overridden by a local run: it may be a new red in
+#                  another configuration (D14) that this host does not build.
+#
+# WHAT LANDS (David 2026-10-19, CI-WARN; release manager D12 and D14):
+#   PASS        the move was tested and is green.
+#   WARN        "already red before the bump": the run set was red at the base
+#               commit too, and the move made nothing newly red. The red is
+#               advice for a person, not a hold, so the move lands and the
+#               release manager's note is printed.
+#   FAIL        a NEW red (green before, red after) in ANY registered
+#               configuration of this component holds the move, even if another
+#               configuration passes (D14). The release manager's answer names
+#               the configuration that broke; it is printed.
+#   UNVERIFIED, any other verdict, or none: blocks.
 #
 # The authoritative gate is the release manager's own bump decision. This is
 # the same question asked earlier, closer to the person who moved the pin.
@@ -56,6 +71,8 @@ import urllib.parse
 import urllib.request
 
 ZERO = "0" * 40
+# Release-manager verdicts that let a move land (interfaces 26.7). Anything else blocks.
+LANDS = ("PASS", "WARN")
 MANIFEST = ".nanosoc/capabilities.yaml"
 TIER_RE = re.compile(r"^t(\d+)$")
 
@@ -323,14 +340,29 @@ def check(ranges, mode, run_local=False, max_tier=2, cwd=None, out=sys.stdout):
             if manifest and not caps and not comp:
                 say("    no declared capability is affected_by %s" % path)
             verdict, detail = ask_rm(base_url, component, path, old, new, base, reply=reply)
-            if verdict == "PASS":
-                say("    release manager: PASS %s" % detail)
+            note = reply.get("note") if isinstance(reply.get("note"), str) else ""
+            if verdict in LANDS:
+                if verdict == "PASS":
+                    say("    release manager: PASS %s" % detail)
+                else:
+                    # Already red before the bump (D12): lands, and a person is told why it is red.
+                    say("    release manager: WARN %s — already red before the bump; the move lands "
+                        "(advice, not a hold)%s" % (detail, ": " + note if note else ""))
                 continue
             if verdict:
                 say("    release manager: %s %s" % (verdict, detail))
+                broke = reply.get("configuration")
+                if isinstance(broke, str) and broke:
+                    say("    configuration: %s" % broke)
+                if note:
+                    say("    note: %s" % note)
             else:
                 say("    release manager: no verdict — %s" % detail)
-            if run_local and manifest:
+            if run_local and manifest and verdict == "FAIL":
+                # D14: the release manager's FAIL may be a new red in another configuration; a local
+                # run of this tree's capabilities cannot clear it.
+                say("    run-local: not run: a release-manager FAIL is not overridden by a local run")
+            elif run_local and manifest:
                 sub, sub_why = sub_manifest(root, path, new)
                 if sub is None:
                     say("    run-local: the moved tree's capabilities are not read: %s" % sub_why)
@@ -378,10 +410,10 @@ def check(ranges, mode, run_local=False, max_tier=2, cwd=None, out=sys.stdout):
     if not unresolved:
         return 0
     if mode == "warn":
-        say("bump-check: WARNING — %d move(s) without a passing bump check. "
+        say("bump-check: WARNING — %d move(s) without a passing (or already-red WARN) bump check. "
             "Pushing anyway; CI and the release manager will block it." % unresolved)
         return 0
-    say("bump-check: FAIL — %d move(s) without a passing bump check" % unresolved)
+    say("bump-check: FAIL — %d move(s) without a passing (or already-red WARN) bump check" % unresolved)
     return 1
 
 

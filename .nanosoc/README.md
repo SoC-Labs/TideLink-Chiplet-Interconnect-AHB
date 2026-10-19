@@ -24,5 +24,8 @@ CI asks the same question with repository variable `NANOSOC_RM_URL` and secret `
 token the release manager's operator makes with `nanosoc-rm executor token new <name> --out <file> --reader`.
 A PASS counts only for a test-bump of exactly this move from exactly this base commit (the PR's fork point): run
 `nanosoc-rm test-bump <configuration> <path> <sha>` (the check prints the exact line), then re-run CI.
+A WARN also lets the move land: every gate that is red after the move was already red before it, so the bump made
+nothing worse (David 2026-10-19, CI-WARN). The check prints which gate was already red. FAIL, UNVERIFIED and no
+verdict still block; a FAIL's note names the configuration that broke.
 
 `scripts/ci/bump_check.py` and its test are copies of the ones in nanosoc-ethernet-chiplet. Keep them identical.

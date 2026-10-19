@@ -11,20 +11,25 @@
 #                  capabilities that move affects, and the verdict the release
 #                  manager holds for it. ALWAYS exits 0: a hook is bypassed by
 #                  --no-verify anyway, so it is an early warning, not a gate.
-#   --mode block   CI. Exits 1 unless every moved gitlink has a PASS or a WARN
-#                  from the release manager, or (--run-local, on a host with
-#                  the tools) a pass from running the affected capabilities
-#                  here. No verdict is a FAIL: "could not ask" is not "passed".
-#                  A release-manager FAIL is never overridden by a local run:
-#                  it may be a new red in another configuration (D14) that
-#                  this host does not build.
+#   --mode block   CI. Exits 1 unless every moved gitlink LANDS: a PASS or a
+#                  WARN from the release manager, or (--run-local, on a host
+#                  with the tools) a PASS from running the affected
+#                  capabilities here. FAIL, UNVERIFIED and no verdict block:
+#                  "could not ask" is not "passed". A release-manager FAIL
+#                  is never overridden by a local run: it may be a new red in
+#                  another configuration (D14) that this host does not build.
 #
-# WARN LANDS (CI-WARN, David 2026-10-19, after the release manager's D12): a
-# WARN means every red block gate of the move was already red BEFORE it and is
-# still red after it, so the move made nothing worse. The release manager's
-# bump gate lets PASS and WARN land; this script does the same and prints the
-# note (which gate was already red) for a person to read. FAIL, UNVERIFIED,
-# any other verdict and no verdict still block.
+# WHAT LANDS (David 2026-10-19, CI-WARN; release manager D12 and D14):
+#   PASS        the move was tested and is green.
+#   WARN        "already red before the bump": the run set was red at the base
+#               commit too, and the move made nothing newly red. The red is
+#               advice for a person, not a hold, so the move lands and the
+#               release manager's note is printed.
+#   FAIL        a NEW red (green before, red after) in ANY registered
+#               configuration of this component holds the move, even if another
+#               configuration passes (D14). The release manager's answer names
+#               the configuration that broke; it is printed.
+#   UNVERIFIED, any other verdict, or none: blocks.
 #
 # The authoritative gate is the release manager's own bump decision. This is
 # the same question asked earlier, closer to the person who moved the pin.
@@ -38,8 +43,6 @@
 #   GET <rm>/api/v1/bump-check?component=<id>&path=<p>&from=<sha>&to=<sha>&root=<sha>
 #   200 {"verdict": "PASS"|"FAIL"|"UNVERIFIED"|"WARN"|null, "url": "<job page>",
 #        "command": "nanosoc-rm test-bump <configuration> <path> <to>", "note": ...}
-#   PASS and WARN land; anything else blocks (and its `note` names the
-#   configuration and job, printed under the verdict).
 #   `root` is this tree's commit BEFORE the move (the range's base): a PASS
 #   counts only for a test-bump of exactly this move from exactly that commit.
 #   Auth: "Authorization: Bearer $NANOSOC_RM_TOKEN" (a reader token,
@@ -68,10 +71,10 @@ import urllib.parse
 import urllib.request
 
 ZERO = "0" * 40
+# Release-manager verdicts that let a move land (interfaces 26.7). Anything else blocks.
+LANDS = ("PASS", "WARN")
 MANIFEST = ".nanosoc/capabilities.yaml"
 TIER_RE = re.compile(r"^t(\d+)$")
-# The verdicts besides PASS that let a move land: the release manager's gate.lands (interfaces.md 26.4, D12).
-LANDS = ("WARN",)
 
 
 def git(*args, cwd=None, check=True):
@@ -338,19 +341,21 @@ def check(ranges, mode, run_local=False, max_tier=2, cwd=None, out=sys.stdout):
                 say("    no declared capability is affected_by %s" % path)
             verdict, detail = ask_rm(base_url, component, path, old, new, base, reply=reply)
             note = reply.get("note") if isinstance(reply.get("note"), str) else ""
-            if verdict == "PASS":
-                say("    release manager: PASS %s" % detail)
-                continue
             if verdict in LANDS:
-                # Already red before the bump (D12): it lands, as at the release manager's gate.
-                say("    release manager: %s %s — already red before the bump; lands" % (verdict, detail))
-                if note:
-                    say("      %s" % note)
+                if verdict == "PASS":
+                    say("    release manager: PASS %s" % detail)
+                else:
+                    # Already red before the bump (D12): lands, and a person is told why it is red.
+                    say("    release manager: WARN %s — already red before the bump; the move lands "
+                        "(advice, not a hold)%s" % (detail, ": " + note if note else ""))
                 continue
             if verdict:
                 say("    release manager: %s %s" % (verdict, detail))
+                broke = reply.get("configuration")
+                if isinstance(broke, str) and broke:
+                    say("    configuration: %s" % broke)
                 if note:
-                    say("      %s" % note)
+                    say("    note: %s" % note)
             else:
                 say("    release manager: no verdict — %s" % detail)
             if run_local and manifest and verdict == "FAIL":
@@ -405,10 +410,10 @@ def check(ranges, mode, run_local=False, max_tier=2, cwd=None, out=sys.stdout):
     if not unresolved:
         return 0
     if mode == "warn":
-        say("bump-check: WARNING — %d move(s) without a passing bump check. "
+        say("bump-check: WARNING — %d move(s) without a passing (or already-red WARN) bump check. "
             "Pushing anyway; CI and the release manager will block it." % unresolved)
         return 0
-    say("bump-check: FAIL — %d move(s) without a passing bump check" % unresolved)
+    say("bump-check: FAIL — %d move(s) without a passing (or already-red WARN) bump check" % unresolved)
     return 1
 
 

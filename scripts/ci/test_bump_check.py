@@ -128,7 +128,7 @@ class Repo:
 class FakeRM:
     """Answers GET /api/v1/bump-check with a fixed verdict and records the query."""
 
-    def __init__(self, verdict, status=200, command=None, note=None):
+    def __init__(self, verdict, status=200, command=None, **extra):
         self.queries = []
         outer = self
 
@@ -140,8 +140,7 @@ class FakeRM:
                 doc = {"verdict": verdict, "url": "/jobs/1"}
                 if command:
                     doc["command"] = command
-                if note:
-                    doc["note"] = note
+                doc.update(extra)
                 body = json.dumps(doc).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -226,19 +225,6 @@ class BumpCheck(unittest.TestCase):
                          ("demo", "sub", r.a, r.b, r.base))
         self.assertEqual(auth, "Bearer tok")
 
-    def test_rm_fail_is_not_overridden_by_a_passing_local_run(self):
-        # D14: a new red in another configuration holds; a green local run must not land it.
-        r = self.repo(run_cmd="echo LINT OK")
-        rm = FakeRM("FAIL", note="cfg-b: job 9 is FAIL (a new red holds the move in any configuration, D14)")
-        try:
-            os.environ["NANOSOC_RM_URL"] = rm.url
-            rc, out = r.check("block", run_local=True)
-        finally:
-            rm.close()
-        self.assertEqual(rc, 1, out)
-        self.assertIn("not overridden by a local run", out)
-        self.assertNotIn("run-local lint", out)
-
     def test_rm_fail_blocks(self):
         r = self.repo()
         rm = FakeRM("FAIL")
@@ -250,43 +236,86 @@ class BumpCheck(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("release manager: FAIL", out)
 
-    def ask(self, r, mode, verdict, **kw):
-        rm = FakeRM(verdict, **kw)
+    def ask(self, r, verdict, mode="block", run_local=False, **extra):
+        rm = FakeRM(verdict, **extra)
         try:
             os.environ["NANOSOC_RM_URL"] = rm.url
-            return r.check(mode)
+            return r.check(mode, run_local=run_local)
         finally:
             rm.close()
 
-    def test_rm_warn_lands_in_block_mode_and_says_why(self):
-        # CI-WARN (David 2026-10-19, D12): already red before the bump lands, as at the release manager's gate.
-        r = self.repo()
-        note = "eth-main: job 7: already red before the bump"
-        rc, out = self.ask(r, "block", "WARN", note=note)
+    # CI-WARN (David 2026-10-19): WARN = "already red before the bump" (release manager D12) lands, like PASS.
+    def test_rm_warn_lands_in_block_mode_and_prints_the_note(self):
+        rc, out = self.ask(self.repo(), "WARN", command=None,
+                           note="already red before the bump: lint")
         self.assertEqual(rc, 0, out)
-        self.assertIn("release manager: WARN /jobs/1 — already red before the bump; lands", out)
-        self.assertIn(note, out)
+        self.assertIn("release manager: WARN /jobs/1", out)
+        self.assertIn("already red before the bump", out)
+        self.assertIn(": already red before the bump: lint", out)     # the RM's own note, verbatim
         self.assertNotIn("FAIL", out)
-        self.assertNotIn("to check it", out)
+        self.assertNotIn("WARNING", out)                               # not an unresolved move
+
+    def test_rm_warn_is_matched_case_insensitively(self):
+        rc, out = self.ask(self.repo(), "warn")
+        self.assertEqual(rc, 0, out)
+
+    def test_rm_warn_does_not_run_local(self):
+        # A landing verdict needs no local evidence: a failing local run must not be reached.
+        rc, out = self.ask(self.repo(run_cmd="false"), "WARN", run_local=True)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("run-local", out)
+
+    def test_rm_unverified_blocks(self):
+        rc, out = self.ask(self.repo(), "UNVERIFIED")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("release manager: UNVERIFIED", out)
+        self.assertIn("bump-check: FAIL", out)
+
+    def test_rm_unknown_verdict_blocks(self):
+        rc, out = self.ask(self.repo(), "WARNED")                    # not a prefix match
+        self.assertEqual(rc, 1, out)
+
+    def test_rm_other_verdicts_block(self):
+        # Only PASS and WARN land (the release manager's gate.lands); every other verdict blocks.
+        for v in ("INFRA", "WAIVED", "FLAKY", "NOT-RUN"):
+            rc, out = self.ask(self.repo(), v)
+            self.assertEqual(rc, 1, "%s: %s" % (v, out))
+            self.assertIn("bump-check: FAIL", out)
 
     def test_rm_warn_is_not_a_warning_in_warn_mode(self):
-        rc, out = self.ask(self.repo(), "warn", "warn")          # the verdict is read case-blind
+        rc, out = self.ask(self.repo(), "warn", mode="warn")          # the verdict is read case-blind
         self.assertEqual(rc, 0, out)
         self.assertIn("release manager: WARN", out)
         self.assertNotIn("WARNING", out)
 
-    def test_rm_unverified_and_unknown_verdicts_still_block(self):
-        for v in ("UNVERIFIED", "INFRA", "WAIVED", "FLAKY", "NOT-RUN"):
-            rc, out = self.ask(self.repo(), "block", v)
-            self.assertEqual(rc, 1, "%s: %s" % (v, out))
-            self.assertIn("bump-check: FAIL", out)
-
-    def test_rm_fail_prints_the_configuration_that_broke(self):
-        # D14: a new red in any configuration holds; the note names it.
-        note = "eth-asic: job 9 is FAIL: green before, red after (lint)"
-        rc, out = self.ask(self.repo(), "block", "FAIL", note=note)
+    def test_rm_null_verdict_blocks(self):
+        rc, out = self.ask(self.repo(), None, note="none finished")
         self.assertEqual(rc, 1, out)
-        self.assertIn(note, out)
+        self.assertIn("no verdict", out)
+        self.assertIn("none finished", out)
+
+    # D14: a new red in ANY registered configuration holds, and the answer names the configuration that broke.
+    def test_rm_fail_names_the_configuration_that_broke(self):
+        rc, out = self.ask(self.repo(), "FAIL", configuration="eth-chiplet-asic",
+                           configurations=["eth-chiplet-fpga", "eth-chiplet-asic"],
+                           note="new red in eth-chiplet-asic (green before, red after)")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("release manager: FAIL", out)
+        self.assertIn("configuration: eth-chiplet-asic", out)
+        self.assertIn("note: new red in eth-chiplet-asic", out)
+
+    def test_rm_fail_is_not_overridden_by_a_passing_local_run(self):
+        # D14: a new red in another configuration holds; a green local run must not land it.
+        rc, out = self.ask(self.repo(run_cmd="echo LINT OK"), "FAIL", run_local=True,
+                           configuration="cfg-b")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("not overridden by a local run", out)
+        self.assertNotIn("run-local lint", out)
+
+    def test_rm_fail_still_only_warns_in_warn_mode(self):
+        rc, out = self.ask(self.repo(), "FAIL", mode="warn")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("WARNING", out)
 
     def test_rm_http_error_is_no_verdict(self):
         r = self.repo()

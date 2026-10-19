@@ -128,7 +128,7 @@ class Repo:
 class FakeRM:
     """Answers GET /api/v1/bump-check with a fixed verdict and records the query."""
 
-    def __init__(self, verdict, status=200, command=None):
+    def __init__(self, verdict, status=200, command=None, note=None):
         self.queries = []
         outer = self
 
@@ -140,6 +140,8 @@ class FakeRM:
                 doc = {"verdict": verdict, "url": "/jobs/1"}
                 if command:
                     doc["command"] = command
+                if note:
+                    doc["note"] = note
                 body = json.dumps(doc).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -234,6 +236,44 @@ class BumpCheck(unittest.TestCase):
             rm.close()
         self.assertEqual(rc, 1, out)
         self.assertIn("release manager: FAIL", out)
+
+    def ask(self, r, mode, verdict, **kw):
+        rm = FakeRM(verdict, **kw)
+        try:
+            os.environ["NANOSOC_RM_URL"] = rm.url
+            return r.check(mode)
+        finally:
+            rm.close()
+
+    def test_rm_warn_lands_in_block_mode_and_says_why(self):
+        # CI-WARN (David 2026-10-19, D12): already red before the bump lands, as at the release manager's gate.
+        r = self.repo()
+        note = "eth-main: job 7: already red before the bump"
+        rc, out = self.ask(r, "block", "WARN", note=note)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("release manager: WARN /jobs/1 — already red before the bump; lands", out)
+        self.assertIn(note, out)
+        self.assertNotIn("FAIL", out)
+        self.assertNotIn("to check it", out)
+
+    def test_rm_warn_is_not_a_warning_in_warn_mode(self):
+        rc, out = self.ask(self.repo(), "warn", "warn")          # the verdict is read case-blind
+        self.assertEqual(rc, 0, out)
+        self.assertIn("release manager: WARN", out)
+        self.assertNotIn("WARNING", out)
+
+    def test_rm_unverified_and_unknown_verdicts_still_block(self):
+        for v in ("UNVERIFIED", "INFRA", "WAIVED", "FLAKY", "NOT-RUN"):
+            rc, out = self.ask(self.repo(), "block", v)
+            self.assertEqual(rc, 1, "%s: %s" % (v, out))
+            self.assertIn("bump-check: FAIL", out)
+
+    def test_rm_fail_prints_the_configuration_that_broke(self):
+        # D14: a new red in any configuration holds; the note names it.
+        note = "eth-asic: job 9 is FAIL: green before, red after (lint)"
+        rc, out = self.ask(self.repo(), "block", "FAIL", note=note)
+        self.assertEqual(rc, 1, out)
+        self.assertIn(note, out)
 
     def test_rm_http_error_is_no_verdict(self):
         r = self.repo()

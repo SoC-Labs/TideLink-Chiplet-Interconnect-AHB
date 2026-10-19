@@ -7,8 +7,10 @@
 # is the authority. This is the CI half.
 #
 # WHAT IT DOES. Lists every gitlink (mode 160000) the PR or push changes. None:
-# green in seconds, nothing else runs. Any: each move needs a PASS, and the
-# job fails until it has one. "Could not ask" is a FAIL, not a pass.
+# green in seconds, nothing else runs. Any: each move needs a PASS or a WARN
+# (already red before the bump: nothing got worse; David 2026-10-19, CI-WARN),
+# and the job fails until it has one. FAIL, UNVERIFIED and "could not ask"
+# block.
 #
 # WHERE THE PASS COMES FROM.
 #   bump-check        (hosted, every event; the one to make REQUIRED)

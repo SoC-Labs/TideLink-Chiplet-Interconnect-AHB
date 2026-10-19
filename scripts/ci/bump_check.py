@@ -11,10 +11,17 @@
 #                  capabilities that move affects, and the verdict the release
 #                  manager holds for it. ALWAYS exits 0: a hook is bypassed by
 #                  --no-verify anyway, so it is an early warning, not a gate.
-#   --mode block   CI. Exits 1 unless every moved gitlink has a PASS — from the
-#                  release manager, or (--run-local, on a host with the tools)
-#                  from running the affected capabilities here. No verdict is
-#                  a FAIL: "could not ask" is not "passed".
+#   --mode block   CI. Exits 1 unless every moved gitlink has a PASS or a WARN
+#                  from the release manager, or (--run-local, on a host with
+#                  the tools) a pass from running the affected capabilities
+#                  here. No verdict is a FAIL: "could not ask" is not "passed".
+#
+# WARN LANDS (CI-WARN, David 2026-10-19, after the release manager's D12): a
+# WARN means every red block gate of the move was already red BEFORE it and is
+# still red after it, so the move made nothing worse. The release manager's
+# bump gate lets PASS and WARN land; this script does the same and prints the
+# note (which gate was already red) for a person to read. FAIL, UNVERIFIED,
+# any other verdict and no verdict still block.
 #
 # The authoritative gate is the release manager's own bump decision. This is
 # the same question asked earlier, closer to the person who moved the pin.
@@ -28,6 +35,8 @@
 #   GET <rm>/api/v1/bump-check?component=<id>&path=<p>&from=<sha>&to=<sha>&root=<sha>
 #   200 {"verdict": "PASS"|"FAIL"|"UNVERIFIED"|"WARN"|null, "url": "<job page>",
 #        "command": "nanosoc-rm test-bump <configuration> <path> <to>", "note": ...}
+#   PASS and WARN land; anything else blocks (and its `note` names the
+#   configuration and job, printed under the verdict).
 #   `root` is this tree's commit BEFORE the move (the range's base): a PASS
 #   counts only for a test-bump of exactly this move from exactly that commit.
 #   Auth: "Authorization: Bearer $NANOSOC_RM_TOKEN" (a reader token,
@@ -58,6 +67,8 @@ import urllib.request
 ZERO = "0" * 40
 MANIFEST = ".nanosoc/capabilities.yaml"
 TIER_RE = re.compile(r"^t(\d+)$")
+# The verdicts besides PASS that let a move land: the release manager's gate.lands (interfaces.md 26.4, D12).
+LANDS = ("WARN",)
 
 
 def git(*args, cwd=None, check=True):
@@ -323,11 +334,20 @@ def check(ranges, mode, run_local=False, max_tier=2, cwd=None, out=sys.stdout):
             if manifest and not caps and not comp:
                 say("    no declared capability is affected_by %s" % path)
             verdict, detail = ask_rm(base_url, component, path, old, new, base, reply=reply)
+            note = reply.get("note") if isinstance(reply.get("note"), str) else ""
             if verdict == "PASS":
                 say("    release manager: PASS %s" % detail)
                 continue
+            if verdict in LANDS:
+                # Already red before the bump (D12): it lands, as at the release manager's gate.
+                say("    release manager: %s %s — already red before the bump; lands" % (verdict, detail))
+                if note:
+                    say("      %s" % note)
+                continue
             if verdict:
                 say("    release manager: %s %s" % (verdict, detail))
+                if note:
+                    say("      %s" % note)
             else:
                 say("    release manager: no verdict — %s" % detail)
             if run_local and manifest:

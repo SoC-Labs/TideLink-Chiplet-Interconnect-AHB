@@ -15,6 +15,9 @@
 #                  from the release manager, or (--run-local, on a host with
 #                  the tools) a pass from running the affected capabilities
 #                  here. No verdict is a FAIL: "could not ask" is not "passed".
+#                  A release-manager FAIL is never overridden by a local run:
+#                  it may be a new red in another configuration (D14) that
+#                  this host does not build.
 #
 # WARN LANDS (CI-WARN, David 2026-10-19, after the release manager's D12): a
 # WARN means every red block gate of the move was already red BEFORE it and is
@@ -350,7 +353,11 @@ def check(ranges, mode, run_local=False, max_tier=2, cwd=None, out=sys.stdout):
                     say("      %s" % note)
             else:
                 say("    release manager: no verdict — %s" % detail)
-            if run_local and manifest:
+            if run_local and manifest and verdict == "FAIL":
+                # D14: the release manager's FAIL may be a new red in another configuration; a local
+                # run of this tree's capabilities cannot clear it.
+                say("    run-local: not run: a release-manager FAIL is not overridden by a local run")
+            elif run_local and manifest:
                 sub, sub_why = sub_manifest(root, path, new)
                 if sub is None:
                     say("    run-local: the moved tree's capabilities are not read: %s" % sub_why)

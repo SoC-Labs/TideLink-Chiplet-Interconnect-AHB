@@ -226,6 +226,19 @@ class BumpCheck(unittest.TestCase):
                          ("demo", "sub", r.a, r.b, r.base))
         self.assertEqual(auth, "Bearer tok")
 
+    def test_rm_fail_is_not_overridden_by_a_passing_local_run(self):
+        # D14: a new red in another configuration holds; a green local run must not land it.
+        r = self.repo(run_cmd="echo LINT OK")
+        rm = FakeRM("FAIL", note="cfg-b: job 9 is FAIL (a new red holds the move in any configuration, D14)")
+        try:
+            os.environ["NANOSOC_RM_URL"] = rm.url
+            rc, out = r.check("block", run_local=True)
+        finally:
+            rm.close()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("not overridden by a local run", out)
+        self.assertNotIn("run-local lint", out)
+
     def test_rm_fail_blocks(self):
         r = self.repo()
         rm = FakeRM("FAIL")
